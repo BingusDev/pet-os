@@ -43,4 +43,21 @@ std::vector<Neighbor> neighbors(const std::string& interface_name);
 // Reverse lookup with a short timeout ("" when none).
 std::string reverse_name(const std::string& ip);
 
+// Throughput through the system curl: downloads from `down_url` and uploads
+// `up_bytes` to `up_url` (POST), each capped at `seconds`. Mb/s; -1 = failed.
+struct Speed {
+    double down_mbps{-1};
+    double up_mbps{-1};
+    std::string error;
+};
+Speed speed_test(const std::string& down_url, const std::string& up_url, size_t up_bytes, int seconds);
+
+// `ping -c count`: average round trip in ms, -1 if nothing answered (or no ping).
+double ping_ms(const std::string& ip, int count);
+
+// A temporary static address for the "no DHCP" fallback ([V]). Needs root or
+// CAP_NET_ADMIN. `cidr` is "192.168.1.250/24". Returns "" or the error.
+std::string add_static(const std::string& interface_name, const std::string& cidr, const std::string& gateway);
+void remove_static(const std::string& interface_name, const std::string& cidr, const std::string& gateway);
+
 } // namespace platform::lan

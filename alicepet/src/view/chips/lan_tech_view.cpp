@@ -54,6 +54,7 @@ void LanTechView::render(const viewmodel::ChipModule& chip) {
     case LanTechChip::View::Test: render_test(lan); break;
     case LanTechChip::View::Alice: render_alice(lan); break;
     case LanTechChip::View::Devices: render_devices(lan); break;
+    case LanTechChip::View::Device: render_device(lan); break;
     }
     lv_obj_align(frame_.tag, LV_ALIGN_TOP_RIGHT, -6, 2);
 }
@@ -102,12 +103,20 @@ void LanTechView::render_test(const LanTechChip& lan) {
     set_headline(lan);
     int y = 3;
     for (const auto& check : lan.checks()) y = check_row(check, y);
+    const bool has_status = !lan.status().empty();
+    const int bottom = has_status ? 139 - 14 : 139;
     if (!lan.running() && !lan.verdict().empty()) {
         const std::string verdict = lan.verdict_ok() ? "Verdict: " + lan.verdict() : lan.verdict();
-        wrapped(verdict, lan.verdict_ok() ? kLanTheme.text : kWhite, y + 2, 139 - y - 4);
+        wrapped(verdict, lan.verdict_ok() ? kLanTheme.text : kWhite, y + 2, bottom - y - 4);
     }
-    lv_label_set_text(frame_.footer, lan.running() ? "testing the jack... [ESC]chips"
-                                                   : "[R]retest [D]devices [A]ask Alice");
+    if (has_status) text(body_, clip_cols(lan.status(), 43), fonts_.small, kYellow, kLeft, bottom);
+    if (lan.running()) {
+        lv_label_set_text(frame_.footer, "testing the jack... [ESC]chips");
+    } else if (lan.can_try_static()) {
+        lv_label_set_text(frame_.footer, "[R]retest [V]try static IP [A]ask Alice");
+    } else {
+        lv_label_set_text(frame_.footer, "[R]retest [D]devices [A]Alice [S]save");
+    }
 }
 
 void LanTechView::render_alice(const LanTechChip& lan) {
@@ -123,32 +132,42 @@ void LanTechView::render_alice(const LanTechChip& lan) {
     } else {
         wrapped("Alice: " + lan.alice_text(), kWhite, y, 139 - y - 2);
     }
-    lv_label_set_text(frame_.footer, "[R]retest [A]ask again [ESC]back");
+    if (!lan.status().empty()) text(body_, clip_cols(lan.status(), 43), fonts_.small, kYellow, kLeft, 139 - 14);
+    lv_label_set_text(frame_.footer, "[R]retest [A]ask again [S]save [ESC]back");
 }
 
 void LanTechView::render_devices(const LanTechChip& lan) {
-    // Screen 7: who's on this /24, one row each, the selected row highlighted.
-    lv_label_set_text(frame_.title, "LAN · DEVICES");
-    const auto& devices = lan.devices();
+    // Screen 7: who's on this /24, one row each, the selected row highlighted;
+    // devices first seen in the last day are marked NEW ([W] shows only those).
+    lv_label_set_text(frame_.title, lan.new_only() ? "LAN · WHO'S NEW" : "LAN · DEVICES");
+    const auto devices = lan.devices();
     if (lan.sweeping()) {
         lv_label_set_text(frame_.tag, "scanning...");
+    } else if (lan.new_count() > 0) {
+        lv_label_set_text_fmt(frame_.tag, "%zu found · %zu new", lan.device_count(), lan.new_count());
     } else {
-        lv_label_set_text_fmt(frame_.tag, "%zu found", devices.size());
+        lv_label_set_text_fmt(frame_.tag, "%zu found", lan.device_count());
     }
-    lv_obj_set_style_text_color(frame_.tag, lv_color_hex(kLanTheme.text), 0);
-    lv_label_set_text(frame_.footer, "[↑↓]scroll [R]rescan [ESC]back");
+    lv_obj_set_style_text_color(frame_.tag, lv_color_hex(lan.new_count() > 0 ? kYellow : kLanTheme.text), 0);
+    lv_label_set_text(frame_.footer, lan.new_only() ? "[↑↓]scroll [↵]ping/ports [W]all [ESC]back"
+                                                    : "[↑↓]scroll [↵]ping/ports [W]who's new");
 
     if (devices.empty()) {
-        wrapped(lan.sweeping() ? "Knocking on every address in this subnet (about 10 s)..."
-                               : "Nothing answered. Press R to scan again.",
-                kLanTheme.text, 6, 0);
+        std::string msg = lan.sweeping() ? "Knocking on every address in this subnet (about 10 s)..."
+                                         : "Nothing answered. Press R to scan again.";
+        if (!lan.sweeping() && lan.new_only()) {
+            msg = lan.baseline() ? "First scan of this network: everything here is now remembered, so new devices "
+                                   "will stand out next time."
+                                 : "Nothing new in the last day.";
+        }
+        wrapped(msg, kLanTheme.text, 6, 0);
         return;
     }
     const size_t selected = lan.scroll();
     const size_t first = selected >= kVisibleDevices ? selected - kVisibleDevices + 1 : 0;
     int y = 2;
     for (size_t i = first; i < devices.size() && i < first + kVisibleDevices; ++i) {
-        const auto& d = devices[i];
+        const auto& d = *devices[i];
         const bool sel = i == selected;
         if (sel) {
             lv_obj_t* hl = box(body_, 4, y - 1, 312, kDevRowH, kSel);
@@ -162,7 +181,13 @@ void LanTechView::render_devices(const LanTechChip& lan) {
             text(body_, "← this PET", fonts_.small, ink, kLeft + 5 * kGlyphW, y);
         } else {
             text(body_, dot_leader(d.name.empty() ? "?" : d.name, 18), fonts_.small, ink, kLeft + 5 * kGlyphW, y);
-            text(body_, clip_cols(d.mac, 17), fonts_.small, sel ? kWhite : 0x6fbf8c, kLeft + 24 * kGlyphW, y);
+            if (d.is_new) {
+                text(body_, "NEW", fonts_.small, kYellow, kLeft + 24 * kGlyphW, y);
+                text(body_, clip_cols(d.mac.size() > 8 ? d.mac.substr(9) : d.mac, 13), fonts_.small,
+                     sel ? kWhite : 0x6fbf8c, kLeft + 28 * kGlyphW, y);
+            } else {
+                text(body_, clip_cols(d.mac, 17), fonts_.small, sel ? kWhite : 0x6fbf8c, kLeft + 24 * kGlyphW, y);
+            }
         }
         y += kDevRowH;
     }
@@ -170,6 +195,46 @@ void LanTechView::render_devices(const LanTechChip& lan) {
         text(body_, "+" + std::to_string(devices.size() - first - kVisibleDevices) + " more ▼", fonts_.small,
              kLanTheme.text, kLeft, y);
     }
+}
+
+void LanTechView::render_device(const LanTechChip& lan) {
+    // One device: name, MAC, ping, and which common ports answer.
+    const auto& d = lan.detail();
+    lv_label_set_text(frame_.title, ("LAN · " + d.ip).c_str());
+    lv_label_set_text(frame_.tag, lan.probing() ? "checking..." : (d.is_new ? "NEW" : ""));
+    lv_obj_set_style_text_color(frame_.tag, lv_color_hex(d.is_new ? kYellow : kLanTheme.text), 0);
+    lv_label_set_text(frame_.footer, "[R]check again [ESC]devices");
+    int y = 3;
+    text(body_, clip_cols(d.name.empty() ? "(no name)" : d.name, 43), fonts_.small, kWhite, kLeft, y);
+    y += 14;
+    text(body_, "MAC  " + (d.mac.empty() ? std::string("-") : d.mac), fonts_.small, kRowInk, kLeft, y);
+    y += 14;
+    std::string ping = "Ping " + std::string(lan.probing() ? "..." : lan.detail_ping_ms() < 0
+                                                                     ? "no reply (may block ping)"
+                                                                     : std::to_string(static_cast<int>(lan.detail_ping_ms() + 0.5)) + " ms");
+    text(body_, ping, fonts_.small, lan.detail_ping_ms() < 0 && !lan.probing() ? kYellow : kRowInk, kLeft, y);
+    y += 18;
+    text(body_, "Open ports:", fonts_.small, kLanTheme.text, kLeft, y);
+    y += 14;
+    if (lan.probing()) {
+        text(body_, "checking " + std::to_string(LanTechChip::common_ports().size()) + " common ports...", fonts_.small,
+             kRowInk, kLeft, y);
+        return;
+    }
+    if (lan.detail_open().empty()) {
+        text(body_, "none of the common ones", fonts_.small, kRowInk, kLeft, y);
+        return;
+    }
+    std::string list;
+    for (int port : lan.detail_open()) {
+        const char* service = "";
+        for (const auto& p : LanTechChip::common_ports()) {
+            if (p.port == port) service = p.service;
+        }
+        if (!list.empty()) list += "  ";
+        list += std::to_string(port) + " " + service;
+    }
+    wrapped(list, kGreen, y, 139 - y - 2);
 }
 
 } // namespace view

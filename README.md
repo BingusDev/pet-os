@@ -27,7 +27,7 @@ the Mac mini. You can chat with her, run quick network checks, and slot
 | **VOICE** chip | Push-to-talk → local Whisper on the Mac → Alice replies | ✅ |
 | **TERMINAL** chip | SSH bookmarks, built-in VT100 view, "Ask Alice" command suggestions (run only on Enter) | ✅ |
 | **JELLYFIN** chip | Browse library → seasons → episodes; low-bitrate H.264 to the 320×170 panel via mpv | ✅ (desktop playback stubbed) |
-| **LAN TECH** chip | Wall-jack tester: link, DHCP, gateway, DNS, ping | 🚧 WIP |
+| **LAN TECH** chip | Wall-jack tester: link, DHCP, gateway, DNS, speed, switch port; static-IP fallback, saved reports, device list with "who's new", ping and open ports | ✅ (not yet on hardware) |
 | **JACK IN** · **REMOTE** · **RETRO** | PC sidekick, IR learn/replay, RomM games | ⏳ planned |
 
 <p align="center">

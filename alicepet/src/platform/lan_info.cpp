@@ -12,6 +12,10 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <cstdlib>
 
 #include <fstream>
 #include <sstream>
@@ -221,6 +225,68 @@ std::string reverse_name(const std::string& ip) {
         return {};
     }
     return host;
+}
+
+Speed speed_test(const std::string& down_url, const std::string& up_url, size_t up_bytes, int seconds) {
+    Speed speed;
+    const std::string limit = std::to_string(std::max(2, seconds));
+    std::string out;
+    // speed_download is bytes/s over the transfer; a capped (exit 28) run still counts.
+    int rc = proc::run_capture({"curl", "-sS", "-o", "/dev/null", "--max-time", limit, "-w", "%{speed_download}", down_url},
+                               out, (seconds + 5) * 1000, false);
+    if (rc == 0 || rc == 28) speed.down_mbps = std::atof(out.c_str()) * 8.0 / 1e6;
+    else speed.error = rc == -1 ? "curl missing" : "download test failed (" + std::to_string(rc) + ")";
+
+    char path[] = "/tmp/alicepet-speed-XXXXXX";
+    const int fd = mkstemp(path);
+    if (fd >= 0) {
+        const std::string chunk(64 * 1024, 'x');
+        for (size_t written = 0; written < up_bytes; written += chunk.size()) {
+            if (write(fd, chunk.data(), chunk.size()) < 0) break;
+        }
+        close(fd);
+        out.clear();
+        rc = proc::run_capture({"curl", "-sS", "-o", "/dev/null", "--max-time", limit, "-w", "%{speed_upload}",
+                                "--data-binary", std::string("@") + path, up_url},
+                               out, (seconds + 5) * 1000, false);
+        unlink(path);
+        if (rc == 0 || rc == 28) speed.up_mbps = std::atof(out.c_str()) * 8.0 / 1e6;
+        else if (speed.error.empty()) speed.error = "upload test failed (" + std::to_string(rc) + ")";
+    }
+    return speed;
+}
+
+double ping_ms(const std::string& ip, int count) {
+    std::string out;
+    const int rc = proc::run_capture({"ping", "-n", "-q", "-c", std::to_string(count), "-W", "1", ip}, out,
+                                     (count + 2) * 1000, true);
+    if (rc != 0) return -1;
+    // "rtt min/avg/max/mdev = 0.031/0.045/0.061/0.012 ms" (Linux) or "round-trip ..." (macOS).
+    const auto eq = out.find(" = ");
+    if (eq == std::string::npos) return -1;
+    const auto slash = out.find('/', eq);
+    return slash == std::string::npos ? -1 : std::atof(out.c_str() + slash + 1);
+}
+
+std::string add_static(const std::string& interface_name, const std::string& cidr, const std::string& gateway) {
+    std::string out;
+    int rc = proc::run_capture({"ip", "addr", "add", cidr, "dev", interface_name}, out, 3000, true);
+    if (rc != 0) return out.empty() ? "ip addr add failed" : out;
+    if (!gateway.empty()) {
+        std::string route_out;
+        proc::run_capture({"ip", "route", "add", "default", "via", gateway, "dev", interface_name, "metric", "900"},
+                          route_out, 3000, true);
+    }
+    return "";
+}
+
+void remove_static(const std::string& interface_name, const std::string& cidr, const std::string& gateway) {
+    std::string out;
+    if (!gateway.empty()) {
+        proc::run_capture({"ip", "route", "del", "default", "via", gateway, "dev", interface_name, "metric", "900"}, out,
+                          3000, true);
+    }
+    proc::run_capture({"ip", "addr", "del", cidr, "dev", interface_name}, out, 3000, true);
 }
 
 } // namespace platform::lan

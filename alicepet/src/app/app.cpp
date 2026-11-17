@@ -602,6 +602,10 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         capture("lan-testing.png");
         wait_real([&] { return !lan->running(); }, 20000);
         capture("lan-test.png");
+        wait_real([&] { return !lan->speed_running(); }, 25000);
+        vm.handle_char("s");
+        advance(virtual_now + kStepMs);
+        capture("lan-test-speed.png");
         viewmodel::chips::BridgeReply reply;
         reply.ok = true;
         reply.reply = "Link and address look fine, so the cable and jack are good. If something still feels slow, "
@@ -616,6 +620,14 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         capture("lan-scanning.png");
         wait_real([&] { return !lan->sweeping(); }, 30000);
         capture("lan-devices.png");
+        vm.handle_char("w");
+        advance(virtual_now + kStepMs);
+        capture("lan-whos-new.png");
+        vm.handle_char("w");
+        vm.handle_key(viewmodel::Key::Enter);
+        wait_real([&] { return !lan->probing(); }, 15000);
+        capture("lan-device.png");
+        vm.handle_key(viewmodel::Key::Escape);
         vm.handle_key(viewmodel::Key::Escape);
     }
     go_home();

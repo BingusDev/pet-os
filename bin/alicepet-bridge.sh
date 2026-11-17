@@ -13,6 +13,9 @@
 # requires PET_BRIDGE_TOKEN (in .env or the environment); the device sends it
 # from /etc/alicepet.conf [bridge] token=.
 #
+# Push-to-talk: POST /api/pet/voice transcribes locally with openai-whisper
+# (PET_VOICE_MODEL, default large-v3-turbo) and asks the same session.
+#
 # Foreground process; stop with Ctrl-C. No LaunchAgent is installed.
 set -euo pipefail
 
@@ -49,4 +52,5 @@ fi
 # Create the session once; delivery stays "none", so replies are only read back by the bridge.
 openclaw gateway call sessions.create --json --params '{"key":"agent:main:pet"}' >/dev/null 2>&1 || true
 
-exec node --import "$HERE/bind-host.mjs" bridge/server.mjs
+# voice-route.mjs adds POST /api/pet/voice (local whisper -> same session); see that file.
+exec node --import "$HERE/bind-host.mjs" --import "$HERE/voice-route.mjs" bridge/server.mjs

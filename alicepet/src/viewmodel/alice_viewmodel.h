@@ -103,6 +103,8 @@ public:
 
     // Wraps text into lines of at most `cols` code points (word wrap, hard breaks kept).
     static std::vector<std::string> wrap(const std::string& text, size_t cols);
+    // Maps typography the pixel font lacks to ASCII and drops emoji.
+    static std::string screen_text(const std::string& text);
 
 private:
     void show(Screen next);

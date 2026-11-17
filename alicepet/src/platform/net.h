@@ -4,7 +4,9 @@
 
 #pragma once
 
+#include <cstddef>
 #include <string>
+#include <vector>
 
 // Blocking POSIX network helpers. Call them from worker threads only; the UI
 // thread must never wait on the network.
@@ -21,6 +23,13 @@ struct HttpResponse {
 // `bearer_token` is sent as "Authorization: Bearer <token>" when non-empty.
 HttpResponse http_post_json(const std::string& url, const std::string& json_body,
                             const std::string& bearer_token, int timeout_ms);
+// Generic request; `headers` are full "Name: value" lines. Replies over max_reply bytes fail.
+HttpResponse http_request(const std::string& method, const std::string& url, const std::string& body,
+                          const std::vector<std::string>& headers, int timeout_ms,
+                          size_t max_reply = 4 * 1024 * 1024);
+HttpResponse http_get(const std::string& url, const std::vector<std::string>& headers, int timeout_ms);
+// Percent-encodes a query parameter value.
+std::string url_encode(const std::string& value);
 
 enum class ProbeState { Online, Rest, Offline };
 
@@ -42,6 +51,8 @@ ProbeResult probe_ps5(const std::string& address, int timeout_ms);
 std::string json_escape(const std::string& value);
 // Extracts a top-level-ish string field ("key": "value") and unescapes it, including \uXXXX.
 bool json_string_field(const std::string& json, const std::string& key, std::string& out);
+// Extracts "key": <number> (integers only; false if missing).
+bool json_int_field(const std::string& json, const std::string& key, long long& out);
 // True if the JSON contains "key": true.
 bool json_bool_field(const std::string& json, const std::string& key, bool& out);
 

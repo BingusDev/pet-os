@@ -4,6 +4,8 @@
 
 #include "net.h"
 
+#include <vector>
+
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netdb.h>
@@ -211,6 +213,19 @@ size_t find_value(const std::string& json, const std::string& key) {
 
 HttpResponse http_post_json(const std::string& url, const std::string& json_body,
                             const std::string& bearer_token, int timeout_ms) {
+    std::vector<std::string> headers{"Content-Type: application/json"};
+    if (!bearer_token.empty()) {
+        headers.push_back("Authorization: Bearer " + bearer_token);
+    }
+    return http_request("POST", url, json_body, headers, timeout_ms);
+}
+
+HttpResponse http_get(const std::string& url, const std::vector<std::string>& headers, int timeout_ms) {
+    return http_request("GET", url, "", headers, timeout_ms);
+}
+
+HttpResponse http_request(const std::string& method, const std::string& url, const std::string& body,
+                          const std::vector<std::string>& headers, int timeout_ms, size_t max_reply) {
     HttpResponse response;
     std::string host;
     std::string path;
@@ -238,14 +253,15 @@ HttpResponse http_post_json(const std::string& url, const std::string& json_body
         return response;
     }
 
-    std::string request = "POST " + path + " HTTP/1.1\r\nHost: " + host + ":" + std::to_string(port) +
-                          "\r\nUser-Agent: AlicePET\r\nContent-Type: application/json\r\nAccept: application/json\r\n"
-                          "Connection: close\r\nContent-Length: " +
-                          std::to_string(json_body.size()) + "\r\n";
-    if (!bearer_token.empty()) {
-        request += "Authorization: Bearer " + bearer_token + "\r\n";
+    std::string request = method + " " + path + " HTTP/1.1\r\nHost: " + host + ":" + std::to_string(port) +
+                          "\r\nUser-Agent: AlicePET\r\nAccept: application/json\r\nConnection: close\r\n";
+    if (method != "GET" || !body.empty()) {
+        request += "Content-Length: " + std::to_string(body.size()) + "\r\n";
     }
-    request += "\r\n" + json_body;
+    for (const auto& header : headers) {
+        request += header + "\r\n";
+    }
+    request += "\r\n" + body;
     if (!send_all(fd, request, deadline, response.error)) {
         close(fd);
         return response;
@@ -269,8 +285,10 @@ HttpResponse http_post_json(const std::string& url, const std::string& json_body
             break;
         }
         raw.append(buffer, static_cast<size_t>(n));
-        if (raw.size() > 1024 * 1024) {
-            break;
+        if (raw.size() > max_reply) {
+            response.error = "reply too large";
+            close(fd);
+            return response;
         }
     }
     close(fd);
@@ -282,12 +300,12 @@ HttpResponse http_post_json(const std::string& url, const std::string& json_body
     }
     const size_t space = raw.find(' ');
     response.status = std::atoi(raw.c_str() + space + 1);
-    std::string headers = raw.substr(0, header_end);
-    for (char& c : headers) {
+    std::string reply_headers = raw.substr(0, header_end);
+    for (char& c : reply_headers) {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
     response.body = raw.substr(header_end + 4);
-    if (headers.find("transfer-encoding: chunked") != std::string::npos) {
+    if (reply_headers.find("transfer-encoding: chunked") != std::string::npos) {
         response.body = decode_chunked(response.body);
     }
     response.ok = true;
@@ -455,6 +473,35 @@ bool json_bool_field(const std::string& json, const std::string& key, bool& out)
         return true;
     }
     return false;
+}
+
+bool json_int_field(const std::string& json, const std::string& key, long long& out) {
+    const size_t p = find_value(json, key);
+    if (p == std::string::npos) {
+        return false;
+    }
+    char* end = nullptr;
+    const long long value = std::strtoll(json.c_str() + p, &end, 10);
+    if (end == json.c_str() + p) {
+        return false;
+    }
+    out = value;
+    return true;
+}
+
+std::string url_encode(const std::string& value) {
+    static const char kHex[] = "0123456789ABCDEF";
+    std::string out;
+    for (const unsigned char c : value) {
+        if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            out += static_cast<char>(c);
+        } else {
+            out += '%';
+            out += kHex[c >> 4];
+            out += kHex[c & 15];
+        }
+    }
+    return out;
 }
 
 } // namespace platform::net

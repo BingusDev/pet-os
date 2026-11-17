@@ -17,6 +17,8 @@
 #include "model/chip_registry.h"
 #include "model/pet_config.h"
 #include "pet_services.h"
+#include "view/chips/voice_view.h"
+#include "viewmodel/chips/voice_chip.h"
 
 #include <algorithm>
 #include <chrono>
@@ -194,6 +196,19 @@ std::vector<viewmodel::HostRow> host_rows(const model::PetConfig& config) {
     return rows;
 }
 
+// Chip modules + their screens. Chips not listed keep the BATTLE CHIP IN! placeholder.
+void install_chips(viewmodel::AliceViewModel& vm, view::AliceView& view, const model::PetConfig& config,
+                   lv_obj_t* root, const view::AliceFonts& fonts, const std::filesystem::path& art_dir) {
+    const auto add = [&](const char* id, std::unique_ptr<viewmodel::ChipModule> module,
+                         std::unique_ptr<view::ChipView> chip_view) {
+        const size_t index = model::chip_index(id);
+        vm.set_chip_module(index, std::move(module));
+        view.add_chip_view(index, std::move(chip_view));
+    };
+    add("voice", std::make_unique<viewmodel::chips::VoiceChip>(config),
+        std::make_unique<view::VoiceView>(root, fonts, art_dir));
+}
+
 #if !USE_DESKTOP
 lv_display_t* init_device_display() {
 #if APP_USE_DRM
@@ -343,6 +358,38 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         vm.handle_key(viewmodel::Key::Escape);
     }
 
+    // VOICE: idle, listening (live levels from the WAV), then the real bridge round trip
+    // when ALICEPET_VOICE_WAV is set (needs bin/alicepet-bridge.sh running locally).
+    const auto go_home = [&] {
+        while (vm.screen() != viewmodel::Screen::Home) vm.handle_key(viewmodel::Key::Escape);
+    };
+    go_home();
+    vm.handle_key(viewmodel::Key::Digit3);
+    advance(virtual_now + kStepMs);
+    capture("voice.png");
+    if (std::getenv("ALICEPET_VOICE_WAV")) {
+        auto* voice = static_cast<viewmodel::chips::VoiceChip*>(vm.active_chip());
+        vm.handle_key(viewmodel::Key::PushToTalk);
+        advance(virtual_now + 1400);
+        capture("voice-listening.png");
+        vm.handle_key(viewmodel::Key::PushToTalkRelease);
+        wait_real([] { return false; }, 700);
+        capture("voice-sending.png");
+        wait_real([&] { return voice->state() != viewmodel::chips::VoiceChip::State::Sending; }, 180000);
+        capture("voice-answer.png");
+        if (voice->speaking()) {  // [voice] tts_cmd set: let it finish instead of killing it on exit
+            wait_real([&] { return !voice->speaking(); }, 30000);
+        }
+        if (voice->reply_pages() > 1) {
+            vm.handle_key(viewmodel::Key::Down);
+            advance(virtual_now + kStepMs);
+            capture("voice-answer-p2.png");
+        }
+    }
+    go_home();
+    vm.handle_key(viewmodel::Key::Digit2);
+    vm.handle_key(viewmodel::Key::Enter);
+
     // Optional: every chip in the folder and slotted, for review sheets.
     if (std::getenv("ALICEPET_SNAPSHOT_ALL_CHIPS")) {
         std::filesystem::create_directories(dir + "/chips");
@@ -429,7 +476,9 @@ int Application::run() {
     view_model.set_sleep_after_ms(static_cast<uint32_t>(std::max(0, pet_config.sleep_after_s)) * 1000u);
     view_model.set_chat_available(chat.configured());
     view_model.set_hosts(host_rows(pet_config));
-    view::AliceView view(root, alice_fonts, assets.resolve("images/chips"));
+    const auto art_dir = assets.resolve("images/chips");
+    view::AliceView view(root, alice_fonts, art_dir);
+    install_chips(view_model, view, pet_config, root, alice_fonts, art_dir);
     KeyRouter keys(view_model);
 
     LOG_INFO("AlicePET started at {}x{}", lv_display_get_horizontal_resolution(display),

@@ -71,6 +71,10 @@ std::string normalize_for_screen(const std::string& text) {
 
 } // namespace
 
+std::string AliceViewModel::screen_text(const std::string& text) {
+    return normalize_for_screen(text);
+}
+
 std::vector<std::string> AliceViewModel::wrap(const std::string& text, size_t cols) {
     std::vector<std::string> lines;
     std::string paragraph;
@@ -120,6 +124,9 @@ std::vector<std::string> AliceViewModel::wrap(const std::string& text, size_t co
 
 void AliceViewModel::tick(uint32_t elapsed_ms) {
     tick_chips(elapsed_ms);
+    if (ChipModule* chip = active_chip(); chip && chip->take_go_home()) {
+        leave_chip(Screen::Home);
+    }
     if (screen_ == Screen::Boot) {
         boot_elapsed_ms_ = std::min(boot_elapsed_ms_ + elapsed_ms, kBootDurationMs);
         const int progress = static_cast<int>(boot_elapsed_ms_ * 100 / kBootDurationMs);

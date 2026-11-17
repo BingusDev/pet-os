@@ -11,6 +11,7 @@
 #include "lvgl.h"
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -54,6 +55,9 @@ private:
     void handle_event(const SDL_Event& event, bool& running);
     void update_pointer(int32_t window_x, int32_t window_y, bool pressed);
     void emit_physical_key(int32_t sdl_key, bool pressed);
+    // SDL keycode -> the key emitted on its press, so the release matches even if
+    // Ctrl was let go first.
+    std::map<int32_t, int32_t> held_physical_keys_;
     void render();
     void set_dark_mode(bool dark_mode);
 

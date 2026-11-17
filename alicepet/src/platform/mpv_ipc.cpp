@@ -17,7 +17,11 @@
 namespace platform::mpv {
 
 bool command(const std::string& socket_path, const std::string& json, std::string* reply, int timeout_ms) {
+#ifdef SOCK_CLOEXEC
+    const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+#else
     const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+#endif
     if (fd < 0) return false;
     sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
@@ -27,7 +31,12 @@ bool command(const std::string& socket_path, const std::string& json, std::strin
         return false;
     }
     const std::string line = json + "\n";
-    if (send(fd, line.data(), line.size(), 0) != static_cast<ssize_t>(line.size())) {
+#ifdef MSG_NOSIGNAL
+    constexpr int kSendFlags = MSG_NOSIGNAL;  // mpv may have quit: EPIPE, not SIGPIPE
+#else
+    constexpr int kSendFlags = 0;
+#endif
+    if (send(fd, line.data(), line.size(), kSendFlags) != static_cast<ssize_t>(line.size())) {
         close(fd);
         return false;
     }

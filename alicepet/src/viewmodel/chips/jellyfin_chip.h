@@ -104,7 +104,11 @@ private:
     void report(const char* endpoint, long long ticks, bool paused);
     void mpv(const std::string& json);
     std::string auth_header() const;
-    std::string stream_url(const Item& item, long long start_ticks) const;
+    // `with_key`: put the API key in the query string (only for players we can't
+    // hand a header to; it is then visible in `ps`).
+    std::string stream_url(const Item& item, long long start_ticks, bool with_key) const;
+    // Writes a 0600 mpv config carrying the API key as an HTTP header; "" on failure.
+    std::string write_mpv_auth_config() const;
 
     model::PetConfig config_;
     std::string base_;
@@ -135,6 +139,7 @@ private:
     bool paused_{false};
     pid_t player_{-1};
     std::string ipc_path_;
+    std::string mpv_conf_path_;
     bool ipc_{false};
     uint32_t play_ms_{0};
     uint32_t poll_ms_{0};

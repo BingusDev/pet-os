@@ -4,6 +4,8 @@
 
 #include "pet_services.h"
 
+#include "viewmodel/chips/bridge_client.h"
+
 #include <atomic>
 #include <deque>
 #include <mutex>
@@ -29,31 +31,11 @@ void ChatClient::send(const std::string& text) {
         return;
     }
     std::thread([inbox = inbox_, config = config_, text]() {
+        // Same client, JSON parser and error texts as the chips (VOICE, TERMINAL).
+        const auto answer = viewmodel::chips::bridge_ask(config, text);
         ChatResult result;
-        if (config.bridge_url.empty()) {
-            result.text = "No bridge set. Add [bridge] url= to /etc/alicepet.conf.";
-        } else {
-            std::string url = config.bridge_url;
-            while (!url.empty() && url.back() == '/') {
-                url.pop_back();
-            }
-            const auto response = platform::net::http_post_json(
-                url + "/api/pet/ask", "{\"input\":\"" + platform::net::json_escape(text) + "\"}",
-                config.bridge_token, config.bridge_timeout_s * 1000);
-            std::string reply;
-            if (!response.ok) {
-                result.text = "Can't reach Navi (" + response.error + ").";
-            } else if (response.status == 401) {
-                result.text = "Navi bridge rejected my token. Check [bridge] token=.";
-            } else if (platform::net::json_string_field(response.body, "reply", reply) && !reply.empty()) {
-                result.ok = true;
-                result.text = reply;
-            } else if (platform::net::json_string_field(response.body, "error", reply)) {
-                result.text = "Navi error: " + reply;
-            } else {
-                result.text = "Navi bridge answered HTTP " + std::to_string(response.status) + " with no reply.";
-            }
-        }
+        result.ok = answer.ok;
+        result.text = answer.ok ? answer.reply : answer.error;
         std::lock_guard<std::mutex> lock(inbox->mutex);
         inbox->results.push_back(std::move(result));
         inbox->busy = false;

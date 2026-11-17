@@ -1,7 +1,9 @@
 #include "linux_input.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <vector>
 #include <cstdio>
 #include <cstring>
 
@@ -23,8 +25,9 @@ namespace platform {
 namespace {
 
 std::array<lv_obj_t*, kNavKeyCount> nav_buttons{};
-uint32_t last_key = 0;
-bool last_key_pressed = false;
+// Every key currently held, so a release always reaches its listener even when
+// other keys were pressed or released in between (SPACE push-to-talk).
+std::vector<uint32_t> held_keys;
 bool nav_shortcut_mode = false;
 uint32_t pressed_key = 0;
 uint32_t press_started_at = 0;
@@ -48,6 +51,9 @@ struct EvdevKeypad {
     bool router_pressed{false};
     bool shift{false};
     bool ctrl{false};
+    // The key each evdev code produced when pressed, so its release reports the
+    // same key even if Shift/Ctrl changed in between.
+    std::array<uint32_t, KEY_MAX + 1> pressed_as{};
 };
 #endif
 
@@ -127,8 +133,12 @@ void ensure_long_press_timer() {
 }
 
 void route_key_state(uint32_t key, bool pressed) {
-    const bool new_hold = pressed && (!last_key_pressed || pressed_key != key);
-    if (new_hold) {
+    const auto held = std::find(held_keys.begin(), held_keys.end(), key);
+    if (pressed) {
+        if (held != held_keys.end()) {
+            return;  // auto-repeat of a key that is already down
+        }
+        held_keys.push_back(key);
         pressed_key = key;
         press_started_at = lv_tick_get();
         long_press_sent = false;
@@ -137,20 +147,23 @@ void route_key_state(uint32_t key, bool pressed) {
         if (!pressed_key_consumed) {
             dispatch_nav_key(key);
         }
+        return;
     }
-    else if (!pressed && last_key_pressed && pressed_key == key) {
-        if (key_release_listener) {
-            key_release_listener(key, describe_key(key), key_release_listener_user_data);
-        }
+
+    if (held == held_keys.end()) {
+        return;
+    }
+    held_keys.erase(held);
+    if (key_release_listener) {
+        key_release_listener(key, describe_key(key), key_release_listener_user_data);
+    }
+    if (pressed_key == key) {
         pressed_key = 0;
         pressed_key_consumed = false;
         if (long_press_timer) {
             lv_timer_pause(long_press_timer);
         }
     }
-
-    last_key = key;
-    last_key_pressed = pressed;
 }
 
 void key_event_cb(lv_event_t* event) {
@@ -285,14 +298,25 @@ void evdev_read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
             continue;
         }
 
-        auto key = map_evdev_key(input.code, keypad->shift);
-        // TODO(device): confirm the CardputerZero Ctrl key reports KEY_LEFTCTRL.
-        if (keypad->ctrl && key >= 'a' && key <= 'z') {
-            key = kKeyCtrlBase | key;
-        } else if (keypad->ctrl && key >= 'A' && key <= 'Z') {
-            key = kKeyCtrlBase | (key - 'A' + 'a');
+        if (input.value == 2 || input.code > KEY_MAX) {
+            continue;  // auto-repeat
         }
-        if (!key || input.value == 2) {
+        uint32_t key = 0;
+        if (input.value == 0) {
+            // Release: report whatever this code produced when it went down.
+            key = keypad->pressed_as[input.code];
+            keypad->pressed_as[input.code] = 0;
+        } else {
+            key = map_evdev_key(input.code, keypad->shift);
+            // TODO(device): confirm the CardputerZero Ctrl key reports KEY_LEFTCTRL.
+            if (keypad->ctrl && key >= 'a' && key <= 'z') {
+                key = kKeyCtrlBase | key;
+            } else if (keypad->ctrl && key >= 'A' && key <= 'Z') {
+                key = kKeyCtrlBase | (key - 'A' + 'a');
+            }
+            keypad->pressed_as[input.code] = key;
+        }
+        if (!key) {
             continue;
         }
 

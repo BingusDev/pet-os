@@ -19,6 +19,14 @@ struct BridgeReply {
     std::string error;       // short, screen-ready
 };
 
+// The bridge keeps only the first 600 characters of an ask (server.mjs
+// `input.slice(0, 600)`). Prompts built on the device must fit, or put what matters first.
+constexpr size_t kBridgeMaxInput = 600;
+
+// Cuts `text` to at most `max_chars` characters as JavaScript counts them (UTF-16
+// units), never inside a code point.
+std::string clip_for_bridge(const std::string& text, size_t max_chars = kBridgeMaxInput);
+
 // POST /api/pet/ask {"input": text}
 BridgeReply bridge_ask(const model::PetConfig& config, const std::string& text);
 // POST /api/pet/voice with WAV bytes (local whisper on the Mac, then the same session).

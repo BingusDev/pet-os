@@ -19,10 +19,14 @@ Done and committed, desktop-tested:
 - v0.5 step 3a: TERMINAL chip (SSH bookmarks, pty ssh + VT100 view, Ask-Alice command suggestions that only run on Enter).
 - v0.5 step 3b: JELLYFIN chip (library / seasons / episodes via API, HLS H.264 transcode, mpv IPC). Desktop playback is stubbed.
 
+- Review fixes (2026-11-17): Ask-Alice shows the whole suggested command (up to 3 lines) and refuses Enter on anything longer (E types it only); into a new SSH session it is typed, never run, and only once a shell prompt shows. Prompts sent to the bridge put instructions first and stay under its 600-character cut. Status-bar sysfs reads are throttled to every 10 s and skipped while napping. SIGPIPE is ignored, child processes are spawned fork-safely, key releases can't be lost, the Jellyfin API key reaches mpv as a header from a 0600 file, and the .deb recommends alsa-utils, openssh-client, mpv and curl. Version is 0.5.0.
+- Tests: `alicepet/tests/viewmodel_tests.cpp` (no framework) builds with every desktop configure; run `ctest --test-dir alicepet/build/<preset> -C Debug`. App code builds with `-Wall -Wextra` and no warnings.
+- Linux desktop build works too (`linux-x86-64` preset). LVGL's draw thread now has a 128 KB stack: FreeType overflowed the old 32 KB one on Ubuntu.
+
 In progress / not done:
-- v0.5 step 3c: **LAN TECH chip is WIP and may not compile** (last commit). Finish or stub it first.
+- v0.5 step 3c: LAN TECH chip logic (`src/viewmodel/chips/lan_tech_chip.cpp`) compiles, but it has no view yet (`lan_tech_view.cpp` is missing) and `install_chips()` in `src/app/app.cpp` doesn't add it.
 - JACK IN, REMOTE, RETRO chip screens: still "Coming soon".
-- Nothing has run on real hardware yet. The device arrives 2026-11-18. Expect to fix evdev key mapping (`src/platform/linux_input.cpp`, check with `evtest`), font sizes, backlight path, and ALSA device names.
+- Nothing has run on real hardware yet. The device arrives 2026-11-18. Expect to fix evdev key mapping (`src/platform/linux_input.cpp`, check with `evtest`), font sizes, backlight path, and ALSA device names. Also check: which user APPLaunch runs the app as (needs `/dev/input`, backlight write, and read access to `/etc/alicepet.conf`); whether mpv's `--vo=drm` picks the panel or HDMI (may need `--drm-device=`); `--hwdec=v4l2m2m-copy` for hardware H.264; the panel's color depth vs LVGL's 32-bit config; and that Jellyfin playback works with the key sent as a header.
 - v0.5 device build/package not re-verified after steps 2-3.
 
 ## Secrets

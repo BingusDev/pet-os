@@ -44,12 +44,27 @@ BridgeReply decode(const platform::net::HttpResponse& response) {
 
 } // namespace
 
+std::string clip_for_bridge(const std::string& text, size_t max_chars) {
+    // JavaScript counts UTF-16 units; a code point above U+FFFF is two of them.
+    size_t units = 0;
+    size_t i = 0;
+    while (i < text.size()) {
+        const auto lead = static_cast<unsigned char>(text[i]);
+        const size_t len = lead < 0x80 ? 1 : (lead >> 5) == 0x6 ? 2 : (lead >> 4) == 0xE ? 3 : (lead >> 3) == 0x1E ? 4 : 1;
+        const size_t cost = len == 4 ? 2 : 1;
+        if (units + cost > max_chars || i + len > text.size()) break;
+        units += cost;
+        i += len;
+    }
+    return text.substr(0, i);
+}
+
 BridgeReply bridge_ask(const model::PetConfig& config, const std::string& text) {
     if (config.bridge_url.empty()) {
         return {false, "", "", "No bridge set. Add [bridge] url= to /etc/alicepet.conf."};
     }
     return decode(platform::net::http_post_json(base_url(config) + "/api/pet/ask",
-                                                "{\"input\":\"" + platform::net::json_escape(text) + "\"}",
+                                                "{\"input\":\"" + platform::net::json_escape(clip_for_bridge(text)) + "\"}",
                                                 config.bridge_token, config.bridge_timeout_s * 1000));
 }
 

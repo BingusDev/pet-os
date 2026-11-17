@@ -376,16 +376,25 @@ void DesktopSimulatorFrame::handle_event(const SDL_Event& event, bool& running) 
             if (event.key.repeat) {
                 return;
             }
-            // Ctrl+letter (no SDL_TEXTINPUT is generated for it): terminal ^C etc.
             const SDL_Keycode sym = event.key.keysym.sym;
-            if ((event.key.keysym.mod & KMOD_CTRL) && sym >= SDLK_a && sym <= SDLK_z) {
-                emit_physical_key(static_cast<int32_t>(platform::kKeyCtrlBase | static_cast<uint32_t>(sym)),
-                                  event.type == SDL_KEYDOWN);
+            if (event.type == SDL_KEYUP) {
+                const auto held = held_physical_keys_.find(static_cast<int32_t>(sym));
+                if (held != held_physical_keys_.end()) {
+                    emit_physical_key(held->second, false);
+                    held_physical_keys_.erase(held);
+                }
                 return;
             }
-            const auto control = map_control_key(event.key.keysym.sym);
-            if (control != 0) {
-                emit_physical_key(static_cast<int32_t>(control), event.type == SDL_KEYDOWN);
+            // Ctrl+letter (no SDL_TEXTINPUT is generated for it): terminal ^C etc.
+            int32_t key = 0;
+            if ((event.key.keysym.mod & KMOD_CTRL) && sym >= SDLK_a && sym <= SDLK_z) {
+                key = static_cast<int32_t>(platform::kKeyCtrlBase | static_cast<uint32_t>(sym));
+            } else {
+                key = static_cast<int32_t>(map_control_key(sym));
+            }
+            if (key != 0) {
+                held_physical_keys_[static_cast<int32_t>(sym)] = key;
+                emit_physical_key(key, true);
             }
             return;
         }

@@ -16,7 +16,8 @@
 namespace viewmodel::chips {
 namespace {
 
-constexpr uint32_t kPendingInputDelayMs = 1500;
+// A fresh session's screen must be quiet this long before its prompt is trusted.
+constexpr uint32_t kPromptQuietMs = 700;
 
 std::string trim(const std::string& value) {
     size_t a = 0;
@@ -44,7 +45,34 @@ std::string host_part(const std::string& target) {
     return at == std::string::npos ? target : target.substr(at + 1);
 }
 
+size_t utf8_len(unsigned char lead) {
+    if (lead < 0x80) return 1;
+    if ((lead >> 5) == 0x6) return 2;
+    if ((lead >> 4) == 0xE) return 3;
+    if ((lead >> 3) == 0x1E) return 4;
+    return 1;
+}
+
 } // namespace
+
+std::string sanitize_command(const std::string& command) {
+    std::string out;
+    for (const char ch : command) {
+        const auto c = static_cast<unsigned char>(ch);
+        if (c < 0x20 || c == 0x7f) continue;
+        out += ch;
+    }
+    return trim(out);
+}
+
+std::string build_ask_prompt(const std::string& host_desc, const std::string& question) {
+    const std::string head =
+        "PET TERMINAL, Ask Alice. Reply in exactly two lines, no markdown: 'CMD: <one shell command>' then "
+        "'WHY: <one short sentence>'. Holden sees the command and decides whether to run it. Keep the command "
+        "short (under 120 characters). Host: " +
+        host_desc + ". Question: ";
+    return clip_for_bridge(head + question);
+}
 
 std::vector<SshConfigHost> read_ssh_config(const std::string& path) {
     std::vector<SshConfigHost> out;
@@ -232,13 +260,10 @@ bool TerminalChip::handle_key(Key key) {
                 ask_input_.clear();
                 ask_state_ = AskState::Waiting;
                 wait_ms_ = 0;
-                std::string prompt =
-                    "PET TERMINAL, Ask Alice mode. Holden is about to work in an SSH shell on host '" +
-                    (host ? host->label + "' (" + host->target + (host->note.empty() ? "" : ", " + host->note) + ")" : std::string("?'")) +
-                    ". His question: " + ask_question_ +
-                    "\nSuggest exactly ONE shell command for that host. Reply in exactly two lines: the first line is "
-                    "the word CMD, a colon, then the command; the second line is the word WHY, a colon, then one short "
-                    "sentence. No markdown, no code fences. The command is only shown to him; he decides whether to run it.";
+                const std::string host_desc =
+                    host ? "'" + host->label + "' (" + host->target + (host->note.empty() ? "" : ", " + host->note) + ")"
+                         : std::string("unknown");
+                const std::string prompt = build_ask_prompt(host_desc, ask_question_);
                 asks_.run([config = config_, prompt]() { return bridge_ask(config, prompt); });
             }
             touch();
@@ -253,7 +278,7 @@ bool TerminalChip::handle_key(Key key) {
         case AskState::Suggestion:
         case AskState::Error:
             if (key == Key::Enter && ask_state_ == AskState::Suggestion) {
-                run_suggestion(true);
+                if (ask_command_fits()) run_suggestion(true);  // too long to show whole: E only
             } else if (key == Key::Escape || key == Key::Enter) {
                 mode_ = Mode::Hosts;
                 ask_state_ = AskState::Typing;
@@ -327,17 +352,57 @@ void TerminalChip::handle_ctrl(char letter) {
     }
 }
 
+std::vector<std::string> TerminalChip::ask_command_lines() const {
+    std::vector<std::string> lines;
+    std::string line;
+    size_t cols = 0;
+    for (size_t i = 0; i < ask_command_.size();) {
+        const size_t len = std::min(utf8_len(static_cast<unsigned char>(ask_command_[i])), ask_command_.size() - i);
+        if (cols == kCommandCols) {
+            lines.push_back(line);
+            line.clear();
+            cols = 0;
+        }
+        line += ask_command_.substr(i, len);
+        ++cols;
+        i += len;
+    }
+    if (!line.empty()) lines.push_back(line);
+    return lines;
+}
+
+bool TerminalChip::at_shell_prompt(const Session& session) {
+    // The last non-blank line on screen, as the user sees it.
+    std::string last;
+    for (size_t r = session.screen.rows(); r-- > 0;) {
+        last = trim(session.screen.row_text(r));
+        if (!last.empty()) break;
+    }
+    if (last.empty()) return false;
+    const std::string l = lower(last);
+    // Never type into a login, host-key or sudo prompt.
+    for (const char* no : {"password", "passphrase", "yes/no", "(y/n)", "[y/n]", "verification code", "one-time", "otp:"}) {
+        if (l.find(no) != std::string::npos) return false;
+    }
+    const char end = last.back();
+    return end == '$' || end == '#' || end == '>' || end == '%';
+}
+
 // ENTER on a suggestion: open (or reuse) the host's shell and run it; E: type it only.
+// A command that doesn't fit the box is never run (ENTER is refused in handle_key).
+// Into a fresh session, or a shell that isn't sitting at a prompt, the command is only
+// typed, never run, and only once a prompt shows (see tick()).
 void TerminalChip::run_suggestion(bool execute) {
     if (ask_command_.empty()) return;
-    const std::string line = ask_command_ + (execute ? "\r" : "");
+    if (execute && !ask_command_fits()) return;
     const bool fresh = !connected(selected_);
     connect(selected_);
     auto& slot = sessions_[selected_];
-    if (fresh) {
-        slot->pending_input = line;  // typed after the remote shell has had time to start
+    if (!fresh && at_shell_prompt(*slot)) {
+        slot->pty.write(ask_command_ + (execute ? "\r" : ""));
     } else {
-        slot->pty.write(line);
+        slot->pending_input = ask_command_;
+        slot->pending_ms = 0;
     }
     ask_state_ = AskState::Typing;
 }
@@ -374,6 +439,7 @@ void TerminalChip::on_ask_reply(const BridgeReply& reply) {
     if (ask_why_.empty()) {
         for (const auto& t : other) ask_why_ += (ask_why_.empty() ? "" : " ") + t;
     }
+    ask_command_ = sanitize_command(ask_command_);
     ask_why_ = AliceViewModel::screen_text(ask_why_);
     if (ask_command_.empty()) {
         ask_error_ = ask_why_.empty() ? "Alice didn't suggest a command." : ask_why_;
@@ -404,7 +470,10 @@ void TerminalChip::tick(uint32_t elapsed_ms) {
     for (auto& [index, session] : sessions_) {
         std::string output;
         const bool alive = session->pty.read(output);
+        session->quiet_ms += elapsed_ms;
         if (!output.empty()) {
+            session->had_output = true;
+            session->quiet_ms = 0;
             session->screen.feed(output);
             if (index == selected_ && mode_ == Mode::Shell) touch();
         }
@@ -414,12 +483,21 @@ void TerminalChip::tick(uint32_t elapsed_ms) {
             touch();
         }
     }
-    // Suggested command for a fresh connection: type it once the login has settled.
+    // Suggested command waiting for a shell: type it (no Enter) once a prompt is on
+    // screen and output has settled; give up if none shows.
     if (auto it = sessions_.find(selected_); it != sessions_.end() && !it->second->pending_input.empty()) {
-        it->second->pending_ms += elapsed_ms;
-        if (it->second->pending_ms >= kPendingInputDelayMs && !it->second->ended) {
-            it->second->pty.write(it->second->pending_input);
-            it->second->pending_input.clear();
+        Session& session = *it->second;
+        session.pending_ms += elapsed_ms;
+        if (session.ended) {
+            session.pending_input.clear();
+        } else if (session.had_output && session.quiet_ms >= kPromptQuietMs && at_shell_prompt(session)) {
+            session.pty.write(session.pending_input);
+            session.pending_input.clear();
+            touch();
+        } else if (session.pending_ms >= kPromptWaitMs) {
+            session.pending_input.clear();
+            session.screen.feed("\r\n[no shell prompt seen; suggested command not typed]\r\n");
+            touch();
         }
     }
 

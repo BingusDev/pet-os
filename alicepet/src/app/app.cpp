@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -447,6 +448,18 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
             vm.handle_key(viewmodel::Key::HoldEscape);
         }
         vm.handle_char("d");
+    } else if (const char* canned = std::getenv("ALICEPET_SNAPSHOT_ASK_CANNED")) {
+        // No SSH host: still capture the suggestion screen (UI only, nothing runs).
+        vm.handle_char("a");
+        type("how full is the disk");
+        vm.handle_key(viewmodel::Key::Enter);
+        viewmodel::chips::BridgeReply reply;
+        reply.ok = true;
+        reply.reply = canned;
+        term->on_ask_reply(reply);
+        advance(virtual_now + kStepMs);
+        capture("terminal-ask.png");
+        vm.handle_key(viewmodel::Key::Escape);
     }
     // JELLYFIN (real server when [jellyfin] url/api_key are set): library, then
     // ALICEPET_SNAPSHOT_JF_SERIES=<search> opens that show's episodes, the resume
@@ -513,6 +526,10 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
 } // namespace
 
 int Application::run() {
+    // Writing to a pipe or socket whose reader is gone (TTS, mpv IPC, a dropped
+    // connection) must fail with EPIPE, not kill the whole PET.
+    std::signal(SIGPIPE, SIG_IGN);
+
     logger::Logger::init();
     logger::Logger::set_tag("alicepet");
 
@@ -622,7 +639,8 @@ int Application::run() {
                 lv_obj_invalidate(lv_screen_active());
             }
             view.render(view_model);
-            view.update_clock();
+            // Napping: the backlight is off, so skip the status bar (and its sysfs reads).
+            if (screen_on) view.update_clock();
         } else {
             display_lent = true;
         }

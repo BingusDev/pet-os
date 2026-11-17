@@ -185,12 +185,15 @@ void LanTechChip::ask_alice() {
     view_ = View::Alice;
     alice_waiting_ = true;
     alice_text_.clear();
-    std::string report = "PET LAN TECH jack test results on interface " + iface_ + ":\n";
+    // Instructions first: the bridge keeps only the first kBridgeMaxInput characters.
+    std::string report =
+        "PET LAN TECH jack test. In 2-3 short sentences for a tiny screen, tell Holden (the store IT person) "
+        "what is wrong and what to try next. Results on " + iface_ + ":\n";
     for (const auto& c : checks_) {
         const char* mark = c.state == State::Ok ? "OK" : c.state == State::Warn ? "WARN" : c.state == State::Fail ? "FAIL" : "?";
         report += "- " + c.label + ": " + mark + " " + c.value + "\n";
     }
-    report += "In 2-3 short sentences for a tiny screen, tell Holden (the store IT person) what is wrong and what to try next.";
+    report = clip_for_bridge(report);
     alice_.run([config = config_, report]() { return bridge_ask(config, report); });
     touch();
 }
@@ -237,7 +240,14 @@ void LanTechChip::handle_char(const std::string& utf8) {
 void LanTechChip::tick(uint32_t) {
     Result r{};
     while (results_.poll(r)) {
-        if (r.generation != generation_) continue;
+        if (r.generation != generation_) {
+            // A sweep that outlived a re-test: its devices are stale, but it is over.
+            if (!r.done && sweeping_) {
+                sweeping_ = false;
+                touch();
+            }
+            continue;
+        }
         if (r.done) {
             iface_ = r.iface;
             own_ip_ = r.own_ip;

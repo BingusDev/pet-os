@@ -97,7 +97,9 @@ int VtScreen::param(size_t index, int fallback) const {
 
 void VtScreen::csi(char f) {
     const bool private_mode = !seq_.empty() && seq_[0] == '?';
-    const int n = std::max(1, param(0, 1));
+    // Counts past the screen size do nothing more; clamping keeps a hostile
+    // "ESC[2000000000S" from looping on the UI thread.
+    const int n = std::min(std::max(1, param(0, 1)), static_cast<int>(std::max(rows_, cols_)));
     wrap_pending_ = false;
     switch (f) {
     case 'A': cy_ = cy_ >= static_cast<size_t>(n) ? cy_ - n : 0; break;

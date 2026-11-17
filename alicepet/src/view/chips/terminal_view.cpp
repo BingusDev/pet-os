@@ -138,15 +138,29 @@ void TerminalView::render_ask(const TerminalChip& term) {
         break;
     }
     case TerminalChip::AskState::Suggestion: {
-        int y = wrap_label("? " + term.ask_question(), kWhite, 6);
-        y = wrap_label("Alice: " + clip_cols(term.ask_why(), 88), kSalmon, y + 4);
-        lv_obj_t* cmd = box(ask_, 8, y + 6, 304, 22, 0x0b1a10);
-        set_border(cmd, 1, kTermTheme.edge);
+        // Budget (139 px): question 1 line, why <= 2 lines, the command in full
+        // (<= kCommandLines hard-wrapped lines), then the buttons.
+        int y = wrap_label(clip_cols("? " + term.ask_question(), 43), kWhite, 4);
+        y = wrap_label("Alice: " + clip_cols(term.ask_why(), 79), kSalmon, y + 2);
+        const auto lines = term.ask_command_lines();
+        const bool fits = term.ask_command_fits();
+        std::string shown;
+        for (size_t i = 0; i < lines.size() && i < TerminalChip::kCommandLines; ++i) {
+            if (i) shown += '\n';
+            shown += lines[i];
+        }
+        lv_obj_t* cmd = box(ask_, 8, y + 4, 304, 20, 0x0b1a10);
+        set_border(cmd, 1, fits ? kTermTheme.edge : kSalmon);
         lv_obj_set_style_radius(cmd, 3, 0);
-        lv_obj_t* cmd_text = text(cmd, term.ask_command(), fonts_.small, kTermTheme.text, 6, 4);
+        lv_obj_t* cmd_text = text(cmd, shown, fonts_.small, kTermTheme.text, 6, 3);
         lv_label_set_long_mode(cmd_text, LV_LABEL_LONG_CLIP);
-        lv_obj_set_width(cmd_text, 290);
-        const int by = y + 36;
+        lv_obj_set_width(cmd_text, static_cast<int>(TerminalChip::kCommandCols) * kGlyphW + 2);
+        lv_obj_set_height(cmd_text, LV_SIZE_CONTENT);
+        lv_obj_update_layout(cmd_text);
+        // The box grows to the label, so every shown line is fully visible.
+        const int box_h = lv_obj_get_height(cmd_text) + 7;
+        lv_obj_set_height(cmd, box_h);
+        const int by = y + 4 + box_h + 4;
         const auto button = [&](const char* label, int x, bool filled) {
             lv_obj_t* b = box(ask_, x, by, 0, 16, filled ? kTermTheme.text : kTermTheme.bg_top);
             lv_obj_set_size(b, LV_SIZE_CONTENT, 16);
@@ -158,8 +172,15 @@ void TerminalView::render_ask(const TerminalChip& term) {
             lv_obj_update_layout(b);
             return x + lv_obj_get_width(b) + 6;
         };
-        int x = button("↵ Run", 8, true);
-        x = button("E Edit", x, false);
+        int x = 8;
+        if (fits) {
+            x = button("↵ Run", x, true);
+            x = button("E Edit", x, false);
+        } else {
+            // Too long to show whole: it can only be typed into the shell and read there.
+            x = button("E Type it", x, true);
+            lv_label_set_text(frame_.footer, "too long to show: E types it, you run it");
+        }
         button("ESC No", x, false);
         break;
     }

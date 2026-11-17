@@ -23,8 +23,14 @@
 #include <pty.h>
 #endif
 
+extern char** environ;
+
 namespace platform::proc {
 namespace {
+
+// Between fork() and exec() the child of a multithreaded process may only make
+// async-signal-safe calls: another thread could have held the malloc lock at fork
+// time. So argv, envp and the /dev/null descriptor are all prepared before fork().
 
 std::vector<char*> c_argv(const std::vector<std::string>& argv) {
     std::vector<char*> out;
@@ -33,12 +39,28 @@ std::vector<char*> c_argv(const std::vector<std::string>& argv) {
     return out;
 }
 
-void redirect_to_null(int target) {
-    const int null_fd = ::open("/dev/null", O_RDWR);
-    if (null_fd >= 0) {
-        dup2(null_fd, target);
-        if (null_fd > 2) ::close(null_fd);
+// Opened once, before any fork; O_CLOEXEC so exec'd programs don't inherit the extra fd.
+int null_fd() {
+    static const int fd = ::open("/dev/null", O_RDWR | O_CLOEXEC);
+    return fd;
+}
+
+void redirect_to_null(int fd, int target) {
+    if (fd >= 0) dup2(fd, target);
+}
+
+// A copy of the current environment with `overrides` ("NAME=value") replacing or adding entries.
+std::vector<std::string> env_with(const std::vector<std::string>& overrides) {
+    std::vector<std::string> out;
+    for (char** e = environ; e && *e; ++e) {
+        const std::string entry(*e);
+        const std::string name = entry.substr(0, entry.find('='));
+        bool replaced = false;
+        for (const auto& o : overrides) replaced |= o.compare(0, name.size() + 1, name + "=") == 0;
+        if (!replaced) out.push_back(entry);
     }
+    out.insert(out.end(), overrides.begin(), overrides.end());
+    return out;
 }
 
 } // namespace
@@ -78,6 +100,8 @@ std::string expand_home(const std::string& path) {
 
 pid_t spawn(const std::vector<std::string>& argv, const std::string& stdin_text) {
     if (argv.empty()) return -1;
+    auto args = c_argv(argv);
+    const int devnull = null_fd();
     int in_pipe[2] = {-1, -1};
     if (!stdin_text.empty() && pipe(in_pipe) != 0) return -1;
     const pid_t pid = fork();
@@ -95,17 +119,17 @@ pid_t spawn(const std::vector<std::string>& argv, const std::string& stdin_text)
             ::close(in_pipe[0]);
             ::close(in_pipe[1]);
         } else {
-            redirect_to_null(0);
+            redirect_to_null(devnull, 0);
         }
-        redirect_to_null(1);
-        redirect_to_null(2);
-        auto args = c_argv(argv);
+        redirect_to_null(devnull, 1);
+        redirect_to_null(devnull, 2);
         execvp(args[0], args.data());
         _exit(127);
     }
     if (in_pipe[0] >= 0) {
         ::close(in_pipe[0]);
         // Small payloads (a reply for TTS) fit the pipe buffer; a short write is acceptable.
+        // A child that died early gives EPIPE here (SIGPIPE is ignored app-wide).
         const ssize_t written = ::write(in_pipe[1], stdin_text.data(), stdin_text.size());
         (void)written;
         ::close(in_pipe[1]);
@@ -139,6 +163,8 @@ int stop(pid_t pid, int sig, int wait_ms) {
 
 int run_capture(const std::vector<std::string>& argv, std::string& out, int timeout_ms, bool merge_stderr) {
     if (argv.empty()) return -1;
+    auto args = c_argv(argv);
+    const int devnull = null_fd();
     int out_pipe[2];
     if (pipe(out_pipe) != 0) return -1;
     const pid_t pid = fork();
@@ -149,13 +175,12 @@ int run_capture(const std::vector<std::string>& argv, std::string& out, int time
     }
     if (pid == 0) {
         setpgid(0, 0);
-        redirect_to_null(0);
+        redirect_to_null(devnull, 0);
         dup2(out_pipe[1], 1);
         if (merge_stderr) dup2(out_pipe[1], 2);
-        else redirect_to_null(2);
+        else redirect_to_null(devnull, 2);
         ::close(out_pipe[0]);
         ::close(out_pipe[1]);
-        auto args = c_argv(argv);
         execvp(args[0], args.data());
         _exit(127);
     }
@@ -204,6 +229,9 @@ bool PtySession::start(const std::vector<std::string>& argv, int cols, int rows,
     winsize ws{};
     ws.ws_col = static_cast<unsigned short>(cols);
     ws.ws_row = static_cast<unsigned short>(rows);
+    auto args = c_argv(argv);
+    const auto env = env_with({"TERM=vt100", "LANG=C.UTF-8"});
+    auto envp = c_argv(env);
     int master = -1;
     const pid_t pid = forkpty(&master, nullptr, nullptr, &ws);
     if (pid < 0) {
@@ -211,9 +239,7 @@ bool PtySession::start(const std::vector<std::string>& argv, int cols, int rows,
         return false;
     }
     if (pid == 0) {
-        setenv("TERM", "vt100", 1);
-        setenv("LANG", "C.UTF-8", 1);
-        auto args = c_argv(argv);
+        environ = envp.data();  // a pointer swap, safe after fork; execvp passes it on
         execvp(args[0], args.data());
         _exit(127);
     }

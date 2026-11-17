@@ -536,6 +536,11 @@ void AliceView::render_netscan(const viewmodel::AliceViewModel& vm) {
 }
 
 void AliceView::update_clock() {
+    const uint32_t tick = lv_tick_get();
+    if (status_read_once_ && lv_tick_diff(tick, last_clock_ms_) < 1000) {
+        return;
+    }
+    last_clock_ms_ = tick;
     const std::time_t now = std::time(nullptr);
     std::tm local{};
     localtime_r(&now, &local);
@@ -548,6 +553,11 @@ void AliceView::update_clock() {
 
     // Real battery percentage on device; desktop reports no battery, so it shows "--%".
     // TODO: desktop battery readout (no /sys/class/power_supply on macOS).
+    if (status_read_once_ && lv_tick_diff(tick, last_status_ms_) < kStatusPollMs) {
+        return;
+    }
+    status_read_once_ = true;
+    last_status_ms_ = tick;
     const platform::DeviceStatus status = platform::read_device_status();
     char battery[8]{};
     if (status.battery_present) {

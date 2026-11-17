@@ -8,6 +8,7 @@
 #include "viewmodel/chips/lan_tech_chip.h"
 
 #include <filesystem>
+#include <string>
 
 namespace view {
 
@@ -19,10 +20,19 @@ public:
     void render(const viewmodel::ChipModule& chip) override;
 
 private:
+    using LanTechChip = viewmodel::chips::LanTechChip;
+    void render_test(const LanTechChip& lan);
+    void render_alice(const LanTechChip& lan);
+    void render_devices(const LanTechChip& lan);
+    void set_headline(const LanTechChip& lan);
+    int check_row(const LanTechChip::Check& check, int y);
+    // A wrapped label; max_h > 0 cuts it with "..." at that height. Returns the y below it.
+    int wrapped(const std::string& value, uint32_t color, int y, int max_h);
+
     AliceFonts fonts_;
     ChipFrame frame_;
     ImageAsset check_{};
-    lv_obj_t* tag_dot_{nullptr};
+    lv_obj_t* body_{nullptr};
 };
 
 } // namespace view

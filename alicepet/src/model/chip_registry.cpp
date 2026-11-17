@@ -157,7 +157,7 @@ constexpr const char* kTerminalRows[16] = {
 constexpr ChipInfo kChips[kChipCount] = {
     {"jellyfin", "JELLYFIN", "001", "music", 0x7d4fd6, 0x432391, 0xff9ad1, 0xb0247a,
      {kJellyfinRows, kJellyfinPal, sizeof(kJellyfinPal) / sizeof(kJellyfinPal[0])},
-     {"wifi", "audio", nullptr}},
+     {"wifi", "audio", "cores:4"}},
     {"jack-in", "JACK IN", "002", "elec", 0x2b2b33, 0x111116, 0xffe37a, 0xe0a21a,
      {kJackInRows, kJackInPal, sizeof(kJackInPal) / sizeof(kJackInPal[0])},
      {"usb_hub", nullptr}},
@@ -172,10 +172,10 @@ constexpr ChipInfo kChips[kChipCount] = {
      {"audio", "wifi", nullptr}},
     {"retro", "RETRO", "006", "star", 0x8a909c, 0x4a4f5c, 0xffb0b0, 0x7a2ad0,
      {kRetroRows, kRetroPal, sizeof(kRetroPal) / sizeof(kRetroPal[0])},
-     {"hdmi", "cores:2", nullptr}},
+     {"wifi", "hdmi", "cores:2"}},
     {"terminal", "TERMINAL", "007", "square", 0x3a3f4c, 0x1a1d24, 0x2a3a2a, 0x0a120a,
      {kTerminalRows, kTerminalPal, sizeof(kTerminalPal) / sizeof(kTerminalPal[0])},
-     {"usb_hub", nullptr}},
+     {"wifi", nullptr}},
 };
 
 constexpr const char* kAliceRows[16] = {

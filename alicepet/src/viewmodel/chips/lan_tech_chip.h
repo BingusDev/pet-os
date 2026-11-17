@@ -60,6 +60,8 @@ public:
     size_t scroll() const { return scroll_; }
 
     const std::string& alice_text() const { return alice_text_; }
+    // Alice's diagnosis arrived (called from tick(); public for snapshots and tests).
+    void on_alice_reply(const BridgeReply& reply);
     bool alice_waiting() const { return alice_waiting_; }
 
 private:

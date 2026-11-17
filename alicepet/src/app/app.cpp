@@ -8,6 +8,8 @@
 
 #include "asset_manager.h"
 #include "backlight.h"
+#include "power.h"
+#include "model/power_profile.h"
 #include "linux_input.h"
 #include "logger.h"
 #include "screenshot_service.h"
@@ -18,6 +20,12 @@
 #include "model/pet_config.h"
 #include "pet_services.h"
 #include "view/chips/jellyfin_view.h"
+#include "view/chips/lan_tech_view.h"
+#include "view/chips/remote_view.h"
+#include "view/chips/retro_view.h"
+#include "viewmodel/chips/retro_chip.h"
+#include "viewmodel/chips/remote_chip.h"
+#include "viewmodel/chips/lan_tech_chip.h"
 #include "view/chips/terminal_view.h"
 #include "viewmodel/chips/jellyfin_chip.h"
 #include "view/chips/voice_view.h"
@@ -202,6 +210,9 @@ std::vector<viewmodel::HostRow> host_rows(const model::PetConfig& config) {
 }
 
 // Chip modules + their screens. Chips not listed keep the BATTLE CHIP IN! placeholder.
+volatile std::sig_atomic_t g_stop_requested = 0;
+void on_stop_signal(int) { g_stop_requested = 1; }
+
 void install_chips(viewmodel::AliceViewModel& vm, view::AliceView& view, const model::PetConfig& config,
                    lv_obj_t* root, const view::AliceFonts& fonts, const std::filesystem::path& art_dir) {
     const auto add = [&](const char* id, std::unique_ptr<viewmodel::ChipModule> module,
@@ -216,6 +227,12 @@ void install_chips(viewmodel::AliceViewModel& vm, view::AliceView& view, const m
         std::make_unique<view::TerminalView>(root, fonts));
     add("jellyfin", std::make_unique<viewmodel::chips::JellyfinChip>(config),
         std::make_unique<view::JellyfinView>(root, fonts, art_dir));
+    add("remote", std::make_unique<viewmodel::chips::RemoteChip>(config),
+        std::make_unique<view::RemoteView>(root, fonts));
+    add("retro", std::make_unique<viewmodel::chips::RetroChip>(config),
+        std::make_unique<view::RetroView>(root, fonts));
+    add("lan-tech", std::make_unique<viewmodel::chips::LanTechChip>(config),
+        std::make_unique<view::LanTechView>(root, fonts, art_dir));
 }
 
 #if !USE_DESKTOP
@@ -502,6 +519,104 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         vm.handle_key(viewmodel::Key::Escape);
         wait_real([] { return false; }, 1500);  // let the transcode cleanup request go out
     }
+    // REMOTE: needs `ir-ctl` on PATH (a stand-in script works on the desktop) and
+    // a [remote] dir with saved remotes/macros; captures every REMOTE screen.
+    if (std::getenv("ALICEPET_SNAPSHOT_REMOTE")) {
+        using viewmodel::chips::RemoteChip;
+        go_home();
+        vm.open_chip(model::chip_index("remote"));
+        auto* remote = static_cast<RemoteChip*>(vm.active_chip());
+        advance(virtual_now + kStepMs);
+        capture("remote-devices.png");
+        vm.handle_key(viewmodel::Key::Enter);
+        vm.handle_key(viewmodel::Key::Right);
+        vm.handle_key(viewmodel::Key::Enter);
+        wait_real([&] { return !remote->sending(); }, 6000);
+        capture("remote-pad.png");
+        vm.handle_char("l");
+        advance(virtual_now + 500);
+        capture("remote-learn-listening.png");
+        wait_real([&] { return remote->learn_state() != RemoteChip::LearnState::Listening; }, 10000);
+        capture("remote-learn-captured.png");
+        vm.handle_key(viewmodel::Key::Escape);
+        vm.handle_key(viewmodel::Key::Escape);
+        vm.handle_char("m");
+        advance(virtual_now + kStepMs);
+        capture("remote-macros.png");
+        vm.handle_key(viewmodel::Key::Enter);
+        wait_real([&] { return remote->macro_step() >= 1; }, 6000);
+        advance(virtual_now + 5000);
+        capture("remote-macro-run.png");
+        vm.handle_key(viewmodel::Key::Escape);
+        vm.handle_key(viewmodel::Key::Escape);
+        for (size_t i = 0; i < remote->devices().size(); ++i) vm.handle_key(viewmodel::Key::Down);
+        vm.handle_key(viewmodel::Key::Enter);
+        for (const char* c : {"P", "r", "o", "j", "e", "c", "t", "o", "r"}) vm.handle_char(c);
+        advance(virtual_now + kStepMs);
+        capture("remote-name.png");
+        vm.handle_key(viewmodel::Key::Escape);
+    }
+    // RETRO against a RomM server ([romm] url/token): library, a system tab,
+    // details, keep-offline download and the playing screen ([retro] player).
+    if (std::getenv("ALICEPET_SNAPSHOT_RETRO")) {
+        using viewmodel::chips::RetroChip;
+        go_home();
+        vm.open_chip(model::chip_index("retro"));
+        auto* retro = static_cast<RetroChip*>(vm.active_chip());
+        wait_real([&] { return retro->view() != RetroChip::View::Loading; }, 15000);
+        vm.handle_key(viewmodel::Key::Right);
+        advance(virtual_now + kStepMs);
+        capture("retro-library.png");
+        for (size_t i = 0; i < retro->platforms().size() && retro->platforms()[retro->platform()].label != "GBA"; ++i) {
+            vm.handle_key(viewmodel::Key::Tab);
+            wait_real([&] { return retro->view() != RetroChip::View::Loading; }, 15000);
+        }
+        vm.handle_key(viewmodel::Key::Right);
+        advance(virtual_now + kStepMs);
+        capture("retro-system.png");
+        vm.handle_key(viewmodel::Key::Enter);
+        advance(virtual_now + kStepMs);
+        capture("retro-details.png");
+        vm.handle_char("o");
+        advance(virtual_now + kStepMs);
+        capture("retro-downloading.png");
+        wait_real([&] { return retro->view() != RetroChip::View::Downloading; }, 30000);
+        capture("retro-details-offline.png");
+        vm.handle_key(viewmodel::Key::Enter);
+        wait_real([&] { return retro->view() != RetroChip::View::Details; }, 2000);
+        capture("retro-playing.png");
+        wait_real([&] { return retro->view() != RetroChip::View::Playing; }, 15000);
+        capture("retro-after.png");
+        vm.handle_key(viewmodel::Key::Escape);
+        vm.handle_key(viewmodel::Key::Escape);
+    }
+    // LAN TECH (real network): jack test, Alice's diagnosis (canned text) and the
+    // device sweep of this /24.
+    if (std::getenv("ALICEPET_SNAPSHOT_LAN")) {
+        using viewmodel::chips::LanTechChip;
+        go_home();
+        vm.open_chip(model::chip_index("lan-tech"));
+        auto* lan = static_cast<LanTechChip*>(vm.active_chip());
+        advance(virtual_now + kStepMs);
+        capture("lan-testing.png");
+        wait_real([&] { return !lan->running(); }, 20000);
+        capture("lan-test.png");
+        viewmodel::chips::BridgeReply reply;
+        reply.ok = true;
+        reply.reply = "Link and address look fine, so the cable and jack are good. If something still feels slow, "
+                      "it's past this jack: check the switch uplink or the router.";
+        vm.handle_char("a");
+        lan->on_alice_reply(reply);
+        advance(virtual_now + kStepMs);
+        capture("lan-alice.png");
+        vm.handle_key(viewmodel::Key::Escape);
+        vm.handle_char("d");
+        advance(virtual_now + kStepMs);
+        capture("lan-scanning.png");
+        wait_real([&] { return !lan->sweeping(); }, 30000);
+        capture("lan-devices.png");
+        vm.handle_key(viewmodel::Key::Escape);
+    }
     go_home();
     vm.handle_key(viewmodel::Key::Digit2);
     vm.handle_key(viewmodel::Key::Enter);
@@ -614,11 +729,17 @@ int Application::run() {
 #endif
 
     uint32_t last_ms = lv_tick_get();
-    bool running = true;
+    // APPLaunch stops the app with SIGTERM: leave the loop so the power profile
+    // (offline cores, capped clock) is put back for whatever runs next.
+    std::signal(SIGTERM, on_stop_signal);
+    std::signal(SIGINT, on_stop_signal);
     bool screen_on = true;
     auto screen_level = platform::ScreenLevel::On;
+    // Per-chip power profiles ([power] profiles=on): cores, CPU clock, Wi-Fi power save.
+    platform::PowerManager power;
+    if (pet_config.power_profiles) power.init();
     bool display_lent = false;
-    while (running
+    while (!g_stop_requested
 #if USE_DESKTOP
            && simulator_frame.process_events()
 #endif
@@ -643,6 +764,14 @@ int Application::run() {
                      : screen_level == platform::ScreenLevel::Dim ? "dim"
                                                                   : "off",
                      switched ? "switched" : "n/a");
+        }
+
+        if (pet_config.power_profiles) {
+            const auto* open_chip = view_model.active_chip();
+            const size_t open_index = open_chip ? model::chip_index(open_chip->id()) : model::kChipCount;
+            power.apply(view_model.sleeping()                ? model::nap_profile()
+                        : open_index < model::kChipCount     ? model::chip_profile(model::chip_at(open_index))
+                                                             : model::launcher_profile());
         }
 
         // While the video player owns the panel, keep reading keys (lv_timer_handler)
@@ -671,6 +800,7 @@ int Application::run() {
         }
     }
 
+    if (pet_config.power_profiles) power.restore();
     return 0;
 }
 

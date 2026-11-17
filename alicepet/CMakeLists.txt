@@ -412,6 +412,7 @@ add_library(${PROJECT_NAME}_platform
 target_include_directories(${PROJECT_NAME}_platform
     PUBLIC
         ${LVGL_INCLUDE_DIR}
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/platform"
 )
 
@@ -426,6 +427,7 @@ target_compile_definitions(${PROJECT_NAME}_platform
 target_link_libraries(${PROJECT_NAME}_platform
     PUBLIC
         lvgl
+        logger
 )
 
 # ====================================================

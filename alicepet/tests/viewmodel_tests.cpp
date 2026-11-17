@@ -8,18 +8,27 @@
 
 #include "model/chip_registry.h"
 #include "model/pet_config.h"
+#include "model/power_profile.h"
 #include "platform/json.h"
+#include "platform/power.h"
 #include "platform/process.h"
 #include "viewmodel/alice_viewmodel.h"
 #include "viewmodel/chips/bridge_client.h"
+#include "viewmodel/chips/ir_codec.h"
+#include "viewmodel/chips/remote_chip.h"
+#include "viewmodel/chips/retro_chip.h"
 #include "viewmodel/chips/terminal_chip.h"
 #include "viewmodel/chips/vt_screen.h"
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <cstdio>
 #include <functional>
 #include <string>
 #include <vector>
+
+#include <unistd.h>
 
 namespace {
 
@@ -326,6 +335,209 @@ void test_json() {
 
 } // namespace
 
+// --- power profiles ---------------------------------------------------------
+
+void test_power_profiles() {
+    using model::chip_at;
+    using model::chip_index;
+    const auto jf = model::chip_profile(chip_at(chip_index("jellyfin")));
+    CHECK(jf.wifi && jf.audio && jf.cores == 4 && !jf.slow_cpu);
+    const auto retro = model::chip_profile(chip_at(chip_index("retro")));
+    CHECK(retro.hdmi && retro.cores == 2);
+    const auto lan = model::chip_profile(chip_at(chip_index("lan-tech")));
+    CHECK(lan.wifi && !lan.audio && lan.cores == 2);
+    const auto nap = model::nap_profile();
+    CHECK(!nap.wifi && nap.slow_cpu && nap.cores == 1);
+    // Every chip that talks to Alice or a server needs the network.
+    for (const char* id : {"voice", "terminal", "remote", "jellyfin", "retro", "lan-tech"}) {
+        CHECK(model::chip_profile(chip_at(chip_index(id))).wifi);
+    }
+}
+
+std::string slurp(const std::filesystem::path& p) {
+    std::ifstream in(p);
+    std::string v;
+    std::getline(in, v);
+    return v;
+}
+
+void put(const std::filesystem::path& p, const std::string& v) {
+    std::filesystem::create_directories(p.parent_path());
+    std::ofstream(p) << v << "\n";
+}
+
+void test_power_manager_sysfs() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / ("alicepet-power-" + std::to_string(::getpid()));
+    fs::remove_all(root);
+    const fs::path cpu = root / "sys/devices/system/cpu";
+    for (int i = 1; i < 4; ++i) put(cpu / ("cpu" + std::to_string(i)) / "online", "1");
+    put(cpu / "cpufreq/policy0/cpuinfo_min_freq", "600000");
+    put(cpu / "cpufreq/policy0/cpuinfo_max_freq", "1000000");
+    put(cpu / "cpufreq/policy0/scaling_max_freq", "1000000");
+    put(root / "sys/class/rfkill/rfkill0/type", "bluetooth");
+    put(root / "sys/class/rfkill/rfkill0/soft", "0");
+    put(root / "sys/class/rfkill/rfkill1/type", "wlan");
+    put(root / "sys/class/rfkill/rfkill1/soft", "0");
+    put(root / "sys/class/leds/ACT/brightness", "255");
+
+    platform::PowerManager pm(root.string());
+    pm.init();
+    CHECK(slurp(root / "sys/class/rfkill/rfkill0/soft") == "1");  // Bluetooth off
+    CHECK(slurp(root / "sys/class/rfkill/rfkill1/soft") == "0");  // Wi-Fi untouched
+    CHECK(slurp(root / "sys/class/leds/ACT/brightness") == "0");
+
+    pm.apply(model::nap_profile());
+    CHECK(slurp(cpu / "cpu1/online") == "0");
+    CHECK(slurp(cpu / "cpu3/online") == "0");
+    CHECK(slurp(cpu / "cpufreq/policy0/scaling_max_freq") == "600000");
+
+    pm.apply(model::chip_profile(model::chip_at(model::chip_index("jellyfin"))));
+    CHECK(slurp(cpu / "cpu1/online") == "1");
+    CHECK(slurp(cpu / "cpu3/online") == "1");
+    CHECK(slurp(cpu / "cpufreq/policy0/scaling_max_freq") == "1000000");
+
+    pm.apply(model::launcher_profile());
+    CHECK(slurp(cpu / "cpu1/online") == "0");
+    pm.restore();
+    CHECK(slurp(cpu / "cpu1/online") == "1");
+    CHECK(slurp(cpu / "cpu2/online") == "1");
+    fs::remove_all(root);
+}
+
+void test_config_local_overlay() {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("alicepet-conf-" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+    put(dir / "alicepet.conf", "[bridge]\nurl=\n[terminal]\nssh_config_import=\n[power]\nsleep_after_s=300\n");
+    model::PetConfig config;
+    CHECK(model::load_pet_config((dir / "alicepet.conf").string(), config));
+    CHECK(config.bridge_url.empty());
+    CHECK(config.bookmarks.empty());
+    put(dir / "alicepet.local.conf", "[bridge]\nurl=http://mac:8797\n[terminal]\nhost=pi|me@10.0.0.2|home\n");
+    CHECK(model::load_pet_config((dir / "alicepet.conf").string(), config));
+    CHECK(config.bridge_url == "http://mac:8797");
+    CHECK(config.bookmarks.size() == 1);
+    CHECK(config.sleep_after_s == 300);  // untouched values still come from the main file
+    CHECK(model::local_config_path("/etc/alicepet.conf") == "/etc/alicepet.local.conf");
+    fs::remove_all(dir);
+}
+
+// --- REMOTE -----------------------------------------------------------------
+
+viewmodel::chips::ir::Raw nec_raw(uint32_t code) {
+    viewmodel::chips::ir::Raw raw{9000, 4500};
+    for (int i = 31; i >= 0; --i) {
+        raw.push_back(560);
+        raw.push_back((code >> i) & 1 ? 1690 : 560);
+    }
+    raw.push_back(560);
+    return raw;
+}
+
+void test_ir_codec() {
+    namespace ir = viewmodel::chips::ir;
+    const auto raw = nec_raw(0x20DF10EF);
+    uint32_t code = 0;
+    CHECK(ir::decode_nec(raw, code));
+    CHECK(code == 0x20DF10EFu);
+    CHECK(ir::describe(raw) == "NEC 0x20DF10EF");
+    // Round trip through the storage text and ir-ctl's two output styles.
+    CHECK(ir::parse_ir_ctl(ir::to_text(raw)) == raw);
+    CHECK(ir::parse_ir_ctl(ir::to_send_file(raw)) == raw);
+    CHECK(ir::parse_ir_ctl("-1000 +500 -400 +300 -200\n# timeout 125000") == (ir::Raw{500, 400, 300}));
+    CHECK(ir::parse_ir_ctl("+100 +50 -20 +30") == (ir::Raw{150, 20, 30}));  // repeated pulses merge
+    CHECK(!ir::decode_nec({500, 400, 300}, code));
+    CHECK(ir::describe({500, 400, 300}) == "raw · 3 edges");
+    CHECK(ir::to_send_file({500, 400, 300}) == "pulse 500\nspace 400\npulse 300\n");
+}
+
+void test_remote_chip_files_and_pad() {
+    namespace fs = std::filesystem;
+    using viewmodel::chips::RemoteChip;
+    const fs::path dir = fs::temp_directory_path() / ("alicepet-remote-" + std::to_string(::getpid()));
+    fs::remove_all(dir);
+    put(dir / "tv.remote", "name=Store TV\nPOWER=" + viewmodel::chips::ir::to_text(nec_raw(0x20DF10EF)) + "\n");
+    put(dir / "night.macro", "name=Night\nstep=Store TV|POWER\nstep=wait|2\n");
+    model::PetConfig config;
+    config.remote_dir = dir.string();
+    RemoteChip remote(config);
+    remote.enter();
+    CHECK(remote.devices().size() == 1);
+    CHECK(remote.devices()[0].name == "Store TV");
+    CHECK(remote.devices()[0].learned() == 1);
+    CHECK(remote.macros().size() == 1 && remote.macros()[0].steps.size() == 2);
+    CHECK(remote.macros()[0].steps[1].wait_s == 2);
+
+    remote.handle_key(Key::Enter);  // open the pad
+    CHECK(remote.view() == RemoteChip::View::Pad);
+    remote.handle_key(Key::Down);   // POWER -> VOL-
+    CHECK(remote.button() == 4);
+    remote.handle_key(Key::Down);   // -> UP (row of 6)
+    CHECK(remote.button() == 9);
+    for (int i = 0; i < 9; ++i) remote.handle_key(Key::Right);
+    CHECK(remote.button() == 14);   // BACK, clamped at the row end
+    remote.handle_key(Key::Up);     // column 5 -> CH+ (last of the row of 5)
+    CHECK(remote.button() == 8);
+    remote.handle_key(Key::Enter);  // CH+ isn't learned: nothing is sent
+    CHECK(!remote.sending());
+    CHECK(remote.status_error());
+
+    // New device: the name becomes a file, learning starts at POWER.
+    remote.handle_key(Key::Escape);
+    remote.handle_key(Key::Down);
+    remote.handle_key(Key::Enter);
+    CHECK(remote.view() == RemoteChip::View::Name);
+    for (char c : std::string("Wall AC!")) remote.handle_char(std::string(1, c));
+    remote.handle_key(Key::Enter);
+    CHECK(remote.view() == RemoteChip::View::Learn);
+    CHECK(remote.button() == 0);
+    CHECK(remote.devices().back().file == (dir / "wall-ac.remote").string());
+    remote.handle_key(Key::Escape);  // done: saved, back on its pad
+    CHECK(remote.view() == RemoteChip::View::Pad);
+    CHECK(fs::exists(dir / "wall-ac.remote"));
+    CHECK(RemoteChip::slug("  Projector · room 2 ") == "projector-room-2");
+    fs::remove_all(dir);
+}
+
+// --- RETRO ------------------------------------------------------------------
+
+void test_retro_parsing() {
+    using viewmodel::chips::RetroChip;
+    const auto platforms = RetroChip::parse_platforms(
+        R"([{"id":3,"slug":"snes","name":"Super Nintendo","rom_count":2},
+            {"id":1,"slug":"gba","display_name":"Game Boy Advance","rom_count":5},
+            {"id":9,"slug":"nes","name":"NES","rom_count":0},
+            {"id":5,"slug":"genesis-slash-megadrive","name":"Genesis","rom_count":1}])");
+    CHECK(platforms.size() == 3);  // empty systems get no tab
+    CHECK(platforms[0].label == "GBA" && platforms[1].label == "SNES" && platforms[2].label == "GEN");
+
+    const std::string paged = R"({"items":[
+        {"id":12,"name":"Mega Man Battle Network 3","fs_name":"mmbn3.gba","platform_slug":"gba","fs_size_bytes":8388608,
+         "metadatum":{"first_release_date":1017619200000}},
+        {"id":11,"name":"Advance Wars","fs_name":"aw.gba","platform_slug":"gba","file_size_bytes":4194304},
+        {"id":13,"name":"No file"}],"total":3})";
+    const auto games = RetroChip::parse_games(paged);
+    CHECK(games.size() == 2);
+    CHECK(games[0].name == "Advance Wars" && games[0].size == 4194304);  // sorted, old size field
+    CHECK(games[1].year == 2002);
+    CHECK(RetroChip::parse_games(R"([{"id":1,"name":"Tetris","fs_name":"t.gb","platform_slug":"gb"}])").size() == 1);
+
+    CHECK(RetroChip::fit_text("gba") == "1:1 pixel-perfect");
+    CHECK(RetroChip::fit_text("snes") == "scaled 75%");
+    CHECK(RetroChip::size_text(8388608) == "8.0 MB");
+}
+
+void test_retro_needs_server() {
+    using viewmodel::chips::RetroChip;
+    model::PetConfig config;  // no [romm] url
+    RetroChip retro(config);
+    retro.enter();
+    CHECK(retro.view() == RetroChip::View::Error);
+    CHECK(!retro.keep_awake());
+    CHECK(!retro.handle_key(Key::Escape));  // ESC leaves the chip
+}
+
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"wrap", test_wrap},
@@ -345,6 +557,13 @@ int main() {
         {"vt_screen", test_vt_screen},
         {"split_command", test_split_command},
         {"json", test_json},
+        {"power_profiles", test_power_profiles},
+        {"power_manager_sysfs", test_power_manager_sysfs},
+        {"config_local_overlay", test_config_local_overlay},
+        {"ir_codec", test_ir_codec},
+        {"remote_chip_files_and_pad", test_remote_chip_files_and_pad},
+        {"retro_parsing", test_retro_parsing},
+        {"retro_needs_server", test_retro_needs_server},
     };
     for (const auto& [name, fn] : tests) {
         const int before = g_failures;

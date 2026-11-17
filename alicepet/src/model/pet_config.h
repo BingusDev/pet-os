@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,9 @@ struct PetConfig {
     // Dim the backlight to dim_percent of max after this many idle seconds (0 = never dim).
     int dim_after_s{45};
     int dim_percent{15};
+    // Per-chip power profiles (platform/power.h): cores, CPU clock, Wi-Fi power
+    // save, Bluetooth and the ACT LED. Off until checked on the real board.
+    bool power_profiles{false};
 
     // [voice]: recorder writes a WAV to the path appended as the last argument and stops on SIGINT.
     std::string voice_record_cmd{"arecord -q -D default -f S16_LE -r 16000 -c 1 -t wav"};
@@ -72,6 +76,19 @@ struct PetConfig {
     std::string romm_url;
     std::string romm_token;
 
+    // [retro]: emulator command ({core} and {rom} are replaced), where downloaded
+    // ROMs are kept, and the libretro core for each RomM platform slug (core_<slug>=).
+    std::string retro_player{"retroarch --fullscreen -L {core} {rom}"};
+    std::string retro_dir{"~/.local/share/alicepet/roms"};
+    std::map<std::string, std::string> retro_cores{
+        {"gb", "/usr/lib/libretro/gambatte_libretro.so"},
+        {"gbc", "/usr/lib/libretro/gambatte_libretro.so"},
+        {"gba", "/usr/lib/libretro/mgba_libretro.so"},
+        {"nes", "/usr/lib/libretro/fceumm_libretro.so"},
+        {"snes", "/usr/lib/libretro/snes9x_libretro.so"},
+        {"genesis-slash-megadrive", "/usr/lib/libretro/genesis_plus_gx_libretro.so"},
+    };
+
     // [remote]: IR via LIRC's ir-ctl (v4l-utils). Learned codes live in remote_dir.
     std::string ir_send_device{"/dev/lirc0"};
     std::string ir_recv_device{"/dev/lirc1"};
@@ -86,6 +103,9 @@ struct PetConfig {
 PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* warnings = nullptr);
 
 // Reads the file at `path`. Returns false (and leaves defaults) if it cannot be opened.
+// Also reads the optional personal overlay local_config_path(path) after it.
 bool load_pet_config(const std::string& path, PetConfig& out, std::vector<std::string>* warnings = nullptr);
+// "/etc/alicepet.conf" -> "/etc/alicepet.local.conf".
+std::string local_config_path(const std::string& path);
 
 } // namespace model

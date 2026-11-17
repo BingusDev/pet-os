@@ -66,6 +66,9 @@ ctest --test-dir build/linux-x86-64 -C Debug   # or run build/<preset>/<Config>/
 | `ALICEPET_SNAPSHOT_ASK_CANNED="CMD: ...\nWHY: ..."` | the Ask-Alice suggestion screen with a fixed reply |
 | `ALICEPET_SNAPSHOT_JF_SERIES=<search>` | Jellyfin episodes, resume and playing screens |
 | `ALICEPET_SNAPSHOT_ALL_CHIPS=1` | every chip in the folder and slotted |
+| `ALICEPET_SNAPSHOT_LAN=1` | LAN TECH jack test, diagnosis and device sweep (real network) |
+| `ALICEPET_SNAPSHOT_REMOTE=1` | every REMOTE screen (needs `ir-ctl` on PATH and a `[remote] dir`) |
+| `ALICEPET_SNAPSHOT_RETRO=1` | RETRO library, details, download and playing (needs a RomM server) |
 
 ## Device build and install
 
@@ -88,10 +91,17 @@ Useful CMake options: `APP_KEY_INPUT_DEVICE` (evdev path; empty scans
 ## Config
 
 `/etc/alicepet.conf` (override with `ALICEPET_CONFIG=`). Sections: `[bridge]`
-url/token, `[netscan]` hosts, `[power]` sleep and backlight, `[voice]` recorder
-and TTS commands, `[terminal]` SSH bookmarks, `[jellyfin]` server, key and player.
-Secrets (`token=`, `api_key=`) are set on the device only, then
-`chmod 640 /etc/alicepet.conf`; the app's user must still be able to read it.
+url/token, `[netscan]` hosts, `[power]` sleep, dim, backlight and power profiles,
+`[voice]` recorder and TTS commands, `[terminal]` SSH bookmarks, `[jellyfin]`
+server, key and player, `[remote]` IR devices and folder, `[romm]` server,
+`[retro]` emulator and cores.
+
+The shipped file has no personal hosts or servers. Put yours in
+`alicepet.local.conf` next to it (`/etc/alicepet.local.conf` on the PET,
+`config/alicepet.local.conf` for the simulator; git-ignored and not packaged).
+It is read after the main file: its values win and its `host=` lines are added.
+Secrets (`token=`, `api_key=`) go there too, then
+`chmod 640 /etc/alicepet.local.conf`; the app's user must still be able to read it.
 
 ## License
 

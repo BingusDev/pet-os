@@ -33,7 +33,7 @@ struct ChipInfo {
     uint32_t art_top_rgb;    // label art gradient, top
     uint32_t art_bottom_rgb; // label art gradient, bottom
     Sprite sprite;
-    const char* needs[4];    // power profiles; null-terminated
+    const char* needs[4];    // power profile (model/power_profile.h); up to 4, null-terminated if fewer
 };
 
 constexpr size_t kChipCount = 7;

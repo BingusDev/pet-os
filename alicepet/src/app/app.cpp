@@ -21,6 +21,8 @@
 #include "pet_services.h"
 #include "view/chips/jellyfin_view.h"
 #include "view/chips/lan_tech_view.h"
+#include "view/chips/remote_view.h"
+#include "viewmodel/chips/remote_chip.h"
 #include "viewmodel/chips/lan_tech_chip.h"
 #include "view/chips/terminal_view.h"
 #include "viewmodel/chips/jellyfin_chip.h"
@@ -223,6 +225,8 @@ void install_chips(viewmodel::AliceViewModel& vm, view::AliceView& view, const m
         std::make_unique<view::TerminalView>(root, fonts));
     add("jellyfin", std::make_unique<viewmodel::chips::JellyfinChip>(config),
         std::make_unique<view::JellyfinView>(root, fonts, art_dir));
+    add("remote", std::make_unique<viewmodel::chips::RemoteChip>(config),
+        std::make_unique<view::RemoteView>(root, fonts));
     add("lan-tech", std::make_unique<viewmodel::chips::LanTechChip>(config),
         std::make_unique<view::LanTechView>(root, fonts, art_dir));
 }
@@ -510,6 +514,43 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         capture("jellyfin-playing.png");
         vm.handle_key(viewmodel::Key::Escape);
         wait_real([] { return false; }, 1500);  // let the transcode cleanup request go out
+    }
+    // REMOTE: needs `ir-ctl` on PATH (a stand-in script works on the desktop) and
+    // a [remote] dir with saved remotes/macros; captures every REMOTE screen.
+    if (std::getenv("ALICEPET_SNAPSHOT_REMOTE")) {
+        using viewmodel::chips::RemoteChip;
+        go_home();
+        vm.open_chip(model::chip_index("remote"));
+        auto* remote = static_cast<RemoteChip*>(vm.active_chip());
+        advance(virtual_now + kStepMs);
+        capture("remote-devices.png");
+        vm.handle_key(viewmodel::Key::Enter);
+        vm.handle_key(viewmodel::Key::Right);
+        vm.handle_key(viewmodel::Key::Enter);
+        wait_real([&] { return !remote->sending(); }, 6000);
+        capture("remote-pad.png");
+        vm.handle_char("l");
+        advance(virtual_now + 500);
+        capture("remote-learn-listening.png");
+        wait_real([&] { return remote->learn_state() != RemoteChip::LearnState::Listening; }, 10000);
+        capture("remote-learn-captured.png");
+        vm.handle_key(viewmodel::Key::Escape);
+        vm.handle_key(viewmodel::Key::Escape);
+        vm.handle_char("m");
+        advance(virtual_now + kStepMs);
+        capture("remote-macros.png");
+        vm.handle_key(viewmodel::Key::Enter);
+        wait_real([&] { return remote->macro_step() >= 1; }, 6000);
+        advance(virtual_now + 5000);
+        capture("remote-macro-run.png");
+        vm.handle_key(viewmodel::Key::Escape);
+        vm.handle_key(viewmodel::Key::Escape);
+        for (size_t i = 0; i < remote->devices().size(); ++i) vm.handle_key(viewmodel::Key::Down);
+        vm.handle_key(viewmodel::Key::Enter);
+        for (const char* c : {"P", "r", "o", "j", "e", "c", "t", "o", "r"}) vm.handle_char(c);
+        advance(virtual_now + kStepMs);
+        capture("remote-name.png");
+        vm.handle_key(viewmodel::Key::Escape);
     }
     // LAN TECH (real network): jack test, Alice's diagnosis (canned text) and the
     // device sweep of this /24.

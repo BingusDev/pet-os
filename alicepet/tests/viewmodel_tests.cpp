@@ -14,6 +14,8 @@
 #include "platform/process.h"
 #include "viewmodel/alice_viewmodel.h"
 #include "viewmodel/chips/bridge_client.h"
+#include "viewmodel/chips/ir_codec.h"
+#include "viewmodel/chips/remote_chip.h"
 #include "viewmodel/chips/terminal_chip.h"
 #include "viewmodel/chips/vt_screen.h"
 
@@ -420,6 +422,83 @@ void test_config_local_overlay() {
     fs::remove_all(dir);
 }
 
+// --- REMOTE -----------------------------------------------------------------
+
+viewmodel::chips::ir::Raw nec_raw(uint32_t code) {
+    viewmodel::chips::ir::Raw raw{9000, 4500};
+    for (int i = 31; i >= 0; --i) {
+        raw.push_back(560);
+        raw.push_back((code >> i) & 1 ? 1690 : 560);
+    }
+    raw.push_back(560);
+    return raw;
+}
+
+void test_ir_codec() {
+    namespace ir = viewmodel::chips::ir;
+    const auto raw = nec_raw(0x20DF10EF);
+    uint32_t code = 0;
+    CHECK(ir::decode_nec(raw, code));
+    CHECK(code == 0x20DF10EFu);
+    CHECK(ir::describe(raw) == "NEC 0x20DF10EF");
+    // Round trip through the storage text and ir-ctl's two output styles.
+    CHECK(ir::parse_ir_ctl(ir::to_text(raw)) == raw);
+    CHECK(ir::parse_ir_ctl(ir::to_send_file(raw)) == raw);
+    CHECK(ir::parse_ir_ctl("-1000 +500 -400 +300 -200\n# timeout 125000") == (ir::Raw{500, 400, 300}));
+    CHECK(ir::parse_ir_ctl("+100 +50 -20 +30") == (ir::Raw{150, 20, 30}));  // repeated pulses merge
+    CHECK(!ir::decode_nec({500, 400, 300}, code));
+    CHECK(ir::describe({500, 400, 300}) == "raw · 3 edges");
+    CHECK(ir::to_send_file({500, 400, 300}) == "pulse 500\nspace 400\npulse 300\n");
+}
+
+void test_remote_chip_files_and_pad() {
+    namespace fs = std::filesystem;
+    using viewmodel::chips::RemoteChip;
+    const fs::path dir = fs::temp_directory_path() / ("alicepet-remote-" + std::to_string(::getpid()));
+    fs::remove_all(dir);
+    put(dir / "tv.remote", "name=Store TV\nPOWER=" + viewmodel::chips::ir::to_text(nec_raw(0x20DF10EF)) + "\n");
+    put(dir / "night.macro", "name=Night\nstep=Store TV|POWER\nstep=wait|2\n");
+    model::PetConfig config;
+    config.remote_dir = dir.string();
+    RemoteChip remote(config);
+    remote.enter();
+    CHECK(remote.devices().size() == 1);
+    CHECK(remote.devices()[0].name == "Store TV");
+    CHECK(remote.devices()[0].learned() == 1);
+    CHECK(remote.macros().size() == 1 && remote.macros()[0].steps.size() == 2);
+    CHECK(remote.macros()[0].steps[1].wait_s == 2);
+
+    remote.handle_key(Key::Enter);  // open the pad
+    CHECK(remote.view() == RemoteChip::View::Pad);
+    remote.handle_key(Key::Down);   // POWER -> VOL-
+    CHECK(remote.button() == 4);
+    remote.handle_key(Key::Down);   // -> UP (row of 6)
+    CHECK(remote.button() == 9);
+    for (int i = 0; i < 9; ++i) remote.handle_key(Key::Right);
+    CHECK(remote.button() == 14);   // BACK, clamped at the row end
+    remote.handle_key(Key::Up);     // column 5 -> CH+ (last of the row of 5)
+    CHECK(remote.button() == 8);
+    remote.handle_key(Key::Enter);  // CH+ isn't learned: nothing is sent
+    CHECK(!remote.sending());
+    CHECK(remote.status_error());
+
+    // New device: the name becomes a file, learning starts at POWER.
+    remote.handle_key(Key::Escape);
+    remote.handle_key(Key::Down);
+    remote.handle_key(Key::Enter);
+    CHECK(remote.view() == RemoteChip::View::Name);
+    for (char c : std::string("Wall AC!")) remote.handle_char(std::string(1, c));
+    remote.handle_key(Key::Enter);
+    CHECK(remote.view() == RemoteChip::View::Learn);
+    CHECK(remote.button() == 0);
+    CHECK(remote.devices().back().file == (dir / "wall-ac.remote").string());
+    remote.handle_key(Key::Escape);  // done: saved, back on its pad
+    CHECK(remote.view() == RemoteChip::View::Pad);
+    CHECK(fs::exists(dir / "wall-ac.remote"));
+    CHECK(RemoteChip::slug("  Projector · room 2 ") == "projector-room-2");
+    fs::remove_all(dir);
+}
+
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"wrap", test_wrap},
@@ -442,6 +521,8 @@ int main() {
         {"power_profiles", test_power_profiles},
         {"power_manager_sysfs", test_power_manager_sysfs},
         {"config_local_overlay", test_config_local_overlay},
+        {"ir_codec", test_ir_codec},
+        {"remote_chip_files_and_pad", test_remote_chip_files_and_pad},
     };
     for (const auto& [name, fn] : tests) {
         const int before = g_failures;

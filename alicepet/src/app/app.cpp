@@ -19,6 +19,7 @@
 #include "model/chip_registry.h"
 #include "model/pet_config.h"
 #include "pet_services.h"
+#include "view/chips/jack_in_view.h"
 #include "view/chips/jellyfin_view.h"
 #include "view/chips/lan_tech_view.h"
 #include "view/chips/remote_view.h"
@@ -26,6 +27,7 @@
 #include "viewmodel/chips/retro_chip.h"
 #include "viewmodel/chips/remote_chip.h"
 #include "viewmodel/chips/lan_tech_chip.h"
+#include "viewmodel/chips/jack_in_chip.h"
 #include "view/chips/terminal_view.h"
 #include "viewmodel/chips/jellyfin_chip.h"
 #include "view/chips/voice_view.h"
@@ -233,6 +235,8 @@ void install_chips(viewmodel::AliceViewModel& vm, view::AliceView& view, const m
         std::make_unique<view::RetroView>(root, fonts));
     add("lan-tech", std::make_unique<viewmodel::chips::LanTechChip>(config),
         std::make_unique<view::LanTechView>(root, fonts, art_dir));
+    add("jack-in", std::make_unique<viewmodel::chips::JackInChip>(config),
+        std::make_unique<view::JackInView>(root, fonts));
 }
 
 #if !USE_DESKTOP
@@ -628,6 +632,47 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         wait_real([&] { return !lan->probing(); }, 15000);
         capture("lan-device.png");
         vm.handle_key(viewmodel::Key::Escape);
+        vm.handle_key(viewmodel::Key::Escape);
+    }
+    // JACK IN: waiting screen, then a canned PC session (scan, Alice's fix,
+    // Full Access granted on the "PC", the fix run) and the session log.
+    if (std::getenv("ALICEPET_SNAPSHOT_JACK")) {
+        using viewmodel::chips::JackInChip;
+        go_home();
+        vm.open_chip(model::chip_index("jack-in"));
+        auto* jack = static_cast<JackInChip*>(vm.active_chip());
+        advance(virtual_now + kStepMs);
+        capture("jack-waiting.png");
+        jack->on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk","admin":false,"full":false})");
+        jack->on_line(R"({"t":"log","text":"Get-Process | sort WS -desc | select -f 5","ok":true})");
+        jack->on_line(R"({"t":"log","text":"Get-CimInstance Win32_StartupCommand","ok":true})");
+        jack->on_line(R"({"t":"log","text":"Get-MpComputerStatus","ok":true})");
+        jack->on_line(R"({"t":"scan","cpu":78,"ram":91,"disk":"C:","disk_free":8,"startup":14,"defender":"off","defender_since":"2026-08-12","top":[{"name":"chrome","mb":3100},{"name":"OneDrive","mb":420}]})");
+        viewmodel::chips::BridgeReply reply;
+        reply.ok = true;
+        reply.reply = "Chrome is using 3.1 GB and Defender has been off since Aug 12. Turn Defender back on first?\n"
+                      "CMD: Set-MpPreference -DisableRealtimeMonitoring $false";
+        jack->on_alice_reply(reply);
+        advance(virtual_now + kStepMs);
+        capture("jack-session.png");
+        vm.handle_char("a");
+        advance(virtual_now + kStepMs);
+        capture("jack-admin-asked.png");
+        jack->on_line(R"({"t":"state","full":true,"admin":true,"net":false})");
+        vm.handle_key(viewmodel::Key::Enter);
+        advance(virtual_now + kStepMs);
+        capture("jack-running.png");
+        jack->on_line(R"({"t":"result","id":1,"ok":true,"out":""})");
+        jack->on_line(R"({"t":"state","full":true,"admin":true,"net":true})");
+        advance(virtual_now + kStepMs);
+        capture("jack-full.png");
+        vm.handle_char("l");
+        advance(virtual_now + kStepMs);
+        capture("jack-log.png");
+        vm.handle_char("l");
+        vm.handle_char("x");
+        advance(virtual_now + kStepMs);
+        capture("jack-out.png");
         vm.handle_key(viewmodel::Key::Escape);
     }
     go_home();

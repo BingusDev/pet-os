@@ -108,6 +108,17 @@ struct PetConfig {
     std::vector<std::string> lan_static{"192.168.1.250/24|192.168.1.1", "192.168.0.250/24|192.168.0.1",
                                         "10.0.0.250/24|10.0.0.1"};
     bool lan_static_from_config{false};
+
+    // [jackin]: the PC app dials the PET at listen:port over the USB network link
+    // (and listen:tunnel_port for "Share PC Internet"; PET programs use the
+    // proxy at 127.0.0.1:proxy_port). gadget_up/down switch the USB port to
+    // device mode (drive + network) and back; empty = not managed (desktop).
+    std::string jack_listen{"10.55.0.1"};
+    int jack_port{7341};
+    int jack_tunnel_port{7342};
+    int jack_proxy_port{3128};
+    std::string jack_gadget_up{"sudo -n /usr/libexec/alicepet/usb-gadget.sh up"};
+    std::string jack_gadget_down{"sudo -n /usr/libexec/alicepet/usb-gadget.sh down"};
 };
 
 // Parses the INI-style /etc/alicepet.conf. Unknown keys are ignored; malformed

@@ -5,6 +5,7 @@
 #pragma once
 
 #include "lvgl.h"
+#include "platform/device_status.h"
 
 #include "model/alice_art.h"
 #include "model/chip_registry.h"
@@ -76,6 +77,10 @@ private:
     lv_obj_t* battery_label_{nullptr};
     lv_obj_t* battery_fill_{nullptr};
     lv_obj_t* clock_label_{nullptr};
+    lv_obj_t* route_dot_{nullptr};
+    lv_obj_t* route_label_{nullptr};
+    platform::NetRoute route_{platform::NetRoute::Offline};
+    bool route_shown_{false};
     lv_obj_t* folder_{nullptr};
     lv_obj_t* folder_carousel_{nullptr};
     lv_obj_t* folder_counter_{nullptr};

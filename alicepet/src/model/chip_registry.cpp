@@ -160,7 +160,7 @@ constexpr ChipInfo kChips[kChipCount] = {
      {"wifi", "audio", "cores:4"}},
     {"jack-in", "JACK IN", "002", "elec", 0x2b2b33, 0x111116, 0xffe37a, 0xe0a21a,
      {kJackInRows, kJackInPal, sizeof(kJackInPal) / sizeof(kJackInPal[0])},
-     {"usb_hub", nullptr}},
+     {"usb_hub", "wifi", nullptr}},
     {"remote", "REMOTE", "003", "target", 0xc0353f, 0x7a1720, 0x8fd8ff, 0x2a74d0,
      {kRemoteRows, kRemotePal, sizeof(kRemotePal) / sizeof(kRemotePal[0])},
      {"ir", "wifi", nullptr}},

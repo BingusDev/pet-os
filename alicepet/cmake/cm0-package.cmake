@@ -71,6 +71,18 @@ endif()
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
     DESTINATION "${CMAKE_INSTALL_DOCDIR}"
 )
+# JACK IN: the USB gadget script (run through sudo, see the sudoers example),
+# the PC app that goes on the PET's USB drive, and the protocol notes.
+install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/jackin/usb-gadget.sh"
+    DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/alicepet"
+)
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/jackin/windows"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/alicepet/jackin"
+)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/jackin/PROTOCOL.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/jackin/alicepet-jackin.sudoers"
+    DESTINATION "${CMAKE_INSTALL_DOCDIR}/jackin"
+)
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/LICENSE.txt"
     DESTINATION "${CMAKE_INSTALL_DOCDIR}"
     RENAME "third-party-assets-license.txt"
@@ -102,8 +114,9 @@ if(FMT_INCLUDE_DIR AND FMT_LIBRARY)
 endif()
 set(CPACK_DEBIAN_PACKAGE_DEPENDS "${APP_DEBIAN_DEPENDS}")
 # Programs the chips start: VOICE (arecord), TERMINAL (ssh), JELLYFIN (mpv),
-# https:// requests (curl). Recommends, so the launcher still installs without them.
-set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "alsa-utils, openssh-client, mpv, curl")
+# https:// requests (curl), JACK IN's USB drive image and DHCP (dosfstools,
+# mtools, dnsmasq-base). Recommends, so the launcher still installs without them.
+set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "alsa-utils, openssh-client, mpv, curl, dosfstools, mtools, dnsmasq-base")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF)
 set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION TRUE)
 

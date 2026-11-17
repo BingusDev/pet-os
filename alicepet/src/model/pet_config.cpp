@@ -187,6 +187,13 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
                 config.lan_static_from_config = true;
                 config.lan_static.push_back(value);
             }
+        } else if (section == "jackin") {
+            if (key == "listen") config.jack_listen = value;
+            else if (key == "port") config.jack_port = std::atoi(value.c_str());
+            else if (key == "tunnel_port") config.jack_tunnel_port = std::atoi(value.c_str());
+            else if (key == "proxy_port") config.jack_proxy_port = std::atoi(value.c_str());
+            else if (key == "gadget_up") config.jack_gadget_up = value;
+            else if (key == "gadget_down") config.jack_gadget_down = value;
         }
     }
     return config;

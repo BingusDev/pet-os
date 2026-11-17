@@ -16,6 +16,9 @@
 #include "viewmodel/chips/bridge_client.h"
 #include "viewmodel/chips/ir_codec.h"
 #include "viewmodel/chips/lan_tech_chip.h"
+#include "viewmodel/chips/jack_in_chip.h"
+#include "platform/jack_link.h"
+#include "platform/device_status.h"
 #include "viewmodel/chips/remote_chip.h"
 #include "viewmodel/chips/retro_chip.h"
 #include "viewmodel/chips/terminal_chip.h"
@@ -30,6 +33,10 @@
 #include <vector>
 
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <thread>
 
 namespace {
 
@@ -625,6 +632,195 @@ void test_lan_static_config() {
     CHECK(!custom.lan_speed_test);
 }
 
+// --- JACK IN ----------------------------------------------------------------
+
+int dial(int port) {
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        close(fd);
+        return -1;
+    }
+    timeval tv{5, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    return fd;
+}
+
+std::string read_until(int fd, const std::string& marker) {
+    std::string got;
+    char c;
+    while (got.find(marker) == std::string::npos && recv(fd, &c, 1, 0) == 1) got += c;
+    return got;
+}
+
+void test_jack_session() {
+    using viewmodel::chips::JackInChip;
+    model::PetConfig config;
+    config.jack_gadget_up.clear();
+    config.jack_gadget_down.clear();
+    config.bridge_url.clear();
+    JackInChip jack(config);
+    jack.capture_sent = true;
+    CHECK(jack.view() == JackInChip::View::Waiting);
+    jack.on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk"})");
+    CHECK(jack.connected() && jack.view() == JackInChip::View::Session);
+    CHECK(!jack.full() && !jack.admin());
+    CHECK(jack.keep_awake());
+    jack.on_line(R"({"t":"scan","cpu":78,"ram":91,"disk":"C:","disk_free":8,"startup":14,"defender":"off"})");
+    CHECK(jack.scan().have && jack.scan().ram == 91);
+    CHECK(JackInChip::scan_summary(jack.scan()) == "CPU 78% · RAM 91% · C: 8% free");
+    CHECK(jack.alice_waiting());
+    viewmodel::chips::BridgeReply reply;
+    reply.ok = true;
+    reply.reply = "Defender is off.\nCMD: `Set-MpPreference -DisableRealtimeMonitoring $false`";
+    jack.on_alice_reply(reply);
+    CHECK(jack.alice_text() == "Defender is off.");
+    CHECK(jack.suggestion() == "Set-MpPreference -DisableRealtimeMonitoring $false");
+    // Read-only: ENTER doesn't send the fix.
+    jack.handle_key(viewmodel::Key::Enter);
+    CHECK(jack.sent.empty());
+    CHECK(jack.status().find("read-only") != std::string::npos);
+    // [F] only asks; the PC decides.
+    jack.handle_char("f");
+    CHECK(jack.sent.size() == 1 && jack.sent[0] == R"({"t":"ask","what":"full"})");
+    CHECK(!jack.full() && jack.asked_full());
+    jack.on_line(R"({"t":"state","full":true,"admin":false,"net":false})");
+    CHECK(jack.full() && !jack.asked_full());
+    jack.handle_key(viewmodel::Key::Enter);
+    CHECK(jack.sent.back() == R"({"t":"run","id":1,"cmd":"Set-MpPreference -DisableRealtimeMonitoring $false"})");
+    CHECK(jack.log().back().kind == JackInChip::LogLine::Kind::Pending);
+    jack.on_line(R"({"t":"result","id":1,"ok":true,"out":""})");
+    CHECK(jack.log().back().kind == JackInChip::LogLine::Kind::Ok);
+    // [F] again takes access away without asking.
+    jack.handle_char("f");
+    CHECK(jack.sent.back() == R"({"t":"drop","what":"full"})");
+    // [X] jacks out.
+    jack.handle_char("x");
+    CHECK(jack.sent.back().rfind(R"({"t":"jackout")", 0) == 0);
+    CHECK(!jack.connected() && jack.view() == JackInChip::View::Waiting);
+    CHECK(!jack.keep_awake());
+    // Chat from the PC app goes to Alice through the PET and the answer goes back.
+    jack.on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk"})");
+    jack.on_line(R"({"t":"chat","text":"why is this PC slow?"})");
+    CHECK(jack.chat_waiting());
+    CHECK(jack.log().back().text == "PC: why is this PC slow?");
+    viewmodel::chips::BridgeReply chat;
+    chat.ok = true;
+    chat.reply = "Memory is nearly full.\nCMD: Stop-Process -Name OneDrive";
+    jack.on_chat_reply(chat);
+    CHECK(!jack.chat_waiting());
+    CHECK(jack.sent.back() == R"({"t":"alice","ok":true,"text":"Memory is nearly full.","heard":"","cmd":"Stop-Process -Name OneDrive"})");
+    CHECK(jack.suggestion() == "Stop-Process -Name OneDrive");
+    jack.on_line(R"({"t":"voice","wav":"not base64!"})");
+    CHECK(!jack.chat_waiting());
+    CHECK(jack.sent.back().find("didn't come through") != std::string::npos);
+    platform::DeviceStatus st;
+    CHECK(platform::net_route(st, false) == platform::NetRoute::Offline);
+    st.wifi_connected = true;
+    CHECK(platform::net_route(st, false) == platform::NetRoute::WiFi);
+    st.ethernet_connected = true;
+    CHECK(platform::net_route(st, false) == platform::NetRoute::Lan);
+    CHECK(platform::net_route(st, true) == platform::NetRoute::PcNet);
+    CHECK(std::string(platform::net_route_label(platform::NetRoute::PcNet)) == "PC NET");
+    std::string raw;
+    CHECK(platform::jack::base64_decode("UklGRg==", raw) && raw == "RIFF");
+    CHECK(platform::jack::base64_decode("YWJj\nZA", raw) && raw == "abcd");
+    std::string words, cmd;
+    JackInChip::split_reply("All good here.", words, cmd);
+    CHECK(words == "All good here." && cmd.empty());
+    CHECK(JackInChip::alice_prompt("PC", "Win 11", jack.scan()).size() <= viewmodel::chips::kBridgeMaxInput);
+}
+
+void test_jack_line_server() {
+    platform::jack::LineServer server;
+    const int port = 47000 + (::getpid() % 1000);
+    CHECK(server.listen("127.0.0.1", port).empty());
+    const int pc = dial(port);
+    CHECK(pc >= 0);
+    const std::string hello = "{\"t\":\"hello\"}\n{\"t\":\"sc";
+    send(pc, hello.data(), hello.size(), 0);
+    platform::jack::LineServer::Poll got;
+    for (int i = 0; i < 50 && got.lines.empty(); ++i) {
+        auto p = server.poll();
+        got.connected |= p.connected;
+        got.lines.insert(got.lines.end(), p.lines.begin(), p.lines.end());
+        if (got.lines.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(got.connected && got.lines.size() == 1 && got.lines[0] == "{\"t\":\"hello\"}");
+    send(pc, "an\"}\n", 5, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    auto more = server.poll();
+    CHECK(more.lines.size() == 1 && more.lines[0] == "{\"t\":\"scan\"}");
+    CHECK(server.send("{\"t\":\"jackout\"}"));
+    CHECK(read_until(pc, "\n") == "{\"t\":\"jackout\"}\n");
+    close(pc);
+    bool gone = false;
+    for (int i = 0; i < 50 && !gone; ++i) {
+        gone = server.poll().disconnected;
+        if (!gone) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(gone && !server.connected());
+}
+
+void test_jack_relay() {
+    using platform::jack::Relay;
+    std::string host;
+    int port = 0;
+    bool is_connect = false;
+    CHECK(Relay::parse_request("CONNECT api.example.com:443 HTTP/1.1\r\nHost: x\r\n\r\n", host, port, is_connect));
+    CHECK(host == "api.example.com" && port == 443 && is_connect);
+    CHECK(Relay::parse_request("GET http://example.com/a/b HTTP/1.1\r\n\r\n", host, port, is_connect));
+    CHECK(host == "example.com" && port == 80 && !is_connect);
+    CHECK(Relay::parse_request("CONNECT [2001:db8::1]:8443 HTTP/1.1\r\n\r\n", host, port, is_connect));
+    CHECK(host == "2001:db8::1" && port == 8443);
+    CHECK(!Relay::parse_request("GET /local HTTP/1.1\r\n\r\n", host, port, is_connect));
+    CHECK(!Relay::parse_request("CONNECT nohost HTTP/1.1\r\n\r\n", host, port, is_connect));
+
+    // A fake PC: dials the tunnel port back and plays the far server (echo with a prefix).
+    const int base = 48000 + (::getpid() % 1000);
+    Relay relay;
+    std::string opened;
+    std::thread pc;
+    CHECK(relay.start("127.0.0.1", base, "127.0.0.1", base + 1, [&](int id, const std::string& h, int p) {
+        opened = h + ":" + std::to_string(p);
+        pc = std::thread([id, base]() {
+            const int t = dial(base + 1);
+            const std::string hi = "tunnel " + std::to_string(id) + "\n";
+            send(t, hi.data(), hi.size(), 0);
+            const std::string ping = read_until(t, "ping");
+            const std::string pong = "pong:" + ping;
+            send(t, pong.data(), pong.size(), 0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            close(t);
+        });
+    }).empty());
+    const int app = dial(base);
+    const std::string req = "CONNECT api.example.com:443 HTTP/1.1\r\nHost: api.example.com:443\r\n\r\n";
+    send(app, req.data(), req.size(), 0);
+    CHECK(read_until(app, "\r\n\r\n") == "HTTP/1.1 200 Connection established\r\n\r\n");
+    send(app, "ping", 4, 0);
+    CHECK(read_until(app, "pong:ping") == "pong:ping");
+    CHECK(opened == "api.example.com:443");
+    close(app);
+    if (pc.joinable()) pc.join();
+    // A host the PC can't reach: 502.
+    std::thread failer;
+    relay.stop();
+    CHECK(relay.start("127.0.0.1", base + 2, "127.0.0.1", base + 3, [&](int id, const std::string&, int) {
+        failer = std::thread([&relay, id]() { relay.fail(id); });
+    }).empty());
+    const int app3 = dial(base + 2);
+    const std::string req3 = "CONNECT down.example:443 HTTP/1.1\r\n\r\n";
+    send(app3, req3.data(), req3.size(), 0);
+    CHECK(read_until(app3, "\r\n").rfind("HTTP/1.1 502", 0) == 0);
+    close(app3);
+    if (failer.joinable()) failer.join();
+    relay.stop();
+}
+
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"wrap", test_wrap},
@@ -655,6 +851,9 @@ int main() {
         {"lan_who_is_new", test_lan_who_is_new},
         {"lan_helpers", test_lan_helpers},
         {"lan_static_config", test_lan_static_config},
+        {"jack_session", test_jack_session},
+        {"jack_line_server", test_jack_line_server},
+        {"jack_relay", test_jack_relay},
     };
     for (const auto& [name, fn] : tests) {
         const int before = g_failures;

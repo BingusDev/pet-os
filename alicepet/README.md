@@ -67,6 +67,7 @@ ctest --test-dir build/linux-x86-64 -C Debug   # or run build/<preset>/<Config>/
 | `ALICEPET_SNAPSHOT_JF_SERIES=<search>` | Jellyfin episodes, resume and playing screens |
 | `ALICEPET_SNAPSHOT_ALL_CHIPS=1` | every chip in the folder and slotted |
 | `ALICEPET_SNAPSHOT_LAN=1` | LAN TECH jack test, diagnosis and device sweep (real network) |
+| `ALICEPET_SNAPSHOT_JACK=1` | JACK IN waiting screen and a canned PC session (scan, Alice fix, admin, log, jack out) |
 | `ALICEPET_SNAPSHOT_REMOTE=1` | every REMOTE screen (needs `ir-ctl` on PATH and a `[remote] dir`) |
 | `ALICEPET_SNAPSHOT_RETRO=1` | RETRO library, details, download and playing (needs a RomM server) |
 

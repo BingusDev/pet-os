@@ -28,7 +28,9 @@ the Mac mini. You can chat with her, run quick network checks, and slot
 | **TERMINAL** chip | SSH bookmarks, built-in VT100 view, "Ask Alice" command suggestions (run only on Enter) | ✅ |
 | **JELLYFIN** chip | Browse library → seasons → episodes; low-bitrate H.264 to the 320×170 panel via mpv | ✅ (desktop playback stubbed) |
 | **LAN TECH** chip | Wall-jack tester: link, DHCP, gateway, DNS, speed, switch port; static-IP fallback, saved reports, device list with "who's new", ping and open ports | ✅ (not yet on hardware) |
-| **JACK IN** · **REMOTE** · **RETRO** | PC sidekick, IR learn/replay, RomM games | ⏳ planned |
+| **JACK IN** chip | PC sidekick over USB: read-only scan, Alice's fix, Full Access / admin / Share PC Internet clicked on the PC, live log, JACK OUT | 🚧 first cut (Windows app untested) |
+| **REMOTE** chip | IR learn and replay with LIRC `ir-ctl`, remotes and macros as text files | ✅ (not yet on hardware) |
+| **RETRO** chip | RomM library, download, RetroArch with per-platform cores, save sync | ✅ (not yet on hardware) |
 
 <p align="center">
   <img src="alicepet/screenshots/netscan@3x.png" width="32%" alt="NET SCAN">

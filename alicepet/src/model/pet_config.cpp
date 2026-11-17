@@ -165,6 +165,10 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
         } else if (section == "romm") {
             if (key == "url") config.romm_url = value;
             else if (key == "token") config.romm_token = value;
+        } else if (section == "retro") {
+            if (key == "player") config.retro_player = value;
+            else if (key == "dir") config.retro_dir = value;
+            else if (key.rfind("core_", 0) == 0 && key.size() > 5) config.retro_cores[key.substr(5)] = value;
         } else if (section == "remote") {
             if (key == "send_device") config.ir_send_device = value;
             else if (key == "recv_device") config.ir_recv_device = value;

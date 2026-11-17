@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -74,6 +75,19 @@ struct PetConfig {
     // [romm]: url + API token (Bearer). https URLs go through the system curl.
     std::string romm_url;
     std::string romm_token;
+
+    // [retro]: emulator command ({core} and {rom} are replaced), where downloaded
+    // ROMs are kept, and the libretro core for each RomM platform slug (core_<slug>=).
+    std::string retro_player{"retroarch --fullscreen -L {core} {rom}"};
+    std::string retro_dir{"~/.local/share/alicepet/roms"};
+    std::map<std::string, std::string> retro_cores{
+        {"gb", "/usr/lib/libretro/gambatte_libretro.so"},
+        {"gbc", "/usr/lib/libretro/gambatte_libretro.so"},
+        {"gba", "/usr/lib/libretro/mgba_libretro.so"},
+        {"nes", "/usr/lib/libretro/fceumm_libretro.so"},
+        {"snes", "/usr/lib/libretro/snes9x_libretro.so"},
+        {"genesis-slash-megadrive", "/usr/lib/libretro/genesis_plus_gx_libretro.so"},
+    };
 
     // [remote]: IR via LIRC's ir-ctl (v4l-utils). Learned codes live in remote_dir.
     std::string ir_send_device{"/dev/lirc0"};

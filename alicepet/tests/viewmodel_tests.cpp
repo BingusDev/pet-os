@@ -16,6 +16,7 @@
 #include "viewmodel/chips/bridge_client.h"
 #include "viewmodel/chips/ir_codec.h"
 #include "viewmodel/chips/remote_chip.h"
+#include "viewmodel/chips/retro_chip.h"
 #include "viewmodel/chips/terminal_chip.h"
 #include "viewmodel/chips/vt_screen.h"
 
@@ -499,6 +500,44 @@ void test_remote_chip_files_and_pad() {
     fs::remove_all(dir);
 }
 
+// --- RETRO ------------------------------------------------------------------
+
+void test_retro_parsing() {
+    using viewmodel::chips::RetroChip;
+    const auto platforms = RetroChip::parse_platforms(
+        R"([{"id":3,"slug":"snes","name":"Super Nintendo","rom_count":2},
+            {"id":1,"slug":"gba","display_name":"Game Boy Advance","rom_count":5},
+            {"id":9,"slug":"nes","name":"NES","rom_count":0},
+            {"id":5,"slug":"genesis-slash-megadrive","name":"Genesis","rom_count":1}])");
+    CHECK(platforms.size() == 3);  // empty systems get no tab
+    CHECK(platforms[0].label == "GBA" && platforms[1].label == "SNES" && platforms[2].label == "GEN");
+
+    const std::string paged = R"({"items":[
+        {"id":12,"name":"Mega Man Battle Network 3","fs_name":"mmbn3.gba","platform_slug":"gba","fs_size_bytes":8388608,
+         "metadatum":{"first_release_date":1017619200000}},
+        {"id":11,"name":"Advance Wars","fs_name":"aw.gba","platform_slug":"gba","file_size_bytes":4194304},
+        {"id":13,"name":"No file"}],"total":3})";
+    const auto games = RetroChip::parse_games(paged);
+    CHECK(games.size() == 2);
+    CHECK(games[0].name == "Advance Wars" && games[0].size == 4194304);  // sorted, old size field
+    CHECK(games[1].year == 2002);
+    CHECK(RetroChip::parse_games(R"([{"id":1,"name":"Tetris","fs_name":"t.gb","platform_slug":"gb"}])").size() == 1);
+
+    CHECK(RetroChip::fit_text("gba") == "1:1 pixel-perfect");
+    CHECK(RetroChip::fit_text("snes") == "scaled 75%");
+    CHECK(RetroChip::size_text(8388608) == "8.0 MB");
+}
+
+void test_retro_needs_server() {
+    using viewmodel::chips::RetroChip;
+    model::PetConfig config;  // no [romm] url
+    RetroChip retro(config);
+    retro.enter();
+    CHECK(retro.view() == RetroChip::View::Error);
+    CHECK(!retro.keep_awake());
+    CHECK(!retro.handle_key(Key::Escape));  // ESC leaves the chip
+}
+
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"wrap", test_wrap},
@@ -523,6 +562,8 @@ int main() {
         {"config_local_overlay", test_config_local_overlay},
         {"ir_codec", test_ir_codec},
         {"remote_chip_files_and_pad", test_remote_chip_files_and_pad},
+        {"retro_parsing", test_retro_parsing},
+        {"retro_needs_server", test_retro_needs_server},
     };
     for (const auto& [name, fn] : tests) {
         const int before = g_failures;

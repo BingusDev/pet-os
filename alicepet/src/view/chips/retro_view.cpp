@@ -1,0 +1,223 @@
+/*
+ * SPDX-License-Identifier: MIT
+ */
+
+#include "view/chips/retro_view.h"
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <string>
+
+namespace view {
+namespace {
+
+using viewmodel::chips::RetroChip;
+
+// mockups/media.html .rt: graphite radial, near-black bars, gold text and selection.
+constexpr ChipTheme kRetroTheme{0x2a2f3a, 0x0a0c10, 0x101820, 0xffd200, 0xffd200};
+constexpr uint32_t kGoldDim = 0x8a7420;
+constexpr uint32_t kInkDark = 0x111111;
+constexpr int kLeft = 8;
+
+// Poster gradients (top, bottom) from the mockup; picked by game id.
+constexpr std::array<std::array<uint32_t, 2>, 6> kPosterColors = {{
+    {0x2fa35a, 0x0d3a1d}, {0x1d6fd8, 0x0a2a6e}, {0xe0a21a, 0x5a3a00},
+    {0x7d2ad0, 0x1a0630}, {0x2f6fe0, 0x0a1a5e}, {0xe2434b, 0x5a0d12}}};
+
+std::string upper(std::string value) {
+    for (auto& c : value) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return value;
+}
+
+std::string label_for(const RetroChip& retro, const std::string& slug) {
+    for (const auto& p : retro.platforms()) {
+        if (p.slug == slug) return p.label;
+    }
+    return RetroChip::short_label(slug, slug);
+}
+
+} // namespace
+
+RetroView::RetroView(lv_obj_t* root, const AliceFonts& fonts) : fonts_(fonts) {
+    frame_ = make_chip_frame(root, kRetroTheme, fonts_);
+    body_ = layer(frame_.body, 0, 0, 320, 139);
+}
+
+void RetroView::render(const viewmodel::ChipModule& chip) {
+    const auto& retro = static_cast<const RetroChip&>(chip);
+    lv_obj_clean(body_);
+    lv_obj_set_style_text_color(frame_.tag, lv_color_hex(kRetroTheme.text), 0);
+    switch (retro.view()) {
+    case RetroChip::View::Library: render_library(retro); break;
+    case RetroChip::View::Details:
+    case RetroChip::View::Downloading: render_details(retro); break;
+    case RetroChip::View::Loading:
+    case RetroChip::View::Playing:
+    case RetroChip::View::Error: render_message(retro); break;
+    }
+    lv_obj_align(frame_.tag, LV_ALIGN_TOP_RIGHT, -6, 2);
+}
+
+int RetroView::wrapped(const std::string& value, uint32_t color, int x, int y, int width) {
+    lv_obj_t* label = text(body_, value, fonts_.small, color, x, y);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(label, width);
+    lv_obj_set_style_text_line_space(label, 1, 0);
+    lv_obj_update_layout(label);
+    return y + lv_obj_get_height(label);
+}
+
+int RetroView::pill(const char* label, int x, int y, bool filled) {
+    lv_obj_t* b = box(body_, x, y, 0, 15, filled ? kRetroTheme.text : kRetroTheme.bg_bottom);
+    lv_obj_set_size(b, LV_SIZE_CONTENT, 15);
+    lv_obj_set_style_pad_hor(b, 5, 0);
+    set_border(b, 1, filled ? kRetroTheme.text : kGoldDim);
+    lv_obj_set_style_radius(b, 3, 0);
+    lv_obj_t* t = text(b, label, fonts_.small, filled ? kInkDark : kRetroTheme.text, 0, 0);
+    lv_obj_align(t, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_update_layout(b);
+    return x + lv_obj_get_width(b) + 6;
+}
+
+lv_obj_t* RetroView::poster(const RetroChip::Game& game, int x, int y, int w, int h, bool selected) {
+    const auto& colors = kPosterColors[static_cast<size_t>(game.id) % kPosterColors.size()];
+    lv_obj_t* p = box(body_, x, y, w, h, colors[0]);
+    set_gradient(p, colors[1]);
+    lv_obj_set_style_radius(p, 4, 0);
+    set_border(p, selected ? 2 : 1, selected ? kRetroTheme.text : 0x55555f);
+    lv_obj_set_style_clip_corner(p, true, 0);
+    // Title at the bottom, white on a dark shadow line, like the mockup posters.
+    lv_obj_t* title = text(p, game.name, fonts_.small, kWhite, 0, 0);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(title, w - 8);
+    lv_obj_set_height(title, 3 * 12);
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_line_space(title, 0, 0);
+    lv_obj_align(title, LV_ALIGN_BOTTOM_MID, 0, -3);
+    lv_obj_t* badge = text(p, RetroChip::short_label(game.platform, game.platform), fonts_.small, 0xffffff, 0, 0);
+    lv_obj_set_style_text_opa(badge, LV_OPA_70, 0);
+    lv_obj_align(badge, LV_ALIGN_TOP_MID, 0, 3);
+    return p;
+}
+
+void RetroView::render_library(const RetroChip& retro) {
+    // Screen 1: system tabs, four posters, the selected game's line.
+    lv_label_set_text(frame_.title, "RETRO · ROMM");
+    const auto& platforms = retro.platforms();
+    const auto games = retro.games();
+    const std::string tab = retro.platform() < platforms.size() ? platforms[retro.platform()].label : "ALL";
+    lv_label_set_text(frame_.tag, (tab + " · " + std::to_string(games.size())).c_str());
+    lv_label_set_text(frame_.footer, retro.searching() ? "type to search [↵]done [ESC]clear"
+                                                       : "[←→]game [TAB]system [/]search [↵]details");
+
+    // Tabs: scroll so the current one is always visible.
+    int x = 6;
+    const size_t first_tab = retro.platform() > 5 ? retro.platform() - 5 : 0;
+    for (size_t i = first_tab; i < platforms.size() && x < 300; ++i) {
+        const bool sel = i == retro.platform();
+        lv_obj_t* t = box(body_, x, 4, 0, 13, sel ? kRetroTheme.text : kRetroTheme.bg_bottom);
+        lv_obj_set_size(t, LV_SIZE_CONTENT, 13);
+        lv_obj_set_style_pad_hor(t, 4, 0);
+        set_border(t, 1, sel ? kRetroTheme.text : kGoldDim);
+        lv_obj_set_style_radius(t, 3, 0);
+        lv_obj_t* l = text(t, platforms[i].label, fonts_.small, sel ? kInkDark : kRetroTheme.text, 0, 0);
+        lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_update_layout(t);
+        x += lv_obj_get_width(t) + 4;
+    }
+
+    if (games.empty()) {
+        wrapped(retro.search().empty() ? "No games on this system in RomM." : "Nothing matches \"" + retro.search() + "\".",
+                kRetroTheme.text, kLeft, 40, 304);
+    } else {
+        const size_t sel = retro.selected();
+        const size_t first = sel >= 3 ? std::min(sel - 2, games.size() >= 4 ? games.size() - 4 : 0) : 0;
+        lv_obj_t* selected = nullptr;
+        for (size_t i = first; i < games.size() && i < first + 4; ++i) {
+            const int px = kLeft + static_cast<int>(i - first) * 76;
+            lv_obj_t* p = poster(*games[i], px, 24, 70, 86, i == sel);
+            if (i == sel) selected = p;
+        }
+        if (selected) lv_obj_move_foreground(selected);
+        const auto* g = games[sel];
+        std::string line = g->name;
+        if (g->year > 0) line += " · " + std::to_string(g->year);
+        if (retro.downloaded(*g)) line += " · on PET";
+        text(body_, clip_cols(line, 43), fonts_.small, kWhite, kLeft, 116);
+    }
+    if (retro.searching() || !retro.search().empty()) {
+        lv_obj_t* s = box(body_, 180, 116, 132, 14, kRetroTheme.bar);
+        set_border(s, 1, kRetroTheme.text);
+        lv_obj_set_style_radius(s, 3, 0);
+        text(s, clip_cols("/" + retro.search() + (retro.searching() ? "_" : ""), 17), fonts_.small, kRetroTheme.text, 4, 0);
+    }
+}
+
+void RetroView::render_details(const RetroChip& retro) {
+    // Screen 2: poster, facts, Play / Keep offline.
+    const auto* g = retro.game();
+    if (!g) return;
+    const bool downloading = retro.view() == RetroChip::View::Downloading;
+    const std::string label = label_for(retro, g->platform);
+    lv_label_set_text(frame_.title, clip_cols(upper(g->name), 34).c_str());
+    lv_label_set_text(frame_.tag, label.c_str());
+    poster(*g, 10, 6, 80, 104, false);
+    constexpr int kX = 100;
+    constexpr int kW = 212;
+    int y = wrapped(g->name, kWhite, kX, 6, kW);
+    std::string facts = label;
+    if (g->year > 0) facts += " · " + std::to_string(g->year);
+    if (g->size > 0) facts += " · " + RetroChip::size_text(g->size);
+    text(body_, facts, fonts_.small, kRetroTheme.text, kX, y + 2);
+    y += 16;
+    const bool on_pet = retro.downloaded(*g);
+    lv_obj_t* l = text(body_, "On PET: ", fonts_.small, kRetroTheme.text, kX, y);
+    lv_obj_update_layout(l);
+    text(body_, on_pet ? "yes, plays offline" : "no, downloads first", fonts_.small, on_pet ? kGreen : kYellow,
+         kX + lv_obj_get_width(l), y);
+    y += 14;
+    const std::string fit = RetroChip::fit_text(g->platform);
+    l = text(body_, "Fit: ", fonts_.small, kRetroTheme.text, kX, y);
+    lv_obj_update_layout(l);
+    text(body_, fit, fonts_.small, fit.rfind("1:1", 0) == 0 ? kGreen : kYellow, kX + lv_obj_get_width(l), y);
+    y += 20;
+    if (downloading) {
+        text(body_, retro.status(), fonts_.small, kYellow, kX, y);
+        lv_label_set_text(frame_.footer, "[ESC]cancel download");
+        return;
+    }
+    const int next = pill("↵ Play", kX, y, retro.details_play());
+    if (!on_pet) pill("O Keep offline", next, y, !retro.details_play());
+    if (!retro.status().empty()) text(body_, clip_cols(retro.status(), 30), fonts_.small, kRetroTheme.text, kX, y + 20);
+    lv_label_set_text(frame_.footer, on_pet ? "[↵]play [ESC]back" : "[←→]pick [↵]go [O]offline [ESC]back");
+}
+
+void RetroView::render_message(const RetroChip& retro) {
+    lv_label_set_text(frame_.title, "RETRO · ROMM");
+    switch (retro.view()) {
+    case RetroChip::View::Loading:
+        lv_label_set_text(frame_.tag, "loading");
+        wrapped(retro.status(), kRetroTheme.text, kLeft, 50, 304);
+        lv_label_set_text(frame_.footer, "[ESC]chips");
+        break;
+    case RetroChip::View::Playing: {
+        const auto* g = retro.game();
+        const std::string fit = g ? RetroChip::fit_text(g->platform) : "";
+        lv_label_set_text(frame_.title, g ? clip_cols(upper(g->name), 26).c_str() : "PLAYING");
+        lv_label_set_text(frame_.tag, "keyboard");
+        wrapped("Playing" + (g ? " " + g->name : std::string()) + " (" + fit + ").", kWhite, kLeft, 40, 304);
+        wrapped("Quit from the RetroArch menu (F1); the game saves on the PET. Hold ESC to force it closed.", kRetroTheme.text, kLeft, 76, 304);
+        lv_label_set_text(frame_.footer, "F1: menu · save state · quit");
+        break;
+    }
+    default:
+        lv_label_set_text(frame_.tag, "error");
+        lv_obj_set_style_text_color(frame_.tag, lv_color_hex(kRed), 0);
+        wrapped(retro.status(), kRed, kLeft, 30, 304);
+        lv_label_set_text(frame_.footer, "[↵]retry [ESC]back");
+        break;
+    }
+}
+
+} // namespace view

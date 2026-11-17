@@ -22,6 +22,8 @@
 #include "view/chips/jellyfin_view.h"
 #include "view/chips/lan_tech_view.h"
 #include "view/chips/remote_view.h"
+#include "view/chips/retro_view.h"
+#include "viewmodel/chips/retro_chip.h"
 #include "viewmodel/chips/remote_chip.h"
 #include "viewmodel/chips/lan_tech_chip.h"
 #include "view/chips/terminal_view.h"
@@ -227,6 +229,8 @@ void install_chips(viewmodel::AliceViewModel& vm, view::AliceView& view, const m
         std::make_unique<view::JellyfinView>(root, fonts, art_dir));
     add("remote", std::make_unique<viewmodel::chips::RemoteChip>(config),
         std::make_unique<view::RemoteView>(root, fonts));
+    add("retro", std::make_unique<viewmodel::chips::RetroChip>(config),
+        std::make_unique<view::RetroView>(root, fonts));
     add("lan-tech", std::make_unique<viewmodel::chips::LanTechChip>(config),
         std::make_unique<view::LanTechView>(root, fonts, art_dir));
 }
@@ -550,6 +554,40 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         for (const char* c : {"P", "r", "o", "j", "e", "c", "t", "o", "r"}) vm.handle_char(c);
         advance(virtual_now + kStepMs);
         capture("remote-name.png");
+        vm.handle_key(viewmodel::Key::Escape);
+    }
+    // RETRO against a RomM server ([romm] url/token): library, a system tab,
+    // details, keep-offline download and the playing screen ([retro] player).
+    if (std::getenv("ALICEPET_SNAPSHOT_RETRO")) {
+        using viewmodel::chips::RetroChip;
+        go_home();
+        vm.open_chip(model::chip_index("retro"));
+        auto* retro = static_cast<RetroChip*>(vm.active_chip());
+        wait_real([&] { return retro->view() != RetroChip::View::Loading; }, 15000);
+        vm.handle_key(viewmodel::Key::Right);
+        advance(virtual_now + kStepMs);
+        capture("retro-library.png");
+        for (size_t i = 0; i < retro->platforms().size() && retro->platforms()[retro->platform()].label != "GBA"; ++i) {
+            vm.handle_key(viewmodel::Key::Tab);
+            wait_real([&] { return retro->view() != RetroChip::View::Loading; }, 15000);
+        }
+        vm.handle_key(viewmodel::Key::Right);
+        advance(virtual_now + kStepMs);
+        capture("retro-system.png");
+        vm.handle_key(viewmodel::Key::Enter);
+        advance(virtual_now + kStepMs);
+        capture("retro-details.png");
+        vm.handle_char("o");
+        advance(virtual_now + kStepMs);
+        capture("retro-downloading.png");
+        wait_real([&] { return retro->view() != RetroChip::View::Downloading; }, 30000);
+        capture("retro-details-offline.png");
+        vm.handle_key(viewmodel::Key::Enter);
+        wait_real([&] { return retro->view() != RetroChip::View::Details; }, 2000);
+        capture("retro-playing.png");
+        wait_real([&] { return retro->view() != RetroChip::View::Playing; }, 15000);
+        capture("retro-after.png");
+        vm.handle_key(viewmodel::Key::Escape);
         vm.handle_key(viewmodel::Key::Escape);
     }
     // LAN TECH (real network): jack test, Alice's diagnosis (canned text) and the

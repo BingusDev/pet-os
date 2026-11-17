@@ -575,7 +575,7 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         advance(virtual_now + kStepMs);
         capture("retro-system.png");
         vm.handle_key(viewmodel::Key::Enter);
-        advance(virtual_now + kStepMs);
+        wait_real([&] { bool good = false; return retro->save_text(good) != "checking RomM..."; }, 5000);
         capture("retro-details.png");
         vm.handle_char("o");
         advance(virtual_now + kStepMs);
@@ -583,9 +583,10 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         wait_real([&] { return retro->view() != RetroChip::View::Downloading; }, 30000);
         capture("retro-details-offline.png");
         vm.handle_key(viewmodel::Key::Enter);
-        wait_real([&] { return retro->view() != RetroChip::View::Details; }, 2000);
+        wait_real([&] { return retro->view() != RetroChip::View::Details && retro->view() != RetroChip::View::Downloading; }, 10000);
         capture("retro-playing.png");
         wait_real([&] { return retro->view() != RetroChip::View::Playing; }, 15000);
+        wait_real([&] { bool good = false; return retro->save_text(good) != "uploading save..."; }, 5000);
         capture("retro-after.png");
         vm.handle_key(viewmodel::Key::Escape);
         vm.handle_key(viewmodel::Key::Escape);

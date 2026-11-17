@@ -201,7 +201,7 @@ std::string curl_quote(const std::string& value) {
 
 // https:// has no in-process TLS client: hand the request to the system curl.
 // Headers (tokens) go through a 0600 temp config file, not argv, so they stay
-// out of `ps`. Bodies are passed inline and must be small.
+// out of `ps`; the body goes through a 0600 temp file too.
 HttpResponse https_via_curl(const std::string& method, const std::string& url, const std::string& body,
                             const std::vector<std::string>& headers, int timeout_ms, size_t max_reply) {
     HttpResponse response;
@@ -211,13 +211,30 @@ HttpResponse https_via_curl(const std::string& method, const std::string& url, c
         response.error = "temp file";
         return response;
     }
+    // The body goes in its own 0600 file (it can be binary: save-file uploads).
+    char body_path[] = "/tmp/alicepet-body-XXXXXX";
+    bool body_file = false;
+    if (!body.empty()) {
+        const int body_fd = mkstemp(body_path);
+        body_file = body_fd >= 0 &&
+                    write(body_fd, body.data(), body.size()) == static_cast<ssize_t>(body.size());
+        if (body_fd >= 0) close(body_fd);
+        if (!body_file) {
+            if (body_fd >= 0) unlink(body_path);
+            close(fd);
+            unlink(path);
+            response.error = "temp write";
+            return response;
+        }
+    }
     std::string config = "url = " + curl_quote(url) + "\nrequest = " + curl_quote(method) + "\n";
     for (const auto& header : headers) config += "header = " + curl_quote(header) + "\n";
-    if (!body.empty()) config += "data-binary = " + curl_quote(body) + "\n";
+    if (body_file) config += "data-binary = " + curl_quote(std::string("@") + body_path) + "\n";
     const ssize_t written = write(fd, config.data(), config.size());
     close(fd);
     if (written != static_cast<ssize_t>(config.size())) {
         unlink(path);
+        if (body_file) unlink(body_path);
         response.error = "temp write";
         return response;
     }
@@ -226,6 +243,7 @@ HttpResponse https_via_curl(const std::string& method, const std::string& url, c
                                       "-K", path, "-w", "\n@@HTTP@@%{http_code}"},
                                      out, timeout_ms + 2000, false);
     unlink(path);
+    if (body_file) unlink(body_path);
     const size_t marker = out.rfind("\n@@HTTP@@");
     if (rc != 0 || marker == std::string::npos) {
         response.error = rc == -1 ? "curl missing" : rc == -2 ? "timeout" : "curl exit " + std::to_string(rc);

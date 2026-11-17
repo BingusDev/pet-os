@@ -165,23 +165,29 @@ void RetroView::render_details(const RetroChip& retro) {
     poster(*g, 10, 6, 80, 104, false);
     constexpr int kX = 100;
     constexpr int kW = 212;
-    int y = wrapped(g->name, kWhite, kX, 6, kW);
+    int y = wrapped(clip_cols(g->name, 58), kWhite, kX, 4, kW);
     std::string facts = label;
     if (g->year > 0) facts += " · " + std::to_string(g->year);
     if (g->size > 0) facts += " · " + RetroChip::size_text(g->size);
-    text(body_, facts, fonts_.small, kRetroTheme.text, kX, y + 2);
-    y += 16;
+    text(body_, facts, fonts_.small, kRetroTheme.text, kX, y + 1);
+    y += 14;
     const bool on_pet = retro.downloaded(*g);
     lv_obj_t* l = text(body_, "On PET: ", fonts_.small, kRetroTheme.text, kX, y);
     lv_obj_update_layout(l);
     text(body_, on_pet ? "yes, plays offline" : "no, downloads first", fonts_.small, on_pet ? kGreen : kYellow,
          kX + lv_obj_get_width(l), y);
     y += 14;
+    bool save_good = false;
+    const std::string save = retro.save_text(save_good);
+    l = text(body_, "Save: ", fonts_.small, kRetroTheme.text, kX, y);
+    lv_obj_update_layout(l);
+    text(body_, clip_cols(save, 24), fonts_.small, save_good ? kGreen : kWhite, kX + lv_obj_get_width(l), y);
+    y += 14;
     const std::string fit = RetroChip::fit_text(g->platform);
     l = text(body_, "Fit: ", fonts_.small, kRetroTheme.text, kX, y);
     lv_obj_update_layout(l);
     text(body_, fit, fonts_.small, fit.rfind("1:1", 0) == 0 ? kGreen : kYellow, kX + lv_obj_get_width(l), y);
-    y += 20;
+    y += 18;
     if (downloading) {
         text(body_, retro.status(), fonts_.small, kYellow, kX, y);
         lv_label_set_text(frame_.footer, "[ESC]cancel download");
@@ -189,7 +195,7 @@ void RetroView::render_details(const RetroChip& retro) {
     }
     const int next = pill("↵ Play", kX, y, retro.details_play());
     if (!on_pet) pill("O Keep offline", next, y, !retro.details_play());
-    if (!retro.status().empty()) text(body_, clip_cols(retro.status(), 30), fonts_.small, kRetroTheme.text, kX, y + 20);
+    if (!retro.status().empty()) wrapped(clip_cols(retro.status(), 60), kRetroTheme.text, kX, y + 18, kW);
     lv_label_set_text(frame_.footer, on_pet ? "[↵]play [ESC]back" : "[←→]pick [↵]go [O]offline [ESC]back");
 }
 
@@ -207,7 +213,7 @@ void RetroView::render_message(const RetroChip& retro) {
         lv_label_set_text(frame_.title, g ? clip_cols(upper(g->name), 26).c_str() : "PLAYING");
         lv_label_set_text(frame_.tag, "keyboard");
         wrapped("Playing" + (g ? " " + g->name : std::string()) + " (" + fit + ").", kWhite, kLeft, 40, 304);
-        wrapped("Quit from the RetroArch menu (F1); the game saves on the PET. Hold ESC to force it closed.", kRetroTheme.text, kLeft, 76, 304);
+        wrapped("Quit from the RetroArch menu (F1); the save syncs to RomM after. Hold ESC to force it closed.", kRetroTheme.text, kLeft, 76, 304);
         lv_label_set_text(frame_.footer, "F1: menu · save state · quit");
         break;
     }

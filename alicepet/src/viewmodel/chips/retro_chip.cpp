@@ -9,12 +9,16 @@
 #include "platform/process.h"
 
 #include <signal.h>
+#include <sys/stat.h>
 
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <filesystem>
+#include <ctime>
 #include <fstream>
+#include <random>
+#include <sstream>
 
 namespace viewmodel::chips {
 namespace {
@@ -92,6 +96,76 @@ std::string RetroChip::size_text(long long bytes) {
     if (bytes >= 1024 * 1024) std::snprintf(text, sizeof(text), "%.1f MB", bytes / (1024.0 * 1024.0));
     else std::snprintf(text, sizeof(text), "%lld KB", (bytes + 1023) / 1024);
     return text;
+}
+
+long long RetroChip::parse_iso_time(const std::string& text) {
+    int y = 0, mo = 0, d = 0, h = 0, mi = 0, sec = 0;
+    if (std::sscanf(text.c_str(), "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &sec) < 3) return 0;
+    std::tm tm{};
+    tm.tm_year = y - 1900;
+    tm.tm_mon = mo - 1;
+    tm.tm_mday = d;
+    tm.tm_hour = h;
+    tm.tm_min = mi;
+    tm.tm_sec = sec;
+    long long t = static_cast<long long>(timegm(&tm));
+    // Offset after the seconds (and optional fraction): +HH:MM / -HH:MM; Z or none = UTC.
+    const size_t tpos = text.find('T');
+    const size_t sign = tpos == std::string::npos ? std::string::npos : text.find_first_of("+-", tpos);
+    if (sign != std::string::npos) {
+        int oh = 0, om = 0;
+        if (std::sscanf(text.c_str() + sign + 1, "%d:%d", &oh, &om) >= 1) {
+            const long long offset = oh * 3600LL + om * 60LL;
+            t += text[sign] == '+' ? -offset : offset;
+        }
+    }
+    return t;
+}
+
+std::string RetroChip::ago_text(long long then, long long now) {
+    const long long s = std::max(0LL, now - then);
+    if (s < 120) return "just now";
+    if (s < 3600) return std::to_string(s / 60) + " min ago";
+    if (s < 86400) return std::to_string(s / 3600) + " h ago";
+    if (s < 2 * 86400) return "yesterday";
+    return std::to_string(s / 86400) + " days ago";
+}
+
+std::vector<RetroChip::Save> RetroChip::parse_saves(const std::string& text) {
+    std::vector<Save> out;
+    platform::json::Value root;
+    if (!platform::json::parse(text, root)) return out;
+    const auto& list = root.is_array() ? root : root["items"];
+    for (const auto& v : list.items()) {
+        Save save;
+        save.id = static_cast<int>(v["id"].integer());
+        save.file_name = v["file_name"].str();
+        save.updated_at = v["updated_at"].str();
+        save.updated = parse_iso_time(save.updated_at);
+        if (save.id > 0) out.push_back(std::move(save));
+    }
+    return out;
+}
+
+const RetroChip::Save* RetroChip::pick_save(const std::vector<Save>& saves, const std::string& file_name) {
+    // Newest with our file name; if none has it (saved from another emulator), the newest overall.
+    const Save* named = nullptr;
+    const Save* newest = nullptr;
+    for (const auto& s : saves) {
+        if (s.file_name == file_name && (!named || s.updated > named->updated)) named = &s;
+        if (!newest || s.updated > newest->updated) newest = &s;
+    }
+    return named ? named : newest;
+}
+
+std::string RetroChip::multipart_body(const std::string& boundary, const std::string& field,
+                                      const std::string& file_name, const std::string& bytes) {
+    std::string body = "--" + boundary + "\r\n";
+    body += "Content-Disposition: form-data; name=\"" + field + "\"; filename=\"" + file_name + "\"\r\n";
+    body += "Content-Type: application/octet-stream\r\n\r\n";
+    body += bytes;
+    body += "\r\n--" + boundary + "--\r\n";
+    return body;
 }
 
 std::vector<RetroChip::Platform> RetroChip::parse_platforms(const std::string& text) {
@@ -203,6 +277,142 @@ bool RetroChip::downloaded(const Game& game) const {
     return fs::exists(local_path(game), ec);
 }
 
+std::string RetroChip::local_save_path(const Game& game) const {
+    const std::string stem = fs::path(game.file).stem().string();
+    return dir_ + "/" + (game.platform.empty() ? "other" : game.platform) + "/saves/" + stem + ".srm";
+}
+
+namespace {
+long long mtime_of(const std::string& path) {
+    struct stat st {};
+    return ::stat(path.c_str(), &st) == 0 ? static_cast<long long>(st.st_mtime) : 0;
+}
+}  // namespace
+
+std::string RetroChip::save_text(bool& good) const {
+    good = false;
+    const Game* g = game();
+    if (!g) return "";
+    if (!save_status_.empty()) return save_status_;
+    const long long local = mtime_of(local_save_path(*g));
+    if (!config_.retro_sync_saves || base_.empty()) return local ? "on PET (sync off)" : "none yet";
+    if (saves_checking_ && saves_rom_ == g->id) return "checking RomM...";
+    if (saves_failed_ && saves_rom_ == g->id) return local ? "on PET (RomM offline)" : "RomM unreachable";
+    const Save* remote = saves_rom_ == g->id ? pick_save(saves_, fs::path(local_save_path(*g)).filename().string()) : nullptr;
+    if (remote) {
+        good = local == 0 || remote->updated >= local - 2;
+        if (local > remote->updated + 2) return "newer on PET (uploads)";
+        return "synced " + ago_text(remote->updated, static_cast<long long>(std::time(nullptr)));
+    }
+    return local ? "on PET only (uploads)" : "none yet";
+}
+
+void RetroChip::fetch_saves(const Game& game) {
+    if (!config_.retro_sync_saves || base_.empty()) return;
+    saves_rom_ = game.id;
+    saves_known_ = false;
+    saves_checking_ = true;
+    saves_failed_ = false;
+    saves_.clear();
+    results_.run([url = base_ + "/api/saves?rom_id=" + std::to_string(game.id), headers = headers(), rom = game.id]() {
+        Result result;
+        result.rom_id = rom;
+        const auto response = platform::net::http_request("GET", url, "", headers, kApiTimeoutMs);
+        if (!response.ok || response.status != 200) {
+            result.what = Result::What::Saves;
+            result.text = response.ok ? "HTTP " + std::to_string(response.status) : response.error;
+            return result;
+        }
+        result.what = Result::What::Saves;
+        result.saves = parse_saves(response.body);
+        return result;
+    });
+}
+
+void RetroChip::start(const Game& game) {
+    // A newer save on RomM than on the PET is pulled first, so play picks up
+    // where another device left off.
+    const std::string path = local_save_path(game);
+    const Save* remote = config_.retro_sync_saves && saves_rom_ == game.id
+                             ? pick_save(saves_, fs::path(path).filename().string()) : nullptr;
+    if (remote && remote->updated > mtime_of(path) + 2) {
+        pull_save(game, *remote);
+        return;
+    }
+    play(game);
+}
+
+void RetroChip::pull_save(const Game& game, const Save& save) {
+    view_ = View::Downloading;
+    play_after_download_ = true;
+    downloading_id_ = game.id;
+    status_ = "syncing save from RomM...";
+    const size_t gen = ++generation_;
+    results_.run([url = base_ + "/api/saves/" + std::to_string(save.id) + "/content", headers = headers(),
+                  path = local_save_path(game), updated = save.updated, gen]() {
+        Result result;
+        result.generation = gen;
+        const auto response = platform::net::http_request("GET", url, "", headers, kApiTimeoutMs, 8 * 1024 * 1024);
+        result.what = Result::What::SaveDown;  // even on failure: play goes ahead with the PET's save
+        if (!response.ok || response.status != 200) {
+            result.text = response.ok ? "HTTP " + std::to_string(response.status) : response.error;
+            return result;
+        }
+        std::error_code ec;
+        fs::create_directories(fs::path(path).parent_path(), ec);
+        if (fs::exists(path, ec)) fs::copy_file(path, path + ".bak", fs::copy_options::overwrite_existing, ec);
+        {
+            std::ofstream out(path, std::ios::binary);
+            out.write(response.body.data(), static_cast<std::streamsize>(response.body.size()));
+            if (!out) {
+                result.text = "can't write the save";
+                return result;
+            }
+        }
+        // Stamp it with RomM's time so it isn't uploaded straight back.
+        fs::last_write_time(path, fs::file_time_type::clock::now() -
+                                      std::chrono::seconds(std::max(0LL, static_cast<long long>(std::time(nullptr)) - updated)), ec);
+        return result;
+    });
+    touch();
+}
+
+void RetroChip::push_save(const Game& game) {
+    const std::string path = local_save_path(game);
+    std::ifstream in(path, std::ios::binary);
+    std::stringstream bytes;
+    bytes << in.rdbuf();
+    if (!in && bytes.str().empty()) return;
+    save_status_ = "uploading save...";
+    std::random_device rd;
+    const std::string boundary = "alicepet" + std::to_string(rd()) + std::to_string(rd());
+    const std::string name = fs::path(path).filename().string();
+    const std::string url = base_ + "/api/saves?rom_id=" + std::to_string(game.id) + "&emulator=retroarch&overwrite=true";
+    auto hdrs = headers();
+    hdrs.push_back("Content-Type: multipart/form-data; boundary=" + boundary);
+    results_.run([url, hdrs, body = multipart_body(boundary, "saveFile", name, bytes.str()), rom = game.id]() {
+        Result result;
+        result.what = Result::What::SaveUp;
+        result.rom_id = rom;
+        const auto response = platform::net::http_request("POST", url, body, hdrs, kApiTimeoutMs);
+        if (!response.ok || response.status < 200 || response.status >= 300) {
+            result.text = response.ok ? "HTTP " + std::to_string(response.status) : response.error;
+            return result;
+        }
+        platform::json::Value v;
+        if (platform::json::parse(response.body, v)) {
+            Save save;
+            save.id = static_cast<int>(v["id"].integer());
+            save.file_name = v["file_name"].str();
+            save.updated_at = v["updated_at"].str();
+            save.updated = parse_iso_time(save.updated_at);
+            if (save.id > 0) result.saves.push_back(save);
+        }
+        return result;
+    });
+    touch();
+}
+
 void RetroChip::download(const Game& game, bool then_play) {
     view_ = View::Downloading;
     play_after_download_ = then_play;
@@ -249,10 +459,17 @@ void RetroChip::play(const Game& game) {
         touch();
         return;
     }
+    const std::string save_path = local_save_path(game);
+    const std::string save_dir = fs::path(save_path).parent_path().string();
+    std::error_code ec;
+    fs::create_directories(save_dir, ec);
+    launch_save_mtime_ = mtime_of(save_path);
+    playing_id_ = game.id;
     auto argv = platform::proc::split_command(config_.retro_player);
     for (auto& arg : argv) {
         arg = replace_all(arg, "{core}", core->second);
         arg = replace_all(arg, "{rom}", local_path(game));
+        arg = replace_all(arg, "{savedir}", save_dir);
     }
     player_ = argv.empty() ? -1 : platform::proc::spawn(argv);
     if (player_ < 0) {
@@ -293,8 +510,49 @@ const RetroChip::Game* RetroChip::game() const {
 }
 
 void RetroChip::on_result(Result result) {
+    if (result.what == Result::What::Saves) {
+        if (result.rom_id != saves_rom_) return;  // the user moved on to another game
+        saves_checking_ = false;
+        saves_failed_ = !result.text.empty();
+        saves_known_ = !saves_failed_;
+        saves_ = std::move(result.saves);
+        touch();
+        return;
+    }
+    if (result.what == Result::What::SaveUp) {
+        if (result.text.empty()) {
+            save_status_.clear();
+            if (result.rom_id == saves_rom_) {
+                for (auto& s : result.saves) {
+                    auto it = std::find_if(saves_.begin(), saves_.end(), [&](const Save& x) { return x.id == s.id; });
+                    if (it != saves_.end()) *it = s;
+                    else saves_.push_back(s);
+                }
+            }
+            status_ = "save uploaded to RomM";
+        } else {
+            save_status_.clear();
+            status_ = "save kept on the PET (upload: " + result.text + ")";
+        }
+        touch();
+        return;
+    }
     if (result.generation != generation_) return;
     switch (result.what) {
+    case Result::What::Saves:
+    case Result::What::SaveUp:
+        break;
+    case Result::What::SaveDown: {
+        status_ = result.text.empty() ? "save synced from RomM" : "RomM save not fetched (" + result.text + ")";
+        for (const auto& candidate : games_) {
+            if (candidate.id == downloading_id_) {
+                play(candidate);
+                return;
+            }
+        }
+        view_ = View::Details;
+        break;
+    }
     case Result::What::Error:
         view_ = View::Error;
         status_ = result.text;
@@ -324,7 +582,7 @@ void RetroChip::on_result(Result result) {
         view_ = View::Details;
         details_play_ = true;
         if (g && play_after_download_) {
-            play(*g);
+            start(*g);
             return;
         }
         break;
@@ -390,6 +648,7 @@ bool RetroChip::handle_key(Key key) {
             view_ = View::Details;
             details_play_ = true;
             status_.clear();
+            fetch_saves(*game());
         }
         break;
     }
@@ -401,7 +660,7 @@ bool RetroChip::handle_key(Key key) {
                 if (!details_play_) {
                     if (!downloaded(*g)) download(*g, false);
                 } else if (downloaded(*g)) {
-                    play(*g);
+                    start(*g);
                 } else {
                     download(*g, true);
                 }
@@ -458,7 +717,15 @@ void RetroChip::tick(uint32_t elapsed_ms) {
                           "). Is RetroArch and the core installed? See [retro].";
             } else {
                 view_ = View::Details;
-                status_ = "saves are kept on the PET";
+                status_.clear();
+                const Game* played = nullptr;
+                for (const auto& g : games_) {
+                    if (g.id == playing_id_) played = &g;
+                }
+                if (played && config_.retro_sync_saves && !base_.empty() &&
+                    mtime_of(local_save_path(*played)) > launch_save_mtime_) {
+                    push_save(*played);
+                }
             }
             touch();
         }

@@ -168,6 +168,7 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
         } else if (section == "retro") {
             if (key == "player") config.retro_player = value;
             else if (key == "dir") config.retro_dir = value;
+            else if (key == "sync_saves") config.retro_sync_saves = value == "on" || value == "1" || value == "true";
             else if (key.rfind("core_", 0) == 0 && key.size() > 5) config.retro_cores[key.substr(5)] = value;
         } else if (section == "remote") {
             if (key == "send_device") config.ir_send_device = value;

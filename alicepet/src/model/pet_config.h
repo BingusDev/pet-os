@@ -76,9 +76,10 @@ struct PetConfig {
     std::string romm_url;
     std::string romm_token;
 
-    // [retro]: emulator command ({core} and {rom} are replaced), where downloaded
+    // [retro]: emulator command ({core}, {rom} and {savedir} are replaced), where downloaded
     // ROMs are kept, and the libretro core for each RomM platform slug (core_<slug>=).
-    std::string retro_player{"retroarch --fullscreen -L {core} {rom}"};
+    std::string retro_player{"retroarch --fullscreen -L {core} -s {savedir} {rom}"};
+    bool retro_sync_saves{true};
     std::string retro_dir{"~/.local/share/alicepet/roms"};
     std::map<std::string, std::string> retro_cores{
         {"gb", "/usr/lib/libretro/gambatte_libretro.so"},

@@ -528,6 +528,38 @@ void test_retro_parsing() {
     CHECK(RetroChip::size_text(8388608) == "8.0 MB");
 }
 
+void test_retro_save_sync_helpers() {
+    using viewmodel::chips::RetroChip;
+    CHECK(RetroChip::parse_iso_time("2026-11-15T10:20:30+00:00") == 1794738030LL);
+    CHECK(RetroChip::parse_iso_time("2026-11-15T10:20:30.123456Z") == 1794738030LL);
+    CHECK(RetroChip::parse_iso_time("2026-11-15T05:20:30-05:00") == 1794738030LL);
+    CHECK(RetroChip::parse_iso_time("garbage") == 0);
+    CHECK(RetroChip::ago_text(1000, 1030) == "just now");
+    CHECK(RetroChip::ago_text(0, 2 * 86400 + 5) == "2 days ago");
+    CHECK(RetroChip::ago_text(0, 86400 + 5) == "yesterday");
+
+    const auto saves = RetroChip::parse_saves(R"([
+        {"id":1,"file_name":"Golden_Sun.srm","updated_at":"2026-11-10T00:00:00+00:00"},
+        {"id":2,"file_name":"Golden_Sun.srm","updated_at":"2026-11-12T00:00:00+00:00"},
+        {"id":3,"file_name":"golden sun (mgba).sav","updated_at":"2026-11-14T00:00:00+00:00"}])");
+    CHECK(saves.size() == 3);
+    CHECK(RetroChip::pick_save(saves, "Golden_Sun.srm")->id == 2);  // newest with our name
+    CHECK(RetroChip::pick_save(saves, "Other.srm")->id == 3);       // else newest overall
+    CHECK(RetroChip::pick_save({}, "x.srm") == nullptr);
+
+    const std::string body = RetroChip::multipart_body("B0UND", "saveFile", "Golden_Sun.srm", std::string("a\0b", 3));
+    CHECK(body.rfind("--B0UND\r\nContent-Disposition: form-data; name=\"saveFile\"; filename=\"Golden_Sun.srm\"\r\n", 0) == 0);
+    CHECK(body.find(std::string("\r\n\r\na\0b\r\n--B0UND--\r\n", 18)) != std::string::npos);
+
+    model::PetConfig config;
+    config.retro_dir = "/data/roms";
+    RetroChip retro(config);
+    RetroChip::Game game;
+    game.file = "Golden_Sun.zip";
+    game.platform = "gba";
+    CHECK(retro.local_save_path(game) == "/data/roms/gba/saves/Golden_Sun.srm");
+}
+
 void test_retro_needs_server() {
     using viewmodel::chips::RetroChip;
     model::PetConfig config;  // no [romm] url
@@ -564,6 +596,7 @@ int main() {
         {"remote_chip_files_and_pad", test_remote_chip_files_and_pad},
         {"retro_parsing", test_retro_parsing},
         {"retro_needs_server", test_retro_needs_server},
+        {"retro_save_sync_helpers", test_retro_save_sync_helpers},
     };
     for (const auto& [name, fn] : tests) {
         const int before = g_failures;

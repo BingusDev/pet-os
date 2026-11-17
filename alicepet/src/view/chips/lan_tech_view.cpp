@@ -86,6 +86,7 @@ int LanTechView::wrapped(const std::string& value, uint32_t color, int y, int ma
     if (max_h > 0 && lv_obj_get_height(label) > max_h) {
         lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
         lv_obj_set_height(label, max_h);
+        return y + max_h;  // the layout isn't refreshed yet, so don't read the height back
     }
     return y + lv_obj_get_height(label);
 }

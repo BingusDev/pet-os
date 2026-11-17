@@ -1,0 +1,56 @@
+<!doctype html><html><head><meta charset="utf-8"><script src="sprites.js"></script><style>
+body{margin:0;background:#0b1530;font-family:Menlo,monospace;color:#cfe8ff;padding:24px}
+h1{font:700 22px Menlo;color:#7fd3ff;margin:0 0 4px}.sub{color:#7a90b8;font-size:12px;margin-bottom:16px}
+.row{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start;margin-bottom:22px}
+.dev{background:linear-gradient(#1d4fd8,#163aa3);border-radius:16px;padding:12px 12px 8px;box-shadow:0 6px 0 #0d2466}
+.cap{color:#fff;font:700 11px Menlo;text-align:center;margin-top:6px}
+.scr{width:320px;height:170px;position:relative;overflow:hidden;border:3px solid #0a1a44;border-radius:4px;background:#061633}
+.bar{position:absolute;top:0;left:0;right:0;height:15px;font-size:9.5px;line-height:15px;padding:0 6px;display:flex;justify-content:space-between;z-index:3}
+.foot{position:absolute;bottom:0;left:0;right:0;height:13px;font-size:8.5px;line-height:13px;padding:0 6px;z-index:3}
+.jf .bar,.jf .foot{background:#1a0d2e;border-color:#aa5cc3;color:#e0b8ff}.jf .bar{border-bottom:1px solid #aa5cc3}.jf .foot{border-top:1px solid #aa5cc3}
+.jf{background:radial-gradient(circle at 70% 0,#3a1a5e,#0d0618 70%)}
+.rt .bar,.rt .foot{background:#101820;color:#ffd200}.rt .bar{border-bottom:1px solid #ffd200}.rt .foot{border-top:1px solid #ffd200}
+.rt{background:radial-gradient(circle at 30% 0,#2a2f3a,#0a0c10 70%)}
+.li{font-size:10px;line-height:15px;padding:0 6px}.sel{background:#aa5cc3;color:#fff;border-radius:3px}.rsel{background:#ffd200;color:#111;border-radius:3px}
+.poster{position:absolute;border-radius:4px;border:2px solid #fff3;display:flex;align-items:flex-end;justify-content:center;font:900 9px Arial Black;color:#fff;text-shadow:1px 1px 0 #000;padding-bottom:4px;text-align:center}
+.prog{height:4px;background:#ffffff33;border-radius:2px}.prog i{display:block;height:100%;background:#aa5cc3;border-radius:2px}
+</style></head><body>
+<h1>📺 JELLYFIN + 🕹 RETRO · v0.1</h1><div class="sub">Same flow: browse → pick → play, all on the 320×170 screen · show + episode counts are real; titles/progress are placeholders</div>
+<div class="row" id="jf"></div><div class="row" id="rt"></div>
+<script>
+const S=(cls,bar,body,foot)=>`<div class="scr ${cls}"><div class="bar">${bar}</div>${body}<div class="foot">${foot}</div></div>`;
+const D=(x,c)=>`<div><div class="dev">${x}</div><div class="cap">${c}</div></div>`;
+const posters=[["MegaMan NT Warrior","#1d6fd8,#0a2a6e"],["Code Lyoko","#2fa35a,#0d3a1d"],["Invader Zim","#7d2ad0,#1a0630"],["Pokémon","#e2434b,#5a0d12"],["Yu Yu Hakusho","#e0a21a,#5a3a00"]];
+document.getElementById('jf').innerHTML=
+D(S('jf','<span>JELLYFIN · TV SHOWS</span><span>32 shows</span>',
+ posters.map((p,i)=>`<div class="poster" style="left:${8+i*62}px;top:26px;width:56px;height:84px;background:linear-gradient(${p[1]});${i==0?'outline:2px solid #ffd200;transform:scale(1.06)':''}">${p[0]}</div>`).join('')+
+ `<div style="position:absolute;left:8px;top:122px;font-size:10px;color:#fff"><b>MegaMan NT Warrior</b> · 2002 · 5 seasons</div>`,
+ '[←→]browse [⏎]open [/]search [ESC]chips'),'1 · LIBRARY')+
+D(S('jf','<span>MEGAMAN NT WARRIOR</span><span>SEASON 1 ▾</span>',
+ `<div style="position:absolute;top:20px;left:0;right:0">`+["01","02","03","04","05","06"].map((t,i)=>`<div class="li ${i==2?'sel':''}">${i<2?'✔ ':'  '}Episode ${t}</div>`).join('')+`</div>`,
+ '[↑↓]episode [←→]season [⏎]play'),'2 · EPISODES')+
+D(S('jf','<span>S1·E03</span><span>🔋74% · 360p→PET</span>',
+ `<div style="position:absolute;left:0;right:0;top:15px;bottom:13px;background:linear-gradient(135deg,#1d6fd8,#62c0ff 40%,#0a2a6e);display:flex;align-items:center;justify-content:center;font:900 13px Arial Black;color:#fff;text-shadow:2px 2px 0 #0008">▶ (video plays here)</div>
+ <div style="position:absolute;left:8px;right:8px;bottom:18px;z-index:2"><div class="prog"><i style="width:38%"></i></div><div style="font-size:8.5px;color:#fff;display:flex;justify-content:space-between;margin-top:2px"><span>8:41</span><span>22:58</span></div></div>`,
+ '[space]pause [←→]±10s [+-]vol [S]subs'),'3 · PLAYING')+
+D(S('jf','<span>RESUME?</span><span></span>',
+ `<div style="position:absolute;left:14px;top:30px;right:14px;font-size:11px;line-height:17px"><div style="color:#fff;font-weight:700">MegaMan NT Warrior · S1·E03</div><div>You stopped at <b style="color:#ffd200">8:41</b> on the living-room TV.</div><div style="margin-top:8px"><span class="sel" style="padding:2px 6px">▶ Resume</span>  <span style="padding:2px 6px;border:1px solid #aa5cc3;border-radius:3px">⟲ Start over</span></div></div>`,
+ 'progress syncs with every Jellyfin app'),'4 · RESUME SYNC');
+const games=[["Pokémon Emerald","GBA","#2fa35a,#0d3a1d"],["Mega Man Battle Network 3","GBA","#1d6fd8,#0a2a6e"],["Link's Awakening DX","GBC","#e0a21a,#5a3a00"],["Super Metroid","SNES","#7d2ad0,#1a0630"],["Sonic 2","GEN","#2f6fe0,#0a1a5e"]];
+document.getElementById('rt').innerHTML=
+D(S('rt','<span>RETRO · ROMM</span><span>GBA ▸ 214</span>',
+ `<div style="position:absolute;left:6px;top:22px;display:flex;gap:4px;font-size:8.5px">`+["ALL","GB","GBC","GBA","NES","SNES","GEN"].map((p,i)=>`<span style="padding:1px 4px;border-radius:3px;${i==3?'background:#ffd200;color:#111':'border:1px solid #ffd20066'}">${p}</span>`).join('')+`</div>`+
+ games.slice(0,4).map((g,i)=>`<div class="poster" style="left:${8+i*76}px;top:42px;width:70px;height:90px;background:linear-gradient(${g[2]});${i==1?'outline:2px solid #ffd200;transform:scale(1.06)':''}">${g[0]}</div>`).join(''),
+ '[←→]game [TAB]system [/]search [⏎]details'),'1 · LIBRARY')+
+D(S('rt','<span>MEGA MAN BATTLE NETWORK 3</span><span>GBA</span>',
+ `<div class="poster" style="left:10px;top:24px;width:80px;height:104px;background:linear-gradient(#1d6fd8,#0a2a6e)">MMBN3</div>
+ <div style="position:absolute;left:100px;top:24px;right:8px;font-size:10px;line-height:14px"><div style="color:#fff;font-weight:700">Blue · 2002 · Capcom</div><div>Save: <span style="color:#47f08a">synced 2 days ago</span></div><div>Last played: Steam Deck</div><div>Fit: <span style="color:#47f08a">1:1 pixel-perfect</span></div>
+ <div style="margin-top:8px"><span class="rsel" style="padding:2px 6px">▶ Play</span>  <span style="padding:2px 6px;border:1px solid #ffd20088;border-radius:3px">⇩ Keep offline</span></div></div>`,
+ '[⏎]play [O]offline [ESC]back'),'2 · GAME + SAVE SYNC')+
+D(S('rt','<span>MMBN3 · GBA 1:1</span><span>🎮 keyboard</span>',
+ `<div style="position:absolute;left:40px;top:15px;width:240px;height:142px;background:repeating-linear-gradient(0deg,#0002 0 2px,transparent 2px 4px),linear-gradient(#3fa0ff,#0d3a8a);border-left:1px solid #ffd20055;border-right:1px solid #ffd20055;display:flex;align-items:center;justify-content:center;font:900 12px Arial Black;color:#fff;text-shadow:2px 2px 0 #0008">240×160 game</div>`,
+ 'hold FN: menu · save state · quit (auto-sync)'),'3 · PLAYING (GBA, native)')+
+D(S('rt','<span>SNES · scaled 76%</span><span>🎮 8BitDo</span>',
+ `<div style="position:absolute;left:62px;top:15px;width:196px;height:142px;background:repeating-linear-gradient(0deg,#0002 0 2px,transparent 2px 4px),linear-gradient(#a05cff,#2a0d5e);display:flex;align-items:center;justify-content:center;font:900 11px Arial Black;color:#fff;text-shadow:2px 2px 0 #0008">256×224 → 194×170</div>`,
+ 'side bars keep the correct shape'),'4 · PLAYING (SNES, scaled)');
+</script></body></html>

@@ -1,0 +1,83 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+body{margin:0;background:#0b1530;font-family:"Menlo",monospace;color:#cfe8ff;padding:24px}
+h1{font:700 22px Menlo;color:#7fd3ff;margin:0 0 4px} .sub{color:#7a90b8;font-size:12px;margin-bottom:18px}
+.grid{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start}
+.dev{background:linear-gradient(#1d4fd8,#163aa3);border-radius:18px;padding:16px 16px 10px;box-shadow:0 6px 0 #0d2466}
+.cap{color:#fff;font:700 12px Menlo;text-align:center;margin-top:8px;letter-spacing:1px}
+.scr{width:320px;height:170px;position:relative;overflow:hidden;border:3px solid #0a1a44;border-radius:4px;
+ background:radial-gradient(circle at 30% 20%,#0f3b7a,#061633 70%);image-rendering:pixelated}
+.grid-bg:before{content:"";position:absolute;inset:0;background:
+ linear-gradient(#1b5fb633 1px,transparent 1px) 0 0/16px 16px,linear-gradient(90deg,#1b5fb633 1px,transparent 1px) 0 0/16px 16px}
+.bar{position:absolute;top:0;left:0;right:0;height:16px;background:#0a2350;border-bottom:1px solid #2f7de0;
+ font-size:10px;line-height:16px;padding:0 6px;display:flex;justify-content:space-between;color:#9fd8ff}
+.foot{position:absolute;bottom:0;left:0;right:0;height:14px;background:#0a2350;border-top:1px solid #2f7de0;font-size:9px;line-height:14px;padding:0 6px;color:#7fb6ff}
+.navi{position:absolute;image-rendering:pixelated}
+.bub{position:absolute;background:#eaf6ff;color:#0a2350;border-radius:8px;padding:5px 7px;font:11px/1.25 Menlo;border:2px solid #2f7de0}
+.red{color:#ff5a6e}.grn{color:#47f08a}.yel{color:#ffd54a}
+.chip{position:absolute;width:56px;height:72px;border-radius:6px;background:linear-gradient(#ffd54a,#e8a31a);border:2px solid #fff3;
+ color:#3a1f00;font:700 8px Menlo;text-align:center;padding-top:4px}
+.chip .ic{font-size:22px;margin:6px 0 4px}.chip .k{position:absolute;bottom:3px;left:0;right:0;font-size:8px}
+.win{width:600px;height:330px;background:#e9eef7;border-radius:10px;overflow:hidden;box-shadow:0 10px 30px #0008;font:12px -apple-system,Segoe UI,sans-serif;color:#1a2440;position:relative}
+.wt{height:30px;background:linear-gradient(#1d4fd8,#163aa3);color:#fff;display:flex;align-items:center;padding:0 10px;font-weight:700;gap:8px}
+.btn{display:inline-block;padding:6px 10px;border-radius:6px;font-weight:700;font-size:11px;color:#fff;margin-right:6px}
+</style></head><body>
+<h1>⚡ AlicePET OS · core screens v0.3</h1>
+<div class="sub">CardputerZero · 320×170 screen (confirmed spec) · Holden &amp; Alice · 2026-11-16</div>
+<div class="grid">
+
+<div class="dev"><div class="scr grid-bg">
+ <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center">
+  <div style="font:900 30px Menlo;color:#7fd3ff;text-shadow:0 0 8px #2f9dff,2px 2px 0 #0a2350;letter-spacing:3px">P.E.T.</div>
+  <div style="font-size:10px;color:#9fc7ff;margin-top:2px">PERSONAL TERMINAL · ALICE.EXE</div>
+  <div style="width:180px;height:8px;border:1px solid #47b3ff;margin-top:14px;border-radius:4px"><div style="width:68%;height:100%;background:#47b3ff"></div></div>
+  <div style="font-size:9px;margin-top:6px;color:#7fb6ff">Connecting to Navi via Tailscale…</div>
+ </div></div><div class="cap">1 · BOOT</div></div>
+
+<div class="dev"><div class="scr grid-bg">
+ <div class="bar"><span>ALICE.EXE ● ONLINE</span><span>📶 🔋82% 19:47</span></div>
+ <img class="navi" src="alice-pixel-88.png" style="left:8px;top:30px;width:110px">
+ <div class="bub" style="left:122px;top:28px;width:180px">Hi Holden! ⚡ All systems green. Backups ran OK last night. Want me to do anything?</div>
+ <div style="position:absolute;left:124px;top:104px;font-size:10px;color:#9fd8ff">&gt; type or hold 🎤 to talk_</div>
+ <div class="foot">[1]NET [2]CHIP FOLDER [3]VOICE [ESC]sleep</div></div><div class="cap">2 · NAVI HOME</div></div>
+
+<div class="dev"><div class="scr">
+ <div class="bar"><span>NET SCAN</span><span>6/7 ONLINE</span></div>
+ <div style="position:absolute;top:22px;left:10px;right:10px;font-size:11px;line-height:15px">
+ <div><span class="grn">●</span> Mac mini ......... <span class="grn">OK</span></div>
+ <div><span class="grn">●</span> grandworld-pi .... <span class="grn">OK</span> 18 ctr</div>
+ <div><span class="grn">●</span> media / Jellyfin . <span class="grn">OK</span></div>
+ <div><span class="grn">●</span> NAS .............. <span class="grn">OK</span></div>
+ <div><span class="grn">●</span> PS5 .............. <span class="yel">REST</span></div>
+ <div><span class="grn">●</span> Gaming PC ........ <span class="grn">OK</span></div>
+ <div><span class="red">●</span> Mox (store) ...... <span class="red">OFFLINE</span></div>
+ </div><img class="navi" src="alice-pixel-88.png" style="right:4px;bottom:16px;width:44px">
+ <div class="foot">[↑↓]select [⏎]details [R]rescan [ESC]home</div></div><div class="cap">3 · NET SCAN</div></div>
+
+
+
+<div class="dev"><div class="scr" style="background:radial-gradient(circle,#1a0f3a,#05030f)">
+ <div class="bar" style="background:#2a0a3a;border-color:#c04aff"><span>JACK IN · LAPTOP-FRONT</span><span class="yel">READ-ONLY</span></div>
+ <div style="position:absolute;top:22px;left:10px;right:10px;font-size:10px;line-height:14px">
+ <div>Host: Win 11 · user: front-desk</div>
+ <div>CPU <span class="yel">78%</span> · RAM <span class="red">91%</span> · Disk C: <span class="yel">8% free</span></div>
+ <div>Startup items: <span class="red">14</span> · Defender: <span class="red">OFF</span></div>
+ <div style="margin-top:4px;color:#e0b3ff">Alice: Chrome is using 3.1 GB and</div>
+ <div style="color:#e0b3ff">Defender's been off since Aug. Fix?</div>
+ </div><div class="foot" style="background:#2a0a3a;border-color:#c04aff">[F]full access [A]request admin [X]JACK OUT</div></div><div class="cap">5 · JACK IN (on PET)</div></div>
+
+<div><div class="win">
+ <div class="wt"><img src="alice-pixel-88.png" style="width:22px;image-rendering:pixelated">Jack In · Alice <span style="margin-left:auto;font-size:11px;background:#ffd54a;color:#3a1f00;padding:2px 6px;border-radius:4px">READ-ONLY</span><span style="margin-left:6px;font-size:11px;background:#2f7de0;padding:2px 6px;border-radius:4px">🌐 via PC internet</span></div>
+ <div style="display:flex;height:250px">
+  <div style="width:150px;background:linear-gradient(#0f3b7a,#061633);display:flex;flex-direction:column;align-items:center;justify-content:center">
+   <img src="alice.png" style="width:120px;border-radius:10px"><div style="color:#7fd3ff;font:700 11px Menlo;margin-top:6px">ALICE.EXE ● LINKED</div></div>
+  <div style="flex:1;padding:10px;font-size:12px;overflow:hidden">
+   <div style="background:#fff;border-radius:8px;padding:8px;margin-bottom:8px;border-left:4px solid #2f7de0"><b>Alice:</b> Scan done! RAM 91% (Chrome 3.1 GB), 14 startup apps, Defender off since Aug 12, C: drive 8% free. Want me to fix these?</div>
+   <div style="font:11px Menlo;background:#0b1530;color:#9fd8ff;border-radius:6px;padding:6px;height:92px;overflow:hidden">
+   <div style="color:#7a90b8"># live command log</div>&gt; Get-Process | sort WS -desc | select -f 5<br>&gt; Get-CimInstance Win32_StartupCommand<br>&gt; Get-MpComputerStatus<br><span class="grn">✔ read-only checks complete</span></div>
+  </div></div>
+ <div style="position:absolute;bottom:0;left:0;right:0;height:50px;background:#d7deeb;display:flex;align-items:center;padding:0 10px">
+  <span class="btn" style="background:#2fc06a">🔓 Full Access</span><span class="btn" style="background:#e8a31a">🛡 Request Admin</span><span class="btn" style="background:#2f7de0">🌐 Share PC Internet</span><span class="btn" style="background:#5a6b8a">📄 Log</span>
+  <span class="btn" style="background:#e5384f;margin-left:auto">⏏ JACK OUT</span></div>
+</div><div class="cap" style="color:#7fd3ff">6 · JACK IN APP (Windows/Mac/Linux)</div></div>
+
+</div></body></html>

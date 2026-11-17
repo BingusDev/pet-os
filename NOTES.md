@@ -1,0 +1,21 @@
+# PET (Cardputer Zero) project — started 2026-11-16
+Holden's M5Stack CardputerZero (Pi CM0, Linux) arriving week of Nov 16. Goal: MMBN-style P.E.T. for Alice.
+- PET app: Alice sprite/chat to Mac mini over Tailscale, voice (mic/speaker), net-scan status, "battle chip" hotkeys, IR, alerts.
+- "Jack In" portable app on PET's USB drive (Win first, then Mac/Linux): avatar window, read-only diagnostics by default (CPU/RAM hogs, startup items, disk, AV status), [Approve] for any change, session log, nothing installed.
+- Holden is the IT person at Gamers' Command: authorized for use on store/work machines.
+- Step 1 when it arrives: flash official Linux image, Wi-Fi, Tailscale.
+- 2026-11-16 19:42 Holden wants Jack In to allow writes (SSH-style shell). Design: session starts read-only; on-screen "Full Access" toggle by the person at the keyboard grants shell for that session only; runs as the logged-in user (admin elevation prompts via UAC/sudo, user clicks); every command shown live in the window + session log; big "Jack Out" button kills access instantly; no persistence/no service left behind; access only while the window is open.
+- Jack In: add 'Request Admin' button (user clicks -> UAC/sudo prompt for that session).
+- 2026-11-16 20:01 USB device mode disables Ethernet + USB-A (hub behind host side); Wi-Fi stays. Composite gadget: mass storage (app) + USB network to host.
+- Jack In app gets a "Share PC Internet" button: relays PET traffic through host's connection (user-initiated, per-session, off on Jack Out). Status chip shows link route: PET Wi-Fi / PC internet / offline.
+- 2026-11-16 20:55 SDK prep: cloned CardputerZero/Template (LVGL 9.5 + CMake, 320x170 SDL simulator), m5stack/CardputerZeroRepository (.deb repo), eggfly/CardputerZero-Examples, CardputerZeroCollection, cardputerzero.github.io (docs), CardputerZero/Music into projects/pet-cardputer-zero/sdk/. Mac: brew deps installed (jpeg, dpkg, zlib + existing cmake/ninja/fmt/sdl2/freetype/libpng); darwin-arm64 simulator builds+runs. Device build: no cross toolchain on Mac (only via untrusted brew tap messense; declined) -> build natively on grandworld-pi (aarch64 trixie) in debian:trixie docker using cp0-cross preset (BSP sysroot auto-downloads to .cache). Verified ELF aarch64 template_app. Script: bin/build-device.sh.
+
+## AlicePET OS v0.1 (alicepet) — 2026-11-16
+
+- Built the first real app in `alicepet/` from `sdk/Template`: BOOT (P.E.T., 2s progress, Navi line), NAVI HOME (status bar, Alice, speech bubble, key footer), CHIP FOLDER (7-chip carousel, `n/7`, glow on selected), BATTLE CHIP IN! (slotted, "Coming soon", Alice line), ESC sleep overlay.
+- Architecture: `model/chip_registry` (chip table, sprites), `viewmodel/alice_viewmodel` (LVGL-free state machine), `view/alice_view` (LVGL). The reactive layer and template screens/widgets were removed.
+- Desktop: `cmake --preset darwin-arm64 && cmake --build --preset darwin-arm64-rel`, then run `build/darwin-arm64/Release/alicepet`.
+- Snapshot mode: `ALICEPET_SNAPSHOT=<dir> build/darwin-arm64/Release/alicepet` writes boot/home/folder/folder-next/slotted at 320x170, plus `@3x` copies made by a PIL script kept outside the repo (`/tmp/alicepet-tools/scale3x.py`, run with `/usr/bin/python3`; the user site with PIL is not visible under `-I`).
+- Device: `bin/build-device.sh .../alicepet` builds on grandworld-pi; output `pet-build/alicepet/build/cp0-cross/Release/alicepet` is ARM aarch64 ELF.
+- Known gaps: no icon yet; app-builder.json author/source_repo/share_code/categories/icon left as TODO; middle-dot and element glyphs unsupported by bundled Montserrat, so ASCII separators are used; slotted chip not rotated (-8 deg); title glow is a rounded box with shadow, not a true text glow; config/template-app.conf and the desktop frame's dark-mode binding are leftovers from the template and not used by AlicePET.
+- 2026-11-17 chip art: folder/slotted chips are PNGs in `alicepet/assets/images/chips/` rendered from `mockups/chips.html` by headless Chrome (big 0.58x, small 0.42x, tilt -8deg, Arial Black titles, check/bolt icons). Regenerate: `zsh /tmp/alicepet-tools/render.sh` (scripts are outside the repo). Slotted status lines are placeholders (`kSlotCopy` in alice_view.cpp). `ALICEPET_SNAPSHOT_ALL_CHIPS=1` adds `chips/folder-NN.png` + `chips/slotted-NN.png` to snapshot mode.

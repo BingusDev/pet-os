@@ -1,0 +1,65 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+body{margin:0;background:#0b1530;font-family:Menlo,monospace;color:#cfe8ff;padding:24px;width:860px}
+h1{font:700 22px Menlo;color:#7fd3ff;margin:0 0 4px}.sub{color:#7a90b8;font-size:12px;margin-bottom:16px}
+.row{display:flex;gap:22px;flex-wrap:wrap}
+.dev{background:linear-gradient(#1d4fd8,#163aa3);border-radius:16px;padding:12px 12px 8px;box-shadow:0 6px 0 #0d2466}
+.cap{color:#fff;font:700 11px Menlo;text-align:center;margin:6px 0 14px}
+.scr{width:320px;height:170px;position:relative;overflow:hidden;border:3px solid #0a1a44;border-radius:4px}
+.bar{position:absolute;top:0;left:0;right:0;height:15px;font-size:9.5px;line-height:15px;padding:0 6px;display:flex;justify-content:space-between;z-index:2}
+.foot{position:absolute;bottom:0;left:0;right:0;height:13px;font-size:8.5px;line-height:13px;padding:0 6px;z-index:2}
+.vo{background:radial-gradient(circle at 30% 30%,#5a1a3e,#14040d 75%)}.vo .bar,.vo .foot{background:#2a0a1d;color:#ffb3d6}.vo .bar{border-bottom:1px solid #e85a9a}.vo .foot{border-top:1px solid #e85a9a}
+.tm{background:#05080a}.tm .bar,.tm .foot{background:#0e1418;color:#47f08a}.tm .bar{border-bottom:1px solid #2b6b44}.tm .foot{border-top:1px solid #2b6b44}
+.ji{background:radial-gradient(circle,#1a0f3a,#05030f)}.ji .bar,.ji .foot{background:#2a0a3a;color:#e0b3ff}.ji .bar{border-bottom:1px solid #c04aff}.ji .foot{border-top:1px solid #c04aff}
+.t{font-size:10px;line-height:14px}.g{color:#47f08a}.y{color:#ffd54a}.r{color:#ff5a6e}.w{color:#fff}
+.navi{position:absolute;image-rendering:pixelated}
+.bub{background:#ffe6f2;color:#3a0a22;border-radius:7px;padding:4px 6px;font-size:10px;line-height:13px;border:2px solid #e85a9a}
+.wave{display:flex;gap:2px;align-items:center;height:26px}.wave i{width:4px;background:#e85a9a;border-radius:2px}
+.mono{font:9.5px/12.5px Menlo;white-space:pre}
+.pill{display:inline-block;border-radius:3px;padding:0 4px;font-size:8.5px}
+</style></head><body>
+<h1>🎤 VOICE + 💻 TERMINAL + 🔌 JACK IN · v0.1</h1><div class="sub">Talk, shell, and the PET side of Jack In · all content is example data</div>
+<div class="row">
+<div><div class="dev"><div class="scr vo"><div class="bar"><span>VOICE</span><span>🎤 hold [SPACE]</span></div>
+<img class="navi" src="alice-pixel-88.png" style="left:6px;top:24px;width:96px">
+<div style="position:absolute;left:108px;top:28px;right:8px"><div class="wave">${W}</div><div class="t w" style="margin-top:6px">Listening… <span style="color:#ffb3d6">release to send</span></div><div class="t" style="color:#ffb3d6;margin-top:4px">mic is OFF unless you hold the key</div></div>
+<div class="foot">[SPACE]talk [T]type [H]history [ESC]chips</div></div></div><div class="cap">1 · PUSH-TO-TALK</div></div>
+<div><div class="dev"><div class="scr vo"><div class="bar"><span>VOICE</span><span>🔊 speaking</span></div>
+<div style="position:absolute;left:8px;top:20px;right:8px" class="t"><div style="text-align:right;color:#ffb3d6">You: "Is the Pi okay?"</div></div>
+<img class="navi" src="alice-pixel-88.png" style="left:4px;top:46px;width:76px">
+<div class="bub" style="position:absolute;left:84px;top:44px;right:8px">Yep! All 19 containers are up, AdGuard's answering, and last night's backup finished. ⚡</div>
+<div class="foot">[SPACE]reply [R]replay [M]mute voice</div></div></div><div class="cap">2 · ALICE ANSWERS</div></div>
+</div><div class="row">
+<div><div class="dev"><div class="scr tm"><div class="bar"><span>TERMINAL · HOSTS</span><span>via Tailscale</span></div>
+<div style="position:absolute;top:20px;left:8px;right:8px" class="t">
+<div style="background:#2b6b44;color:#fff;border-radius:3px;padding:0 4px">● grandworld-pi ........ Pi · home</div>
+<div style="padding:0 4px"><span class="g">●</span> grandworld-media ..... Jellyfin box</div>
+<div style="padding:0 4px"><span class="g">●</span> mox .................. store Pi</div>
+<div style="padding:0 4px"><span class="g">●</span> grandworld (VPS) ..... Hostinger</div>
+<div style="padding:0 4px"><span class="g">●</span> gaming-pc ............ Windows</div>
+<div style="padding:0 4px"><span class="r">●</span> macbook-air ......... offline</div></div>
+<div class="foot">[⏎]connect [A]ask Alice [N]new host</div></div></div><div class="cap">3 · HOST LIST</div></div>
+<div><div class="dev"><div class="scr tm"><div class="bar"><span>holden@grandworld-pi</span><span>53×13</span></div>
+<div class="mono g" style="position:absolute;top:18px;left:6px;right:6px">$ docker ps --format '{{.Names}}' | wc -l
+19
+$ uptime
+ 20:31  up 1 day, 23:12,  load: 0.08
+$ <span style="background:#47f08a;color:#000"> </span></div>
+<div class="foot">[FN+A]ask Alice [FN+Q]disconnect [FN+↑]scroll</div></div></div><div class="cap">4 · SHELL</div></div>
+</div><div class="row">
+<div><div class="dev"><div class="scr tm"><div class="bar"><span>ASK ALICE · grandworld-media</span><span class="y">suggest</span></div>
+<div style="position:absolute;top:19px;left:8px;right:8px" class="t"><div class="w">? why is jellyfin slow</div>
+<div style="color:#ffb3d6;margin-top:3px">Alice: Let's check if it's transcoding a lot:</div>
+<div class="mono g" style="background:#0e1418;border:1px solid #2b6b44;border-radius:3px;padding:3px;margin-top:3px">docker stats --no-stream jellyfin</div>
+<div style="margin-top:4px"><span class="pill" style="background:#47f08a;color:#000">⏎ Run</span> <span class="pill" style="border:1px solid #47f08a">E Edit</span> <span class="pill" style="border:1px solid #47f08a">ESC No</span></div></div>
+<div class="foot">nothing runs until you press Enter</div></div></div><div class="cap">5 · ASK-ALICE MODE</div></div>
+<div><div class="dev"><div class="scr ji"><div class="bar"><span>JACK IN · LAPTOP-FRONT</span><span><span class="pill" style="background:#47f08a;color:#000">FULL</span> <span class="pill" style="background:#2f7de0;color:#fff">🌐 PC net</span></span></div>
+<div style="position:absolute;top:20px;left:8px;right:8px" class="t">
+<div>Win 11 · front-desk · <span class="y">admin: requested…</span></div>
+<div class="mono" style="color:#e0b3ff;margin-top:3px">&gt; Get-Process | sort WS -desc
+&gt; Stop-Process -Name OneDrive ✔
+&gt; Start-MpScan -ScanType Quick …</div>
+<div style="margin-top:3px;color:#fff">Alice: Defender's scanning (2 min). RAM back to 64%.</div></div>
+<div class="foot">[F]full [A]admin [N]share net [L]log [X]JACK OUT</div></div></div><div class="cap">6 · JACK IN (PET side, v0.2)</div></div>
+</div>
+<script>document.body.innerHTML=document.body.innerHTML.replace('${W}',[6,14,22,10,18,26,12,8,20,24,14,6,16,22,10,18,8,12,20,6].map(h=>`<i style="height:${h}px"></i>`).join(''))</script>
+</body></html>

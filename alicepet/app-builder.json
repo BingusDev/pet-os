@@ -1,0 +1,32 @@
+{
+  "app_name": "AlicePET",
+  "package_name": "alicepet",
+  "version": "0.1.0",
+  "description": "AlicePET OS launcher for CardputerZero: boot screen, Navi home with Alice, and the chip folder.",
+
+  "store": {
+    "summary": "Personal terminal home screen with Alice, your Navi companion, and a browsable battle chip folder.",
+    "description": "AlicePET OS v0.1 is the first real app for CardputerZero. It shows a P.E.T. boot screen that connects to Navi over Tailscale, then opens the NAVI HOME screen where Alice greets you. Press [2] to open the CHIP FOLDER, browse seven battle chips with the arrow keys, and press ENTER to slot one. Battle combat is not built yet; the slotted screen currently reads 'Coming soon'.",
+    "categories": ["TODO: pick 1-2 real categories from docs/APP_BUILDER_JSON.md"],
+    "screenshots": [
+      "screenshots/boot@3x.png",
+      "screenshots/home@3x.png",
+      "screenshots/folder@3x.png",
+      "screenshots/slotted@3x.png"
+    ],
+    "icon": "TODO: 256x256 icon image for AlicePET (none created yet)",
+    "license": "MIT",
+    "source_repo": "TODO: https://github.com/<owner>/alicepet",
+    "author": { "github": "TODO", "display_name": "TODO" },
+    "share_code": "TODO",
+    "permissions": {
+      "camera": false,
+      "microphone": false,
+      "imu": false,
+      "network": false,
+      "additional_hardware": false,
+      "background_service": false,
+      "external_display": false
+    }
+  }
+}

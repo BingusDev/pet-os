@@ -161,8 +161,11 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
             else if (key == "width") config.jellyfin_width = to_int(value, config.jellyfin_width);
         } else if (section == "romm") {
             if (key == "url") config.romm_url = value;
-            else if (key == "user") config.romm_user = value;
-            else if (key == "password") config.romm_password = value;
+            else if (key == "token") config.romm_token = value;
+        } else if (section == "remote") {
+            if (key == "send_device") config.ir_send_device = value;
+            else if (key == "recv_device") config.ir_recv_device = value;
+            else if (key == "dir") config.remote_dir = value;
         } else if (section == "lantech") {
             if (key == "interface") config.lan_interface = value;
         }

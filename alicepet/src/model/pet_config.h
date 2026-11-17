@@ -65,10 +65,14 @@ struct PetConfig {
     int jellyfin_max_bitrate{450000};
     int jellyfin_width{320};
 
-    // [romm]
+    // [romm]: url + API token (Bearer). https URLs go through the system curl.
     std::string romm_url;
-    std::string romm_user;
-    std::string romm_password;
+    std::string romm_token;
+
+    // [remote]: IR via LIRC's ir-ctl (v4l-utils). Learned codes live in remote_dir.
+    std::string ir_send_device{"/dev/lirc0"};
+    std::string ir_recv_device{"/dev/lirc1"};
+    std::string remote_dir{"~/.config/alicepet/remotes"};
 
     // [lantech]: interface to test (empty = first non-loopback with a carrier).
     std::string lan_interface;

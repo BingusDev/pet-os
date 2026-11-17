@@ -4,6 +4,8 @@
 
 #include "net.h"
 
+#include "process.h"
+
 #include <vector>
 
 #include <arpa/inet.h>
@@ -224,8 +226,68 @@ HttpResponse http_get(const std::string& url, const std::vector<std::string>& he
     return http_request("GET", url, "", headers, timeout_ms);
 }
 
+namespace {
+
+// curl config files quote values; escape backslashes and double quotes.
+std::string curl_quote(const std::string& value) {
+    std::string out = "\"";
+    for (const char c : value) {
+        if (c == '"' || c == '\\') out += '\\';
+        out += c;
+    }
+    return out + "\"";
+}
+
+// https:// has no in-process TLS client: hand the request to the system curl.
+// Headers (tokens) go through a 0600 temp config file, not argv, so they stay
+// out of `ps`. Bodies are passed inline and must be small.
+HttpResponse https_via_curl(const std::string& method, const std::string& url, const std::string& body,
+                            const std::vector<std::string>& headers, int timeout_ms, size_t max_reply) {
+    HttpResponse response;
+    char path[] = "/tmp/alicepet-curl-XXXXXX";
+    const int fd = mkstemp(path);
+    if (fd < 0) {
+        response.error = "temp file";
+        return response;
+    }
+    std::string config = "url = " + curl_quote(url) + "\nrequest = " + curl_quote(method) + "\n";
+    for (const auto& header : headers) config += "header = " + curl_quote(header) + "\n";
+    if (!body.empty()) config += "data-binary = " + curl_quote(body) + "\n";
+    const ssize_t written = write(fd, config.data(), config.size());
+    close(fd);
+    if (written != static_cast<ssize_t>(config.size())) {
+        unlink(path);
+        response.error = "temp write";
+        return response;
+    }
+    std::string out;
+    const int rc = proc::run_capture({"curl", "-sS", "--max-time", std::to_string(std::max(1, timeout_ms / 1000)),
+                                      "-K", path, "-w", "\n@@HTTP@@%{http_code}"},
+                                     out, timeout_ms + 2000, false);
+    unlink(path);
+    const size_t marker = out.rfind("\n@@HTTP@@");
+    if (rc != 0 || marker == std::string::npos) {
+        response.error = rc == -1 ? "curl missing" : rc == -2 ? "timeout" : "curl exit " + std::to_string(rc);
+        return response;
+    }
+    response.status = std::atoi(out.c_str() + marker + 10);
+    response.body = out.substr(0, marker);
+    if (response.body.size() > max_reply) {
+        response.error = "reply too large";
+        return response;
+    }
+    response.ok = response.status > 0;
+    if (!response.ok) response.error = "no http status";
+    return response;
+}
+
+} // namespace
+
 HttpResponse http_request(const std::string& method, const std::string& url, const std::string& body,
                           const std::vector<std::string>& headers, int timeout_ms, size_t max_reply) {
+    if (url.rfind("https://", 0) == 0) {
+        return https_via_curl(method, url, body, headers, timeout_ms, max_reply);
+    }
     HttpResponse response;
     std::string host;
     std::string path;

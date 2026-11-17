@@ -20,7 +20,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BRIDGE_ROOT="${BRIDGE_ROOT:-$HERE/../../cardputer-pet-terminal}"
+BRIDGE_ROOT="${BRIDGE_ROOT:-$HERE/../vendor/cardputer-pet-terminal}"
 cd "$BRIDGE_ROOT"
 
 CALLER_TOKEN="${PET_BRIDGE_TOKEN:-}"

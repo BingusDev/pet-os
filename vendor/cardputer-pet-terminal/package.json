@@ -1,0 +1,21 @@
+{
+  "name": "cardputer-pet-terminal",
+  "private": true,
+  "type": "module",
+  "version": "2.0.0",
+  "license": "MIT",
+  "scripts": {
+    "check": "node --check bridge/server.mjs && node --check bridge/relay-client.mjs && node --check relay/src/worker.mjs && node --check scripts/pet-console.mjs && node --check scripts/setup.mjs && node --check scripts/package-firmware.mjs && python3 -m py_compile scripts/convert-spritesheet.py",
+    "setup": "node scripts/setup.mjs",
+    "start": "node bridge/server.mjs",
+    "start:bridge": "node bridge/server.mjs",
+    "start:relay-client": "node bridge/relay-client.mjs",
+    "pet-console": "node scripts/pet-console.mjs",
+    "sprites:convert": "python3 scripts/convert-spritesheet.py assets/sprites/starter_navi_sprite_sheet_16bit_64.png firmware/include/navi_sprites.h",
+    "build:firmware": "scripts/pio-run.sh",
+    "build:pet": "scripts/pio-run.sh -e m5stack-cardputer",
+    "package:firmware": "node scripts/package-firmware.mjs",
+    "relay:deploy": "cd relay && npx wrangler deploy",
+    "relay:dev": "cd relay && npx wrangler dev"
+  }
+}

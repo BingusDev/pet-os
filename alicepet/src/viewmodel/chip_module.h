@@ -40,6 +40,9 @@ public:
     virtual bool keep_awake() const { return false; }
     // True if the chip uses printable keys itself, so the letter-navigation aliases (F/X/Z/C) are off.
     virtual bool wants_text() const { return false; }
+    // True while an external program (the video player) draws on the panel; the
+    // app then stops redrawing LVGL and repaints everything when it returns.
+    virtual bool owns_display() const { return false; }
     // True once when the chip asks to go straight to Home (instead of the folder).
     virtual bool take_go_home() { return false; }
 

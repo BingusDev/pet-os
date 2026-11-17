@@ -17,7 +17,9 @@
 #include "model/chip_registry.h"
 #include "model/pet_config.h"
 #include "pet_services.h"
+#include "view/chips/jellyfin_view.h"
 #include "view/chips/terminal_view.h"
+#include "viewmodel/chips/jellyfin_chip.h"
 #include "view/chips/voice_view.h"
 #include "viewmodel/chips/terminal_chip.h"
 #include "viewmodel/chips/voice_chip.h"
@@ -211,6 +213,8 @@ void install_chips(viewmodel::AliceViewModel& vm, view::AliceView& view, const m
         std::make_unique<view::VoiceView>(root, fonts, art_dir));
     add("terminal", std::make_unique<viewmodel::chips::TerminalChip>(config),
         std::make_unique<view::TerminalView>(root, fonts));
+    add("jellyfin", std::make_unique<viewmodel::chips::JellyfinChip>(config),
+        std::make_unique<view::JellyfinView>(root, fonts, art_dir));
 }
 
 #if !USE_DESKTOP
@@ -444,6 +448,43 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         }
         vm.handle_char("d");
     }
+    // JELLYFIN (real server when [jellyfin] url/api_key are set): library, then
+    // ALICEPET_SNAPSHOT_JF_SERIES=<search> opens that show's episodes, the resume
+    // prompt and the (desktop-stubbed) playing screen.
+    go_home();
+    using viewmodel::chips::JellyfinChip;
+    vm.open_chip(model::chip_index("jellyfin"));
+    auto* jf = static_cast<JellyfinChip*>(vm.active_chip());
+    wait_real([&] { return jf->view() != JellyfinChip::View::Loading; }, 15000);
+    vm.handle_key(viewmodel::Key::Right);
+    vm.handle_key(viewmodel::Key::Right);
+    advance(virtual_now + kStepMs);
+    capture("jellyfin.png");
+    if (const char* series = std::getenv("ALICEPET_SNAPSHOT_JF_SERIES")) {
+        vm.handle_char("/");
+        type(series);
+        vm.handle_key(viewmodel::Key::Enter);
+        advance(virtual_now + kStepMs);
+        capture("jellyfin-search.png");
+        vm.handle_key(viewmodel::Key::Enter);
+        wait_real([&] { return jf->view() == JellyfinChip::View::Episodes && !jf->episodes().empty(); }, 15000);
+        for (size_t i = 0; i < jf->episodes().size(); ++i) {
+            if (jf->episodes()[i].position_ticks > 0) {
+                while (jf->episode() != i) vm.handle_key(viewmodel::Key::Down);
+                break;
+            }
+        }
+        advance(virtual_now + kStepMs);
+        capture("jellyfin-episodes.png");
+        vm.handle_key(viewmodel::Key::Enter);
+        advance(virtual_now + kStepMs);
+        if (jf->view() == JellyfinChip::View::Resume) capture("jellyfin-resume.png");
+        if (jf->view() == JellyfinChip::View::Resume) vm.handle_key(viewmodel::Key::Enter);
+        wait_real([&] { return jf->stream_info() != "requesting transcode..."; }, 20000);
+        capture("jellyfin-playing.png");
+        vm.handle_key(viewmodel::Key::Escape);
+        wait_real([] { return false; }, 1500);  // let the transcode cleanup request go out
+    }
     go_home();
     vm.handle_key(viewmodel::Key::Digit2);
     vm.handle_key(viewmodel::Key::Enter);
@@ -553,6 +594,7 @@ int Application::run() {
     uint32_t last_ms = lv_tick_get();
     bool running = true;
     bool screen_on = true;
+    bool display_lent = false;
     while (running
 #if USE_DESKTOP
            && simulator_frame.process_events()
@@ -570,8 +612,20 @@ int Application::run() {
             LOG_INFO("screen {} (backlight {})", screen_on ? "on" : "off", switched ? "switched" : "n/a");
         }
 
-        view.render(view_model);
-        view.update_clock();
+        // While the video player owns the panel, keep reading keys (lv_timer_handler)
+        // but stop drawing; repaint everything when it hands the panel back.
+        const auto* chip = view_model.active_chip();
+        const bool external = chip && chip->owns_display();
+        if (!external) {
+            if (display_lent) {
+                display_lent = false;
+                lv_obj_invalidate(lv_screen_active());
+            }
+            view.render(view_model);
+            view.update_clock();
+        } else {
+            display_lent = true;
+        }
         lv_timer_handler();
         // Napping: poll keys less often to save power.
         lv_delay_ms(screen_on ? 5 : 40);

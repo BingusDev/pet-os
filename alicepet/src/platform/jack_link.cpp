@@ -395,6 +395,31 @@ void Relay::stop() {
 bool Relay::running() const { return state_ != nullptr; }
 int Relay::active() const { return state_ ? state_->active.load() : 0; }
 
+bool base64_decode(const std::string& text, std::string& out) {
+    out.clear();
+    out.reserve(text.size() * 3 / 4);
+    unsigned value = 0;
+    int bits = 0;
+    for (const char ch : text) {
+        int d;
+        if (ch >= 'A' && ch <= 'Z') d = ch - 'A';
+        else if (ch >= 'a' && ch <= 'z') d = ch - 'a' + 26;
+        else if (ch >= '0' && ch <= '9') d = ch - '0' + 52;
+        else if (ch == '+') d = 62;
+        else if (ch == '/') d = 63;
+        else if (ch == '=') break;
+        else if (ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t') continue;
+        else return false;
+        value = (value << 6) | static_cast<unsigned>(d);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out += static_cast<char>((value >> bits) & 0xff);
+        }
+    }
+    return true;
+}
+
 void set_proxy_env(const std::string& proxy_url) {
     for (const char* name : {"http_proxy", "https_proxy", "HTTPS_PROXY"}) {
         if (proxy_url.empty()) ::unsetenv(name);

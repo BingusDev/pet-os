@@ -39,8 +39,8 @@ public:
     bool send(const std::string& line);  // adds the newline
     void drop_client();
 
-    // A line longer than this drops the connection.
-    static constexpr size_t kMaxLine = 256 * 1024;
+    // A line longer than this drops the connection (a 15 s voice clip is ~650 KB of base64).
+    static constexpr size_t kMaxLine = 2 * 1024 * 1024;
 
 private:
     int listen_fd_{-1};
@@ -80,6 +80,9 @@ private:
     struct State;
     std::shared_ptr<State> state_;
 };
+
+// Decodes standard base64 (padding optional, whitespace skipped); false on bad input.
+bool base64_decode(const std::string& text, std::string& out);
 
 // Sets / clears http(s)_proxy for this process, so curl in every chip uses the relay.
 void set_proxy_env(const std::string& proxy_url);

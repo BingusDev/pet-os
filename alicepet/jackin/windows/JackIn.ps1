@@ -8,6 +8,8 @@
 #  - Full Access: lets the PET send PowerShell commands, as you, until you turn it off.
 #  - Request Admin: relaunches this app through the Windows UAC prompt that you click.
 #  - Share PC Internet: the PET borrows this PC's internet (outbound connections only).
+#  - Chat with Alice: type, or hold the mic button to talk (the mic records only
+#    while you hold it). The PET carries it to Alice and her answer shows here.
 #  - Every command is shown in the live log. JACK OUT ends everything at once.
 # The app only dials out to the PET (10.55.0.1); it never listens. See PROTOCOL.md.
 
@@ -100,12 +102,30 @@ $alice.Text = 'Alice: Looking for the PET...'
 $form.Controls.Add($alice)
 
 $ask = New-Object System.Windows.Forms.Label
-$ask.SetBounds(205, 88, 590, 26)
+$ask.SetBounds(205, 120, 590, 26)
 $ask.BackColor = [System.Drawing.Color]::FromArgb(0xff, 0xd5, 0x4a)
 $ask.ForeColor = [System.Drawing.Color]::FromArgb(0x3a, 0x1f, 0x00)
 $ask.TextAlign = 'MiddleLeft'
 $ask.Visible = $false
 $form.Controls.Add($ask)
+
+# Chat with Alice: type and press Enter, or hold the mic button and talk.
+$chatBox = New-Object System.Windows.Forms.TextBox
+$chatBox.SetBounds(205, 89, 400, 26)
+$chatBox.Font = New-Object System.Drawing.Font('Segoe UI', 11)
+$form.Controls.Add($chatBox)
+$btnSend = New-Object System.Windows.Forms.Button
+$btnSend.Text = 'Send'
+$btnSend.SetBounds(610, 88, 80, 28)
+$form.Controls.Add($btnSend)
+$form.AcceptButton = $btnSend
+$btnMic = New-Object System.Windows.Forms.Button
+$btnMic.Text = 'Hold to talk'
+$btnMic.SetBounds(695, 88, 100, 28)
+$btnMic.FlatStyle = 'Flat'
+$btnMic.BackColor = [System.Drawing.Color]::FromArgb(0xc0, 0x4a, 0xff)
+$btnMic.ForeColor = [System.Drawing.Color]::White
+$form.Controls.Add($btnMic)
 
 $logBox = New-Object System.Windows.Forms.TextBox
 $logBox.Multiline = $true
@@ -179,6 +199,14 @@ function Update-Ui {
     $extraLabel.Text = ($extra -join "`r`n")
     $btnAdmin.Enabled = -not $S.Admin
     $btnNet.Text = $(if ($S.Net) { 'Stop Sharing' } else { 'Share PC Internet' })
+    $chatBox.Enabled = $S.Linked
+    $btnSend.Enabled = $S.Linked
+    $btnMic.Enabled = $S.Linked -or $Mic.On
+}
+
+function Hide-Ask {
+    $ask.Visible = $false
+    $logBox.SetBounds(205, 120, 590, 220)
 }
 
 function Show-Ask([string]$what) {
@@ -186,6 +214,8 @@ function Show-Ask([string]$what) {
     if (-not $names.ContainsKey($what)) { return }
     $ask.Text = "  The PET asks for $($names[$what]). Click that button below to allow it, or ignore this."
     $ask.Visible = $true
+    $ask.BringToFront()
+    $logBox.SetBounds(205, 150, 590, 190)
     $form.Activate()
 }
 
@@ -332,6 +362,78 @@ function Stop-Sharing {
     $S.Net = $false
 }
 
+# --- chat with Alice ---------------------------------------------------------------
+
+function Send-Chat {
+    $text = $chatBox.Text.Trim()
+    if (-not $text -or -not $S.Linked) { return }
+    $chatBox.Text = ''
+    Add-Log "you: $text"
+    $alice.Text = 'Alice: ...'
+    Send-Pet ([ordered]@{ t = 'chat'; text = $text })
+}
+
+# The mic records only while the button is held (max 15 s), through the
+# Windows multimedia API; the clip goes to the PET and its temp file is deleted.
+$Mic = @{ On = $false; Started = $null; Ready = $false }
+function Initialize-Mic {
+    if ($Mic.Ready) { return $true }
+    try {
+        Add-Type -Namespace JackIn -Name Mci -MemberDefinition @'
+[DllImport("winmm.dll", CharSet = CharSet.Unicode)]
+public static extern int mciSendString(string command, System.Text.StringBuilder ret, int retLen, System.IntPtr hwnd);
+'@
+        $Mic.Ready = $true
+    } catch {
+        Add-Log "mic: can't load the Windows audio API ($($_.Exception.Message))"
+    }
+    return $Mic.Ready
+}
+function Invoke-Mci([string]$command) {
+    return [JackIn.Mci]::mciSendString($command, $null, 0, [IntPtr]::Zero)
+}
+
+function Start-Mic {
+    if ($Mic.On -or -not $S.Linked -or -not (Initialize-Mic)) { return }
+    [void](Invoke-Mci 'close jackmic')
+    $rc = Invoke-Mci 'open new type waveaudio alias jackmic'
+    if ($rc -eq 0) { $rc = Invoke-Mci 'set jackmic bitspersample 16 channels 1 samplespersec 16000 bytespersec 32000 alignment 2' }
+    if ($rc -eq 0) { $rc = Invoke-Mci 'record jackmic' }
+    if ($rc -ne 0) {
+        [void](Invoke-Mci 'close jackmic')
+        Add-Log "mic: no microphone to record from (error $rc)"
+        return
+    }
+    $Mic.On = $true
+    $Mic.Started = Get-Date
+    $btnMic.Text = '● REC (let go)'
+    $btnMic.BackColor = [System.Drawing.Color]::FromArgb(0xe5, 0x38, 0x4f)
+}
+
+function Stop-Mic([bool]$send = $true) {
+    if (-not $Mic.On) { return }
+    $Mic.On = $false
+    $btnMic.Text = 'Hold to talk'
+    $btnMic.BackColor = [System.Drawing.Color]::FromArgb(0xc0, 0x4a, 0xff)
+    [void](Invoke-Mci 'stop jackmic')
+    $seconds = ((Get-Date) - $Mic.Started).TotalSeconds
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ('jackin-' + [guid]::NewGuid().ToString('N') + '.wav')
+    $bytes = $null
+    try {
+        if ($send -and $seconds -ge 0.6 -and (Invoke-Mci ('save jackmic "' + $tmp + '"')) -eq 0) {
+            $bytes = [IO.File]::ReadAllBytes($tmp)
+        }
+    } finally {
+        [void](Invoke-Mci 'close jackmic')
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $send) { return }
+    if ($null -eq $bytes) { Add-Log 'mic: too short, hold the button while you talk'; return }
+    Add-Log ('you: (voice, {0:N0} s)' -f $seconds)
+    $alice.Text = 'Alice: listening back...'
+    Send-Pet ([ordered]@{ t = 'voice'; wav = [Convert]::ToBase64String($bytes) })
+}
+
 # --- link ------------------------------------------------------------------------
 
 function Drop-Link([string]$why) {
@@ -341,6 +443,7 @@ function Drop-Link([string]$why) {
         $S.Linked = $false
         # No PET, no access: back to read-only, sharing off.
         $S.Full = $false
+        Stop-Mic $false
         Stop-Jobs
         Stop-Sharing
         Add-Log "link lost: $why (back to read-only)"
@@ -352,6 +455,7 @@ function Drop-Link([string]$why) {
 function Jack-Out([string]$why) {
     if ($S.Closing) { return }
     $S.Closing = $true
+    Stop-Mic $false
     Send-Pet ([ordered]@{ t = 'bye'; why = $why })
     $S.Full = $false
     Stop-Jobs
@@ -374,6 +478,12 @@ function On-Line([string]$line) {
         'scan' { Invoke-Scan }
         'net_open' { Open-Tunnel $msg.id ([string]$msg.host) ([int]$msg.port) }
         'jackout' { Add-Log 'PET pressed JACK OUT'; Jack-Out 'PET' }
+        'alice' {
+            if ($msg.heard) { Add-Log "you (heard): $($msg.heard)" }
+            $alice.Text = 'Alice: ' + $msg.text
+            Add-Log ('Alice: ' + $msg.text)
+            if ($msg.cmd) { Add-Log "Alice suggests: $($msg.cmd)   (press Enter on the PET to run it; needs Full Access)" }
+        }
     }
 }
 
@@ -430,14 +540,14 @@ function Step-Link {
 
 $btnFull.Add_Click({
     $S.Full = -not $S.Full
-    $ask.Visible = $false
+    Hide-Ask
     Add-Log $(if ($S.Full) { 'you turned Full Access ON: the PET can run commands as you' } else { 'you turned Full Access off' })
     Send-State
     Update-Ui
 })
 
 $btnAdmin.Add_Click({
-    $ask.Visible = $false
+    Hide-Ask
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', "`"$PSCommandPath`"",
         '-Pet', $Pet, '-Port', $Port, '-TunnelPort', $TunnelPort, '-Elevated')
     if ($S.Full) { $argList += '-StartFull' }
@@ -459,7 +569,7 @@ $btnAdmin.Add_Click({
 })
 
 $btnNet.Add_Click({
-    $ask.Visible = $false
+    Hide-Ask
     if ($S.Net) {
         Stop-Sharing
         Add-Log 'you stopped sharing this PC''s internet'
@@ -481,6 +591,10 @@ $btnLog.Add_Click({
     }
 })
 
+$btnSend.Add_Click({ Send-Chat })
+$btnMic.Add_MouseDown({ Start-Mic })
+$btnMic.Add_MouseUp({ Stop-Mic })
+
 $btnOut.Add_Click({ Add-Log 'you pressed JACK OUT'; Jack-Out 'PC' })
 $form.Add_FormClosing({ if (-not $S.Closing) { Jack-Out 'window closed' } })
 
@@ -497,6 +611,7 @@ $timer.Add_Tick({
         if ($S.Client -or $S.Connecting -or ($script:tick % 20) -eq 1) { Step-Link }
         Step-Jobs
         Step-Tunnels
+        if ($Mic.On -and ((Get-Date) - $Mic.Started).TotalSeconds -ge 15) { Stop-Mic }
         if ($S.Net) { Update-Ui }
     } catch {
         Add-Log ('error: ' + $_.Exception.Message)

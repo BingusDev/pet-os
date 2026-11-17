@@ -85,12 +85,15 @@ public:
     bool alice_waiting() const { return alice_waiting_; }
     const std::string& alice_text() const { return alice_text_; }
     const std::string& suggestion() const { return suggestion_; }
+    bool chat_waiting() const { return chat_waiting_; }
     int relay_active() const { return relay_.active(); }
 
     // One control line from the PC (public for tests and snapshots).
     void on_line(const std::string& line);
     // Alice's answer to the latest ask (an older one still in flight is then ignored).
     void on_alice_reply(const BridgeReply& reply);
+    // Alice's answer to a chat typed or spoken in the PC app (sent back to the PC too).
+    void on_chat_reply(const BridgeReply& reply);
     // Lines sent to the PC, kept for tests while `capture_sent` is on.
     bool capture_sent{false};
     std::vector<std::string> sent;
@@ -154,6 +157,10 @@ private:
     std::string suggestion_;
     size_t alice_generation_{0};  // a reply for an older ask is dropped
     Mailbox<std::pair<size_t, BridgeReply>> alice_;
+
+    // Chat from the PC app ({"t":"chat"} / {"t":"voice"}), relayed to Alice by the PET.
+    bool chat_waiting_{false};
+    Mailbox<BridgeReply> chat_;
 
     // net_open requests from relay threads, sent on the UI thread.
     struct Opens {

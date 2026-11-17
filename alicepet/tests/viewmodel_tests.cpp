@@ -701,6 +701,24 @@ void test_jack_session() {
     CHECK(jack.sent.back().rfind(R"({"t":"jackout")", 0) == 0);
     CHECK(!jack.connected() && jack.view() == JackInChip::View::Waiting);
     CHECK(!jack.keep_awake());
+    // Chat from the PC app goes to Alice through the PET and the answer goes back.
+    jack.on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk"})");
+    jack.on_line(R"({"t":"chat","text":"why is this PC slow?"})");
+    CHECK(jack.chat_waiting());
+    CHECK(jack.log().back().text == "PC: why is this PC slow?");
+    viewmodel::chips::BridgeReply chat;
+    chat.ok = true;
+    chat.reply = "Memory is nearly full.\nCMD: Stop-Process -Name OneDrive";
+    jack.on_chat_reply(chat);
+    CHECK(!jack.chat_waiting());
+    CHECK(jack.sent.back() == R"({"t":"alice","ok":true,"text":"Memory is nearly full.","heard":"","cmd":"Stop-Process -Name OneDrive"})");
+    CHECK(jack.suggestion() == "Stop-Process -Name OneDrive");
+    jack.on_line(R"({"t":"voice","wav":"not base64!"})");
+    CHECK(!jack.chat_waiting());
+    CHECK(jack.sent.back().find("didn't come through") != std::string::npos);
+    std::string raw;
+    CHECK(platform::jack::base64_decode("UklGRg==", raw) && raw == "RIFF");
+    CHECK(platform::jack::base64_decode("YWJj\nZA", raw) && raw == "abcd");
     std::string words, cmd;
     JackInChip::split_reply("All good here.", words, cmd);
     CHECK(words == "All good here." && cmd.empty());

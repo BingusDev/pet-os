@@ -148,6 +148,32 @@ void JackInChip::on_line(const std::string& line) {
         const std::string out = AliceViewModel::screen_text(first_line(msg["out"].str()));
         if (!out.empty()) note("  " + out, ok ? LogLine::Kind::Note : LogLine::Kind::Fail);
         if (!ok && msg["reason"].str() == "read-only") status_ = "PC is read-only: [F] asks for Full Access";
+    } else if (t == "chat" || t == "voice") {
+        // Talking to Alice from the PC app: the PET is the one with the bridge.
+        if (chat_waiting_) {
+            send(R"({"t":"alice","ok":false,"text":"Still answering the last one..."})");
+        } else if (t == "chat") {
+            const std::string text = trim(msg["text"].str());
+            if (!text.empty()) {
+                note("PC: " + AliceViewModel::screen_text(text));
+                chat_waiting_ = true;
+                alice_waiting_ = true;
+                const std::string prompt = clip_for_bridge(
+                    "(Holden is typing on " + host_ + " through PET JACK IN; answer briefly, plain text. If a "
+                    "PowerShell fix helps, put it alone on a last line 'CMD: <command>'.) " + text);
+                chat_.run([config = config_, prompt]() { return bridge_ask(config, prompt); });
+            }
+        } else {
+            std::string wav;
+            if (platform::jack::base64_decode(msg["wav"].str(), wav) && wav.size() > 44) {
+                note("PC: (voice, " + std::to_string(wav.size() / 32000) + " s)");
+                chat_waiting_ = true;
+                alice_waiting_ = true;
+                chat_.run([config = config_, wav = std::move(wav)]() { return bridge_voice(config, wav); });
+            } else {
+                send(R"({"t":"alice","ok":false,"text":"That recording didn't come through. Try again?"})");
+            }
+        }
     } else if (t == "net_fail") {
         relay_.fail(static_cast<int>(msg["id"].integer()));
     } else if (t == "bye") {
@@ -167,6 +193,7 @@ void JackInChip::reset_session() {
     scan_ = Scan{};
     alice_asked_ = false;
     alice_waiting_ = false;
+    chat_waiting_ = false;
     ++alice_generation_;
     alice_text_.clear();
     suggestion_.clear();
@@ -245,6 +272,27 @@ void JackInChip::on_alice_reply(const BridgeReply& reply) {
     } else {
         split_reply(reply.reply, alice_text_, suggestion_);
     }
+    touch();
+}
+
+void JackInChip::on_chat_reply(const BridgeReply& reply) {
+    chat_waiting_ = false;
+    alice_waiting_ = false;
+    ++alice_generation_;  // a scan diagnosis still in flight would overwrite this answer
+    std::string words;
+    std::string command;
+    if (reply.ok) split_reply(reply.reply, words, command);
+    if (!reply.transcript.empty()) note("PC (heard): " + AliceViewModel::screen_text(reply.transcript));
+    if (reply.ok) {
+        alice_text_ = words;
+        if (!command.empty()) suggestion_ = command;
+        note("Alice: " + words);
+    } else {
+        note("Alice: (can't reach her: " + reply.error + ")", LogLine::Kind::Fail);
+    }
+    send("{\"t\":\"alice\",\"ok\":" + std::string(reply.ok ? "true" : "false") + ",\"text\":\"" +
+         json_escape(reply.ok ? words : "Can't reach Alice: " + reply.error) + "\",\"heard\":\"" +
+         json_escape(reply.transcript) + "\",\"cmd\":\"" + json_escape(command) + "\"}");
     touch();
 }
 
@@ -384,6 +432,10 @@ void JackInChip::tick(uint32_t elapsed_ms) {
     std::pair<size_t, BridgeReply> reply;
     while (alice_.poll(reply)) {
         if (reply.first == alice_generation_) on_alice_reply(reply.second);
+    }
+    BridgeReply chat;
+    while (chat_.poll(chat)) {
+        if (connected_) on_chat_reply(chat);
     }
 }
 

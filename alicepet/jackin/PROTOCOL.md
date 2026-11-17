@@ -23,7 +23,8 @@ keyboard: Full Access, Request Admin (the Windows UAC prompt) and Share PC
 Internet are buttons in the app. The PET can *ask* for them (`ask`), can *take
 them away* (`drop`, `jackout`), and can send a command (`run`) that the app
 only runs while Full Access is on. Every command, from either side, is shown in
-the app's live log and on the PET.
+the app's live log and on the PET. The PC's microphone records only while
+the person holds the app's talk button; the PET can't start it.
 
 ## PC → PET
 
@@ -35,6 +36,8 @@ the app's live log and on the PET.
 | `log` | `text`, `ok` | A command the app ran itself (scan steps) |
 | `result` | `id`, `ok`, `out`, optional `reason` (`"read-only"`) | Result of a PET `run` |
 | `net_fail` | `id` | The PC could not reach the host of `net_open` `id` |
+| `chat` | `text` | Typed to Alice in the app; the PET asks the bridge |
+| `voice` | `wav` (base64, 16 kHz mono 16-bit WAV, at most 15 s) | Spoken to Alice; the PET sends it to the bridge's voice route |
 | `bye` | `why` | The app is closing |
 
 ## PET → PC
@@ -47,6 +50,7 @@ the app's live log and on the PET.
 | `scan` | | Scan again |
 | `net_open` | `id`, `host`, `port` | Sharing: dial `host:port`, then dial PET:7342 and send `tunnel <id>\n`; then pipe bytes both ways |
 | `jackout` | `why` | Drop everything and close the app |
+| `alice` | `ok`, `text`, `heard` (voice transcript), `cmd` (a suggested fix, or empty) | Alice's answer to `chat` / `voice` |
 
 When the control line closes (unplugged, PET left the chip), the app drops
 Full Access, stops sharing and closes.

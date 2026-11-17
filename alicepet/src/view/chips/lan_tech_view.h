@@ -24,6 +24,7 @@ private:
     void render_test(const LanTechChip& lan);
     void render_alice(const LanTechChip& lan);
     void render_devices(const LanTechChip& lan);
+    void render_device(const LanTechChip& lan);
     void set_headline(const LanTechChip& lan);
     int check_row(const LanTechChip::Check& check, int y);
     // A wrapped label; max_h > 0 cuts it with "..." at that height. Returns the y below it.

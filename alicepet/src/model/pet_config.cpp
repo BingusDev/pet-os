@@ -176,6 +176,17 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
             else if (key == "dir") config.remote_dir = value;
         } else if (section == "lantech") {
             if (key == "interface") config.lan_interface = value;
+            else if (key == "speed_test") config.lan_speed_test = value == "on" || value == "1" || value == "true";
+            else if (key == "speed_down_url") config.lan_speed_down_url = value;
+            else if (key == "speed_up_url") config.lan_speed_up_url = value;
+            else if (key == "report_dir") config.lan_report_dir = value;
+            else if (key == "known_dir") config.lan_known_dir = value;
+            else if (key == "static") {
+                // The first static= line replaces the built-in guesses.
+                if (!config.lan_static_from_config) config.lan_static.clear();
+                config.lan_static_from_config = true;
+                config.lan_static.push_back(value);
+            }
         }
     }
     return config;

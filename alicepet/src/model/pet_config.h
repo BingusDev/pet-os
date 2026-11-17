@@ -97,6 +97,17 @@ struct PetConfig {
 
     // [lantech]: interface to test (empty = first non-loopback with a carrier).
     std::string lan_interface;
+    // Speed test after a good jack test (uses ~25 MB down, ~10 MB up per run).
+    bool lan_speed_test{true};
+    std::string lan_speed_down_url{"https://speed.cloudflare.com/__down?bytes=25000000"};
+    std::string lan_speed_up_url{"https://speed.cloudflare.com/__up"};
+    // [S] reports and the "who's new" memory of devices seen per network.
+    std::string lan_report_dir{"~/lan-reports"};
+    std::string lan_known_dir{"~/.config/alicepet/lan-known"};
+    // [V] static-IP fallback when DHCP fails: tried in order ("cidr|gateway").
+    std::vector<std::string> lan_static{"192.168.1.250/24|192.168.1.1", "192.168.0.250/24|192.168.0.1",
+                                        "10.0.0.250/24|10.0.0.1"};
+    bool lan_static_from_config{false};
 };
 
 // Parses the INI-style /etc/alicepet.conf. Unknown keys are ignored; malformed

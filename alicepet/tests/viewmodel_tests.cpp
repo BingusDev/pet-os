@@ -15,6 +15,7 @@
 #include "viewmodel/alice_viewmodel.h"
 #include "viewmodel/chips/bridge_client.h"
 #include "viewmodel/chips/ir_codec.h"
+#include "viewmodel/chips/lan_tech_chip.h"
 #include "viewmodel/chips/remote_chip.h"
 #include "viewmodel/chips/retro_chip.h"
 #include "viewmodel/chips/terminal_chip.h"
@@ -570,6 +571,60 @@ void test_retro_needs_server() {
     CHECK(!retro.handle_key(Key::Escape));  // ESC leaves the chip
 }
 
+// --- LAN TECH ---------------------------------------------------------------
+
+void test_lan_who_is_new() {
+    using viewmodel::chips::LanTechChip;
+    using Device = LanTechChip::Device;
+    const long long now = 2000000000LL;
+    // First sweep of a network: a baseline, nothing is new.
+    std::vector<Device> first{{"192.168.1.10", "aa:aa", "printer", false, false},
+                              {"192.168.1.11", "", "", false, false}};
+    const std::string known = LanTechChip::merge_known("", false, now, first);
+    CHECK(!first[0].is_new && !first[1].is_new);
+    CHECK(known.find("aa:aa 2000000000 192.168.1.10 printer") != std::string::npos);
+    CHECK(known.find("192.168.1.11") == std::string::npos);  // no MAC, not remembered
+    // Next day: the printer is old news, a new MAC is new.
+    std::vector<Device> later{{"192.168.1.10", "aa:aa", "printer", false, false},
+                              {"192.168.1.20", "bb:bb", "", false, false}};
+    const std::string known2 = LanTechChip::merge_known(known, true, now + 2 * 86400, later);
+    CHECK(!later[0].is_new);
+    CHECK(later[1].is_new);
+    CHECK(known2.find("aa:aa 2000000000 ") != std::string::npos);  // first_seen kept
+    CHECK(known2.find("bb:bb 2000172800 192.168.1.20 -") != std::string::npos);
+    // Seen an hour ago for the first time: still new.
+    std::vector<Device> again{{"192.168.1.20", "bb:bb", "", false, false}};
+    LanTechChip::merge_known(known2, true, now + 2 * 86400 + 3600, again);
+    CHECK(again[0].is_new);
+}
+
+void test_lan_helpers() {
+    using viewmodel::chips::LanTechChip;
+    CHECK(LanTechChip::speed_text(93.4, 11.6) == "93↓ / 12↑ Mb/s");
+    CHECK(LanTechChip::speed_text(-1, -1) == "speed test failed");
+    CHECK(LanTechChip::speed_text(40, -1) == "40↓ / 0↑ Mb/s");
+    model::PetConfig config;
+    LanTechChip lan(config);
+    CHECK(!lan.can_try_static());  // nothing tested yet
+    CHECK(!lan.keep_awake());
+    const std::string report = lan.report_text("2026-11-17 09:30");
+    CHECK(report.rfind("AlicePET LAN TECH report · 2026-11-17 09:30\n", 0) == 0);
+    CHECK(report.find("...   Link: ") != std::string::npos);
+    CHECK(report.find("Switch port") != std::string::npos);
+    CHECK(LanTechChip::common_ports().size() == 16);
+}
+
+void test_lan_static_config() {
+    const auto defaults = model::parse_pet_config("");
+    CHECK(defaults.lan_static.size() == 3);
+    CHECK(defaults.lan_speed_test);
+    const auto custom = model::parse_pet_config(
+        "[lantech]\nstatic=172.16.5.250/24|172.16.5.1\nstatic=10.1.1.250/24|10.1.1.1\nspeed_test=off\n");
+    CHECK(custom.lan_static.size() == 2);
+    CHECK(custom.lan_static[0] == "172.16.5.250/24|172.16.5.1");
+    CHECK(!custom.lan_speed_test);
+}
+
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"wrap", test_wrap},
@@ -597,6 +652,9 @@ int main() {
         {"retro_parsing", test_retro_parsing},
         {"retro_needs_server", test_retro_needs_server},
         {"retro_save_sync_helpers", test_retro_save_sync_helpers},
+        {"lan_who_is_new", test_lan_who_is_new},
+        {"lan_helpers", test_lan_helpers},
+        {"lan_static_config", test_lan_static_config},
     };
     for (const auto& [name, fn] : tests) {
         const int before = g_failures;

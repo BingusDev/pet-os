@@ -45,6 +45,9 @@ struct PetConfig {
     // Dim the backlight to dim_percent of max after this many idle seconds (0 = never dim).
     int dim_after_s{45};
     int dim_percent{15};
+    // Per-chip power profiles (platform/power.h): cores, CPU clock, Wi-Fi power
+    // save, Bluetooth and the ACT LED. Off until checked on the real board.
+    bool power_profiles{false};
 
     // [voice]: recorder writes a WAV to the path appended as the last argument and stops on SIGINT.
     std::string voice_record_cmd{"arecord -q -D default -f S16_LE -r 16000 -c 1 -t wav"};
@@ -86,6 +89,9 @@ struct PetConfig {
 PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* warnings = nullptr);
 
 // Reads the file at `path`. Returns false (and leaves defaults) if it cannot be opened.
+// Also reads the optional personal overlay local_config_path(path) after it.
 bool load_pet_config(const std::string& path, PetConfig& out, std::vector<std::string>* warnings = nullptr);
+// "/etc/alicepet.conf" -> "/etc/alicepet.local.conf".
+std::string local_config_path(const std::string& path);
 
 } // namespace model

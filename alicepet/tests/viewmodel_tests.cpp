@@ -8,7 +8,9 @@
 
 #include "model/chip_registry.h"
 #include "model/pet_config.h"
+#include "model/power_profile.h"
 #include "platform/json.h"
+#include "platform/power.h"
 #include "platform/process.h"
 #include "viewmodel/alice_viewmodel.h"
 #include "viewmodel/chips/bridge_client.h"
@@ -16,10 +18,14 @@
 #include "viewmodel/chips/vt_screen.h"
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <cstdio>
 #include <functional>
 #include <string>
 #include <vector>
+
+#include <unistd.h>
 
 namespace {
 
@@ -326,6 +332,94 @@ void test_json() {
 
 } // namespace
 
+// --- power profiles ---------------------------------------------------------
+
+void test_power_profiles() {
+    using model::chip_at;
+    using model::chip_index;
+    const auto jf = model::chip_profile(chip_at(chip_index("jellyfin")));
+    CHECK(jf.wifi && jf.audio && jf.cores == 4 && !jf.slow_cpu);
+    const auto retro = model::chip_profile(chip_at(chip_index("retro")));
+    CHECK(retro.hdmi && retro.cores == 2);
+    const auto lan = model::chip_profile(chip_at(chip_index("lan-tech")));
+    CHECK(lan.wifi && !lan.audio && lan.cores == 2);
+    const auto nap = model::nap_profile();
+    CHECK(!nap.wifi && nap.slow_cpu && nap.cores == 1);
+    // Every chip that talks to Alice or a server needs the network.
+    for (const char* id : {"voice", "terminal", "remote", "jellyfin", "retro", "lan-tech"}) {
+        CHECK(model::chip_profile(chip_at(chip_index(id))).wifi);
+    }
+}
+
+std::string slurp(const std::filesystem::path& p) {
+    std::ifstream in(p);
+    std::string v;
+    std::getline(in, v);
+    return v;
+}
+
+void put(const std::filesystem::path& p, const std::string& v) {
+    std::filesystem::create_directories(p.parent_path());
+    std::ofstream(p) << v << "\n";
+}
+
+void test_power_manager_sysfs() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / ("alicepet-power-" + std::to_string(::getpid()));
+    fs::remove_all(root);
+    const fs::path cpu = root / "sys/devices/system/cpu";
+    for (int i = 1; i < 4; ++i) put(cpu / ("cpu" + std::to_string(i)) / "online", "1");
+    put(cpu / "cpufreq/policy0/cpuinfo_min_freq", "600000");
+    put(cpu / "cpufreq/policy0/cpuinfo_max_freq", "1000000");
+    put(cpu / "cpufreq/policy0/scaling_max_freq", "1000000");
+    put(root / "sys/class/rfkill/rfkill0/type", "bluetooth");
+    put(root / "sys/class/rfkill/rfkill0/soft", "0");
+    put(root / "sys/class/rfkill/rfkill1/type", "wlan");
+    put(root / "sys/class/rfkill/rfkill1/soft", "0");
+    put(root / "sys/class/leds/ACT/brightness", "255");
+
+    platform::PowerManager pm(root.string());
+    pm.init();
+    CHECK(slurp(root / "sys/class/rfkill/rfkill0/soft") == "1");  // Bluetooth off
+    CHECK(slurp(root / "sys/class/rfkill/rfkill1/soft") == "0");  // Wi-Fi untouched
+    CHECK(slurp(root / "sys/class/leds/ACT/brightness") == "0");
+
+    pm.apply(model::nap_profile());
+    CHECK(slurp(cpu / "cpu1/online") == "0");
+    CHECK(slurp(cpu / "cpu3/online") == "0");
+    CHECK(slurp(cpu / "cpufreq/policy0/scaling_max_freq") == "600000");
+
+    pm.apply(model::chip_profile(model::chip_at(model::chip_index("jellyfin"))));
+    CHECK(slurp(cpu / "cpu1/online") == "1");
+    CHECK(slurp(cpu / "cpu3/online") == "1");
+    CHECK(slurp(cpu / "cpufreq/policy0/scaling_max_freq") == "1000000");
+
+    pm.apply(model::launcher_profile());
+    CHECK(slurp(cpu / "cpu1/online") == "0");
+    pm.restore();
+    CHECK(slurp(cpu / "cpu1/online") == "1");
+    CHECK(slurp(cpu / "cpu2/online") == "1");
+    fs::remove_all(root);
+}
+
+void test_config_local_overlay() {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("alicepet-conf-" + std::to_string(::getpid()));
+    fs::create_directories(dir);
+    put(dir / "alicepet.conf", "[bridge]\nurl=\n[terminal]\nssh_config_import=\n[power]\nsleep_after_s=300\n");
+    model::PetConfig config;
+    CHECK(model::load_pet_config((dir / "alicepet.conf").string(), config));
+    CHECK(config.bridge_url.empty());
+    CHECK(config.bookmarks.empty());
+    put(dir / "alicepet.local.conf", "[bridge]\nurl=http://mac:8797\n[terminal]\nhost=pi|me@10.0.0.2|home\n");
+    CHECK(model::load_pet_config((dir / "alicepet.conf").string(), config));
+    CHECK(config.bridge_url == "http://mac:8797");
+    CHECK(config.bookmarks.size() == 1);
+    CHECK(config.sleep_after_s == 300);  // untouched values still come from the main file
+    CHECK(model::local_config_path("/etc/alicepet.conf") == "/etc/alicepet.local.conf");
+    fs::remove_all(dir);
+}
+
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"wrap", test_wrap},
@@ -345,6 +439,9 @@ int main() {
         {"vt_screen", test_vt_screen},
         {"split_command", test_split_command},
         {"json", test_json},
+        {"power_profiles", test_power_profiles},
+        {"power_manager_sysfs", test_power_manager_sysfs},
+        {"config_local_overlay", test_config_local_overlay},
     };
     for (const auto& [name, fn] : tests) {
         const int before = g_failures;

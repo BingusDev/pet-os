@@ -136,6 +136,7 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
             else if (key == "backlight") config.backlight = value;
             else if (key == "dim_after_s") config.dim_after_s = to_int(value, config.dim_after_s);
             else if (key == "dim_percent") config.dim_percent = to_int(value, config.dim_percent);
+            else if (key == "profiles") config.power_profiles = value == "on" || value == "1" || value == "true";
         } else if (section == "voice") {
             if (key == "record_cmd") config.voice_record_cmd = value;
             else if (key == "max_s") config.voice_max_s = to_int(value, config.voice_max_s);
@@ -182,8 +183,20 @@ bool load_pet_config(const std::string& path, PetConfig& out, std::vector<std::s
     }
     std::stringstream buffer;
     buffer << file.rdbuf();
+    // Personal settings live next to it in <name>.local.conf (not packaged, not
+    // in git): read after the main file, so its values win and its host= lines add on.
+    std::ifstream local(local_config_path(path));
+    if (local) buffer << "\n" << local.rdbuf();
     out = parse_pet_config(buffer.str(), warnings);
     return true;
+}
+
+std::string local_config_path(const std::string& path) {
+    const std::string ext = ".conf";
+    if (path.size() > ext.size() && path.compare(path.size() - ext.size(), ext.size(), ext) == 0) {
+        return path.substr(0, path.size() - ext.size()) + ".local.conf";
+    }
+    return path + ".local";
 }
 
 } // namespace model

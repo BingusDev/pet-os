@@ -2,3 +2,4 @@ sdk/
 alicepet/.cache/
 alicepet/build/
 .DS_Store
+alicepet/config/*.local.conf

@@ -73,7 +73,7 @@ void LanTechChip::run_tests() {
         r.iface = link.name;
         std::string speed = link.wired ? (link.speed_mbps > 0 ? std::to_string(link.speed_mbps) + " Mb/s" : "wired")
                                        : "Wi-Fi";
-        if (!link.duplex.empty()) speed += " " + link.duplex;
+        if (!link.duplex.empty() && link.duplex != "unknown") speed += " " + link.duplex;
         put(kLink, link.carrier ? State::Ok : State::Fail, link.carrier ? speed + " (" + link.name + ")" : "no link (" + link.name + ")");
 
         std::string dhcp_server;
@@ -263,11 +263,13 @@ void LanTechChip::tick(uint32_t) {
         }
     }
     BridgeReply reply;
-    while (alice_.poll(reply)) {
-        alice_waiting_ = false;
-        alice_text_ = AliceViewModel::screen_text(reply.ok ? reply.reply : reply.error);
-        touch();
-    }
+    while (alice_.poll(reply)) on_alice_reply(reply);
+}
+
+void LanTechChip::on_alice_reply(const BridgeReply& reply) {
+    alice_waiting_ = false;
+    alice_text_ = AliceViewModel::screen_text(reply.ok ? reply.reply : reply.error);
+    touch();
 }
 
 } // namespace viewmodel::chips

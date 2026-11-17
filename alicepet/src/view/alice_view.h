@@ -57,10 +57,12 @@ private:
 
     lv_obj_t* make_bitmap(lv_obj_t* parent, size_t slot, const model::IndexedBitmap& bitmap, int x, int y);
     lv_obj_t* make_image(lv_obj_t* parent, const ImageAsset& asset, int x, int y);
-    void place_inline_icon(lv_obj_t* label, uint32_t char_index, const ImageAsset& icon);
+    lv_obj_t* place_inline_icon(lv_obj_t* label, uint32_t char_index, const ImageAsset& icon);
     void load_chip_art(const std::filesystem::path& dir);
     void rebuild_folder(size_t selected);
     void rebuild_slotted(size_t selected);
+    void render_chat(const viewmodel::AliceViewModel& vm);
+    void render_netscan(const viewmodel::AliceViewModel& vm);
 
     AliceFonts fonts_{};
 
@@ -76,6 +78,24 @@ private:
     lv_obj_t* slotted_{nullptr};
     lv_obj_t* slotted_holder_{nullptr};
     lv_obj_t* sleep_overlay_{nullptr};
+
+    // Home chat: greeting label (with its inline bolt), reply label, page tag, prompt.
+    lv_obj_t* bubble_greeting_{nullptr};
+    lv_obj_t* bubble_greeting_icon_{nullptr};
+    lv_obj_t* bubble_chat_{nullptr};
+    lv_obj_t* bubble_page_tag_{nullptr};
+    lv_obj_t* bubble_page_label_{nullptr};
+    lv_obj_t* prompt_idle_{nullptr};
+    lv_obj_t* prompt_idle_icon_{nullptr};
+    lv_obj_t* prompt_input_{nullptr};
+
+    // NET SCAN.
+    lv_obj_t* netscan_{nullptr};
+    lv_obj_t* netscan_counter_{nullptr};
+    lv_obj_t* netscan_title_{nullptr};
+    lv_obj_t* netscan_rows_{nullptr};
+    lv_obj_t* netscan_details_{nullptr};
+    ImageAsset alice_mini_{};
 
     std::array<lv_image_dsc_t, kSpriteSlots> descriptors_{};
     std::array<std::vector<uint8_t>, kSpriteSlots> pixels_{};

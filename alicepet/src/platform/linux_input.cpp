@@ -46,6 +46,7 @@ struct EvdevKeypad {
     bool router_event_pending{false};
     uint32_t router_key{0};
     bool router_pressed{false};
+    bool shift{false};
 };
 #endif
 
@@ -183,7 +184,38 @@ void key_event_cb(lv_event_t* event) {
 }
 
 #if !USE_DESKTOP
-uint32_t map_evdev_key(uint16_t code) {
+// US layout for the CardputerZero keyboard. Printable keys return ASCII so the
+// app can treat them as text; Fn-layer arrows arrive as KEY_UP/DOWN/LEFT/RIGHT.
+// TODO(device): verify against the real keyboard driver once hardware arrives.
+uint32_t map_evdev_key(uint16_t code, bool shift) {
+    static const char kLetters[] = "qwertyuiopasdfghjklzxcvbnm";
+    static const uint16_t kLetterCodes[] = {KEY_Q, KEY_W, KEY_E, KEY_R, KEY_T, KEY_Y, KEY_U, KEY_I, KEY_O,
+                                            KEY_P, KEY_A, KEY_S, KEY_D, KEY_F, KEY_G, KEY_H, KEY_J, KEY_K,
+                                            KEY_L, KEY_Z, KEY_X, KEY_C, KEY_V, KEY_B, KEY_N, KEY_M};
+    for (size_t i = 0; i < sizeof(kLetterCodes) / sizeof(kLetterCodes[0]); ++i) {
+        if (code == kLetterCodes[i]) {
+            const char c = kLetters[i];
+            return shift ? static_cast<uint32_t>(c - 'a' + 'A') : static_cast<uint32_t>(c);
+        }
+    }
+    struct Sym {
+        uint16_t code;
+        char plain;
+        char shifted;
+    };
+    static const Sym kSyms[] = {
+        {KEY_1, '1', '!'}, {KEY_2, '2', '@'}, {KEY_3, '3', '#'}, {KEY_4, '4', '$'}, {KEY_5, '5', '%'},
+        {KEY_6, '6', '^'}, {KEY_7, '7', '&'}, {KEY_8, '8', '*'}, {KEY_9, '9', '('}, {KEY_0, '0', ')'},
+        {KEY_MINUS, '-', '_'}, {KEY_EQUAL, '=', '+'}, {KEY_LEFTBRACE, '[', '{'}, {KEY_RIGHTBRACE, ']', '}'},
+        {KEY_BACKSLASH, '\\', '|'}, {KEY_SEMICOLON, ';', ':'}, {KEY_APOSTROPHE, '\'', '"'},
+        {KEY_GRAVE, '`', '~'}, {KEY_COMMA, ',', '<'}, {KEY_DOT, '.', '>'}, {KEY_SLASH, '/', '?'},
+        {KEY_SPACE, ' ', ' '},
+    };
+    for (const auto& sym : kSyms) {
+        if (code == sym.code) {
+            return static_cast<uint32_t>(shift ? sym.shifted : sym.plain);
+        }
+    }
     switch (code) {
         case KEY_ESC:
             return LV_KEY_ESC;
@@ -191,20 +223,19 @@ uint32_t map_evdev_key(uint16_t code) {
             return LV_KEY_LEFT;
         case KEY_RIGHT:
             return LV_KEY_RIGHT;
-        case KEY_Z:
-            return 'z';
-        case KEY_C:
-            return 'c';
-        case KEY_4:
-            return '4';
-        case KEY_5:
-            return '5';
-        case KEY_6:
-            return '6';
-        case KEY_7:
-            return '7';
-        case KEY_8:
-            return '8';
+        case KEY_UP:
+            return LV_KEY_UP;
+        case KEY_DOWN:
+            return LV_KEY_DOWN;
+        case KEY_ENTER:
+        case KEY_KPENTER:
+            return LV_KEY_ENTER;
+        case KEY_BACKSPACE:
+            return LV_KEY_BACKSPACE;
+        case KEY_DELETE:
+            return LV_KEY_DEL;
+        case KEY_TAB:
+            return LV_KEY_NEXT;
         case KEY_SYSRQ:
             return kKeyPrintScreen;
         case KEY_HELP:
@@ -225,7 +256,7 @@ bool has_nav_keys(int fd) {
         return (key_bits[code / bits_per_word] & (1UL << (code % bits_per_word))) != 0;
     };
 
-    return has_key(KEY_ESC) || has_key(KEY_LEFT) || has_key(KEY_RIGHT) || has_key(KEY_Z) ||
+    return has_key(KEY_ESC) || has_key(KEY_LEFT) || has_key(KEY_RIGHT) || has_key(KEY_Z) || has_key(KEY_ENTER) ||
            has_key(KEY_C) || has_key(KEY_4) || has_key(KEY_5) || has_key(KEY_6) ||
            has_key(KEY_7) || has_key(KEY_8) || has_key(KEY_SYSRQ) || has_key(KEY_HELP);
 }
@@ -243,8 +274,12 @@ void evdev_read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
         if (input.type != EV_KEY) {
             continue;
         }
+        if (input.code == KEY_LEFTSHIFT || input.code == KEY_RIGHTSHIFT) {
+            keypad->shift = input.value != 0;
+            continue;
+        }
 
-        const auto key = map_evdev_key(input.code);
+        const auto key = map_evdev_key(input.code, keypad->shift);
         if (!key || input.value == 2) {
             continue;
         }

@@ -6,14 +6,16 @@
 
 include(GNUInstallDirs)
 
-set(APP_DISPLAY_NAME "TemplateApp" CACHE STRING "Human-readable application name used by launchers and package filename")
+# Package identity is FORCEd: build trees first configured from the template cached
+# "TemplateApp" values that would otherwise silently win.
+
+set(APP_DISPLAY_NAME "AlicePET" CACHE STRING "Human-readable application name used by launchers and package filename" FORCE)
 set(APP_DEBIAN_REVISION "rev1" CACHE STRING "Debian package revision/vendor suffix")
 set(APP_DEBIAN_ARCHITECTURE "arm64" CACHE STRING "Debian package architecture")
-# Deliberately a placeholder: the store rejects packages whose Maintainer is
-# still a template/M5Stack identity, so set your own name and email here.
-set(APP_MAINTAINER "TODO Your Name <todo@example.invalid>" CACHE STRING "Debian package maintainer")
-set(APP_PACKAGE_DESCRIPTION "CardputerZero LVGL template application" CACHE STRING "Debian package summary")
-set(APP_INSTALL_SYSTEMD_SERVICE ON CACHE BOOL "Install a systemd service file for embedded deployments")
+set(APP_MAINTAINER "Holden <netholden@gmail.com>" CACHE STRING "Debian package maintainer" FORCE)
+set(APP_PACKAGE_DESCRIPTION "AlicePET OS: Navi home, chat with Alice, net scan, battle chips" CACHE STRING "Debian package summary" FORCE)
+# APPLaunch starts the app from its .desktop entry; a unit file would only compete with it.
+set(APP_INSTALL_SYSTEMD_SERVICE OFF CACHE BOOL "Install a systemd service file for embedded deployments" FORCE)
 
 set(APP_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/package")
 configure_file(
@@ -34,7 +36,7 @@ install(TARGETS ${PROJECT_NAME}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/template-app.conf"
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/alicepet.conf"
     DESTINATION "/etc"
 )
 
@@ -49,11 +51,11 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/"
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets/images/"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/${APP_NAME}/images"
     PATTERN ".DS_Store" EXCLUDE
+    PATTERN "cp0-*.png" EXCLUDE
 )
-install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets/images/"
+# 48x48 launcher icon, referenced by the .desktop entry as share/images/alicepet.png.
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/images/alicepet.png"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/APPLaunch/share/images"
-    FILES_MATCHING
-    PATTERN "template*.png"
 )
 
 install(FILES "${APP_GENERATED_DIR}/${PROJECT_NAME}.desktop"

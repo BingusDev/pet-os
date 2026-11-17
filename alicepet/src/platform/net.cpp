@@ -1,0 +1,460 @@
+/*
+ * SPDX-License-Identifier: MIT
+ */
+
+#include "net.h"
+
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <cctype>
+#include <cerrno>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+#ifndef SOCK_CLOEXEC
+#define SOCK_CLOEXEC 0  // macOS desktop build
+#endif
+
+namespace platform::net {
+namespace {
+
+using Clock = std::chrono::steady_clock;
+
+int elapsed_ms(Clock::time_point since) {
+    return static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - since).count());
+}
+
+int remaining_ms(Clock::time_point deadline) {
+    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count();
+    return left > 0 ? static_cast<int>(left) : 0;
+}
+
+struct AddrList {
+    addrinfo* head{nullptr};
+    ~AddrList() {
+        if (head) {
+            freeaddrinfo(head);
+        }
+    }
+};
+
+bool resolve(const std::string& host, int port, int socktype, AddrList& out, std::string& error) {
+    addrinfo hints{};
+    hints.ai_family = AF_INET;  // tailnet + home LAN are IPv4; avoids slow AAAA fallbacks
+    hints.ai_socktype = socktype;
+    const std::string service = std::to_string(port);
+    const int rc = getaddrinfo(host.c_str(), service.c_str(), &hints, &out.head);
+    if (rc != 0 || !out.head) {
+        error = std::string("dns: ") + gai_strerror(rc);
+        return false;
+    }
+    return true;
+}
+
+// Non-blocking connect bounded by the deadline. Returns the fd (blocking mode
+// restored off) or -1 with errno-ish text in `error`. `refused` is set when the
+// peer actively rejected the connection.
+int connect_with_deadline(const addrinfo* addr, Clock::time_point deadline, std::string& error, bool& refused) {
+    refused = false;
+    const int fd = socket(addr->ai_family, addr->ai_socktype | SOCK_CLOEXEC, addr->ai_protocol);
+    if (fd < 0) {
+        error = std::strerror(errno);
+        return -1;
+    }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+#ifdef SO_NOSIGPIPE
+    const int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
+    int rc = connect(fd, addr->ai_addr, addr->ai_addrlen);
+    if (rc != 0 && errno != EINPROGRESS) {
+        refused = errno == ECONNREFUSED;
+        error = std::strerror(errno);
+        close(fd);
+        return -1;
+    }
+    if (rc != 0) {
+        pollfd pfd{fd, POLLOUT, 0};
+        rc = poll(&pfd, 1, remaining_ms(deadline));
+        if (rc <= 0) {
+            error = "timeout";
+            close(fd);
+            return -1;
+        }
+        int so_error = 0;
+        socklen_t len = sizeof(so_error);
+        getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &len);
+        if (so_error != 0) {
+            refused = so_error == ECONNREFUSED;
+            error = std::strerror(so_error);
+            close(fd);
+            return -1;
+        }
+    }
+    return fd;
+}
+
+bool send_all(int fd, const std::string& data, Clock::time_point deadline, std::string& error) {
+    size_t sent = 0;
+    while (sent < data.size()) {
+        pollfd pfd{fd, POLLOUT, 0};
+        if (poll(&pfd, 1, remaining_ms(deadline)) <= 0) {
+            error = "send timeout";
+            return false;
+        }
+        const ssize_t n = send(fd, data.data() + sent, data.size() - sent,
+#ifdef MSG_NOSIGNAL
+                               MSG_NOSIGNAL
+#else
+                               0
+#endif
+        );
+        if (n <= 0) {
+            if (n < 0 && (errno == EAGAIN || errno == EINTR)) {
+                continue;
+            }
+            error = std::strerror(errno);
+            return false;
+        }
+        sent += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+bool parse_url(const std::string& url, std::string& host, int& port, std::string& path) {
+    const std::string scheme = "http://";
+    if (url.rfind(scheme, 0) != 0) {
+        return false;
+    }
+    std::string rest = url.substr(scheme.size());
+    const size_t slash = rest.find('/');
+    path = slash == std::string::npos ? "" : rest.substr(slash);
+    std::string authority = slash == std::string::npos ? rest : rest.substr(0, slash);
+    port = 80;
+    const size_t colon = authority.rfind(':');
+    if (colon != std::string::npos) {
+        port = std::atoi(authority.c_str() + colon + 1);
+        authority = authority.substr(0, colon);
+    }
+    host = authority;
+    return !host.empty() && port > 0;
+}
+
+std::string decode_chunked(const std::string& body) {
+    std::string out;
+    size_t pos = 0;
+    while (pos < body.size()) {
+        const size_t eol = body.find("\r\n", pos);
+        if (eol == std::string::npos) {
+            break;
+        }
+        const size_t size = std::strtoul(body.substr(pos, eol - pos).c_str(), nullptr, 16);
+        if (size == 0) {
+            break;
+        }
+        out.append(body, eol + 2, size);
+        pos = eol + 2 + size + 2;
+    }
+    return out;
+}
+
+void append_utf8(std::string& out, uint32_t cp) {
+    if (cp < 0x80) {
+        out += static_cast<char>(cp);
+    } else if (cp < 0x800) {
+        out += static_cast<char>(0xC0 | (cp >> 6));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        out += static_cast<char>(0xE0 | (cp >> 12));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else {
+        out += static_cast<char>(0xF0 | (cp >> 18));
+        out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+    }
+}
+
+// Position just after `"key"` + optional whitespace + ':' + whitespace, or npos.
+size_t find_value(const std::string& json, const std::string& key) {
+    const std::string needle = "\"" + key + "\"";
+    size_t pos = 0;
+    while ((pos = json.find(needle, pos)) != std::string::npos) {
+        size_t p = pos + needle.size();
+        while (p < json.size() && std::isspace(static_cast<unsigned char>(json[p]))) {
+            ++p;
+        }
+        if (p < json.size() && json[p] == ':') {
+            ++p;
+            while (p < json.size() && std::isspace(static_cast<unsigned char>(json[p]))) {
+                ++p;
+            }
+            return p;
+        }
+        pos = p;
+    }
+    return std::string::npos;
+}
+
+} // namespace
+
+HttpResponse http_post_json(const std::string& url, const std::string& json_body,
+                            const std::string& bearer_token, int timeout_ms) {
+    HttpResponse response;
+    std::string host;
+    std::string path;
+    int port = 0;
+    if (!parse_url(url, host, port, path)) {
+        response.error = "bad url (http:// only)";
+        return response;
+    }
+    if (path.empty()) {
+        path = "/";
+    }
+
+    const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
+    AddrList addrs;
+    if (!resolve(host, port, SOCK_STREAM, addrs, response.error)) {
+        return response;
+    }
+    int fd = -1;
+    bool refused = false;
+    for (const addrinfo* a = addrs.head; a && fd < 0; a = a->ai_next) {
+        fd = connect_with_deadline(a, deadline, response.error, refused);
+    }
+    if (fd < 0) {
+        response.error = "connect: " + response.error;
+        return response;
+    }
+
+    std::string request = "POST " + path + " HTTP/1.1\r\nHost: " + host + ":" + std::to_string(port) +
+                          "\r\nUser-Agent: AlicePET\r\nContent-Type: application/json\r\nAccept: application/json\r\n"
+                          "Connection: close\r\nContent-Length: " +
+                          std::to_string(json_body.size()) + "\r\n";
+    if (!bearer_token.empty()) {
+        request += "Authorization: Bearer " + bearer_token + "\r\n";
+    }
+    request += "\r\n" + json_body;
+    if (!send_all(fd, request, deadline, response.error)) {
+        close(fd);
+        return response;
+    }
+
+    std::string raw;
+    char buffer[4096];
+    while (true) {
+        pollfd pfd{fd, POLLIN, 0};
+        const int rc = poll(&pfd, 1, remaining_ms(deadline));
+        if (rc <= 0) {
+            response.error = "reply timeout";
+            close(fd);
+            return response;
+        }
+        const ssize_t n = recv(fd, buffer, sizeof(buffer), 0);
+        if (n < 0 && (errno == EAGAIN || errno == EINTR)) {
+            continue;
+        }
+        if (n <= 0) {
+            break;
+        }
+        raw.append(buffer, static_cast<size_t>(n));
+        if (raw.size() > 1024 * 1024) {
+            break;
+        }
+    }
+    close(fd);
+
+    const size_t header_end = raw.find("\r\n\r\n");
+    if (raw.rfind("HTTP/", 0) != 0 || header_end == std::string::npos) {
+        response.error = raw.empty() ? "empty reply" : "bad http reply";
+        return response;
+    }
+    const size_t space = raw.find(' ');
+    response.status = std::atoi(raw.c_str() + space + 1);
+    std::string headers = raw.substr(0, header_end);
+    for (char& c : headers) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    response.body = raw.substr(header_end + 4);
+    if (headers.find("transfer-encoding: chunked") != std::string::npos) {
+        response.body = decode_chunked(response.body);
+    }
+    response.ok = true;
+    return response;
+}
+
+ProbeResult probe_tcp(const std::string& address, int port, int timeout_ms) {
+    ProbeResult result;
+    const auto start = Clock::now();
+    const auto deadline = start + std::chrono::milliseconds(timeout_ms);
+    AddrList addrs;
+    std::string error;
+    if (!resolve(address, port, SOCK_STREAM, addrs, error)) {
+        result.detail = error;
+        return result;
+    }
+    bool refused = false;
+    const int fd = connect_with_deadline(addrs.head, deadline, error, refused);
+    if (fd >= 0) {
+        close(fd);
+        result.state = ProbeState::Online;
+        result.latency_ms = elapsed_ms(start);
+        result.detail = "port " + std::to_string(port) + " open";
+    } else if (refused) {
+        result.state = ProbeState::Online;
+        result.latency_ms = elapsed_ms(start);
+        result.detail = "up, port " + std::to_string(port) + " refused";
+    } else {
+        result.detail = error;
+    }
+    return result;
+}
+
+ProbeResult probe_ps5(const std::string& address, int timeout_ms) {
+    ProbeResult result;
+    const auto start = Clock::now();
+    const auto deadline = start + std::chrono::milliseconds(timeout_ms);
+    AddrList addrs;
+    std::string error;
+    if (!resolve(address, 9302, SOCK_DGRAM, addrs, error)) {
+        result.detail = error;
+        return result;
+    }
+    const int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) {
+        result.detail = std::strerror(errno);
+        return result;
+    }
+    static const char kSearch[] = "SRCH * HTTP/1.1\ndevice-discovery-protocol-version:00030010\n";
+    std::string reply;
+    // UDP can drop; resend a few times within the timeout.
+    for (int attempt = 0; attempt < 3 && reply.empty() && remaining_ms(deadline) > 0; ++attempt) {
+        sendto(fd, kSearch, sizeof(kSearch) - 1, 0, addrs.head->ai_addr, addrs.head->ai_addrlen);
+        pollfd pfd{fd, POLLIN, 0};
+        const int wait = std::min(remaining_ms(deadline), timeout_ms / 3 + 1);
+        if (poll(&pfd, 1, wait) > 0) {
+            char buffer[1024];
+            const ssize_t n = recv(fd, buffer, sizeof(buffer) - 1, 0);
+            if (n > 0) {
+                reply.assign(buffer, static_cast<size_t>(n));
+            }
+        }
+    }
+    close(fd);
+    if (reply.empty()) {
+        result.detail = "no discovery reply";
+        return result;
+    }
+    result.latency_ms = elapsed_ms(start);
+    if (reply.find(" 620") != std::string::npos) {
+        result.state = ProbeState::Rest;
+        result.detail = "rest mode (standby)";
+    } else {
+        result.state = ProbeState::Online;
+        result.detail = "awake";
+    }
+    const size_t name = reply.find("host-name:");
+    if (name != std::string::npos) {
+        const size_t eol = reply.find('\n', name);
+        result.detail += ", " + reply.substr(name + 10, eol == std::string::npos ? std::string::npos : eol - name - 10);
+    }
+    return result;
+}
+
+std::string json_escape(const std::string& value) {
+    std::string out;
+    out.reserve(value.size() + 8);
+    for (const char ch : value) {
+        const auto c = static_cast<unsigned char>(ch);
+        switch (c) {
+        case '"': out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default:
+            if (c < 0x20) {
+                char buf[8];
+                std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                out += buf;
+            } else {
+                out += static_cast<char>(c);
+            }
+        }
+    }
+    return out;
+}
+
+bool json_string_field(const std::string& json, const std::string& key, std::string& out) {
+    size_t p = find_value(json, key);
+    if (p == std::string::npos || p >= json.size() || json[p] != '"') {
+        return false;
+    }
+    ++p;
+    out.clear();
+    while (p < json.size() && json[p] != '"') {
+        char c = json[p++];
+        if (c != '\\') {
+            out += c;
+            continue;
+        }
+        if (p >= json.size()) {
+            break;
+        }
+        c = json[p++];
+        switch (c) {
+        case 'n': out += '\n'; break;
+        case 't': out += '\t'; break;
+        case 'r': break;
+        case 'b': case 'f': break;
+        case 'u': {
+            if (p + 4 > json.size()) {
+                return false;
+            }
+            uint32_t cp = std::strtoul(json.substr(p, 4).c_str(), nullptr, 16);
+            p += 4;
+            // Surrogate pair.
+            if (cp >= 0xD800 && cp <= 0xDBFF && p + 6 <= json.size() && json[p] == '\\' && json[p + 1] == 'u') {
+                const uint32_t low = std::strtoul(json.substr(p + 2, 4).c_str(), nullptr, 16);
+                if (low >= 0xDC00 && low <= 0xDFFF) {
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                    p += 6;
+                }
+            }
+            append_utf8(out, cp);
+            break;
+        }
+        default: out += c; break;
+        }
+    }
+    return true;
+}
+
+bool json_bool_field(const std::string& json, const std::string& key, bool& out) {
+    const size_t p = find_value(json, key);
+    if (p == std::string::npos) {
+        return false;
+    }
+    if (json.compare(p, 4, "true") == 0) {
+        out = true;
+        return true;
+    }
+    if (json.compare(p, 5, "false") == 0) {
+        out = false;
+        return true;
+    }
+    return false;
+}
+
+} // namespace platform::net

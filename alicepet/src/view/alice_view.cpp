@@ -31,6 +31,8 @@ constexpr uint32_t kBubble = 0xe9f4ff;
 constexpr uint32_t kScreenText = 0xcfe8ff;
 constexpr uint32_t kBarBlue = 0x47b3ff;
 constexpr uint32_t kSubtitle = 0x9fc7ff;
+constexpr uint32_t kYellow = 0xffd54a;
+constexpr uint32_t kRed = 0xff5a6e;
 
 // Slotted-screen copy per chip, in registry order (001-007). Description is the
 // chip's purpose from CHIPS.md; the two status lines are PLACEHOLDERS until each
@@ -162,6 +164,7 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     load_png(chip_art_dir / "icon-mic-11.png", icon_mic_);
     load_png(chip_art_dir / "icon-signal.png", icon_signal_);
     load_png(chip_art_dir / "alice-home.png", alice_home_);
+    load_png(chip_art_dir / "alice-mini.png", alice_mini_);
 
     // BOOT: glowing P.E.T. title, subtitle, 2s progress bar, Navi connect line.
     // All text is solid and full-opacity at 11/33 px so the pixel font stays crisp.
@@ -234,10 +237,29 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     lv_label_set_long_mode(bubble_text, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(bubble_text, 188 - 4 - 14);
     lv_obj_set_style_text_line_space(bubble_text, 3, 0);
-    place_inline_icon(bubble_text, 11, icon_bolt_large_);
+    bubble_greeting_ = bubble_text;
+    bubble_greeting_icon_ = place_inline_icon(bubble_text, 11, icon_bolt_large_);
 
-    lv_obj_t* prompt = text(home_, "> type or hold   to talk_", fonts_.tiny, kPaleCyan, 126, 108);
-    place_inline_icon(prompt, 15, icon_mic_);
+    // Chat reply: the view model pre-wraps lines to the monospace grid, so clip instead of re-wrapping.
+    bubble_chat_ = text(bubble, "", fonts_.tiny, kPanelBlue, 7, 4);
+    lv_label_set_long_mode(bubble_chat_, LV_LABEL_LONG_CLIP);
+    lv_obj_set_size(bubble_chat_, 188 - 4 - 10, 74 - 4 - 6);
+    lv_obj_set_style_text_line_space(bubble_chat_, 3, 0);
+    lv_obj_add_flag(bubble_chat_, LV_OBJ_FLAG_HIDDEN);
+
+    // Page tag riding on the bubble's bottom edge: "1/3 [↓]".
+    bubble_page_tag_ = box(home_, 0, 0, 10, 13, kEdgeBlue);
+    lv_obj_set_style_radius(bubble_page_tag_, 3, 0);
+    lv_obj_set_size(bubble_page_tag_, LV_SIZE_CONTENT, 13);
+    lv_obj_set_style_pad_hor(bubble_page_tag_, 3, 0);
+    bubble_page_label_ = text(bubble_page_tag_, "", fonts_.tiny, 0xffffff, 0, 0);
+    lv_obj_align(bubble_page_label_, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_add_flag(bubble_page_tag_, LV_OBJ_FLAG_HIDDEN);
+
+    prompt_idle_ = text(home_, "> type or hold   to talk_", fonts_.tiny, kPaleCyan, 126, 108);
+    prompt_idle_icon_ = place_inline_icon(prompt_idle_, 15, icon_mic_);
+    prompt_input_ = text(home_, "", fonts_.tiny, kPaleCyan, 126, 108);
+    lv_obj_add_flag(prompt_input_, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t* home_footer = box(home_, 0, 154, 320, 16, kPanelBlue);
     set_border(home_footer, 1, kEdgeBlue);
@@ -287,6 +309,25 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     lv_obj_set_pos(slotted_holder_, 0, 17);
     lv_obj_set_size(slotted_holder_, 320, 139);
 
+    // NET SCAN: host list with status dots, n/N ONLINE counter, details panel.
+    netscan_ = make_screen_background(root, kDeepBlue, kPanelBlue);
+    lv_obj_add_flag(netscan_, LV_OBJ_FLAG_HIDDEN);
+    chip_bar(netscan_, "");
+    netscan_title_ = text(netscan_, "NET SCAN", fonts_.small, kPaleCyan, 6, 2);
+    netscan_counter_ = text(netscan_, "-/- ONLINE", fonts_.small, kPaleCyan, 0, 2);
+    lv_obj_align(netscan_counter_, LV_ALIGN_TOP_RIGHT, -6, 2);
+    chip_footer(netscan_, "[↑↓]select [↵]details [R]rescan [ESC]home");
+    make_image(netscan_, alice_mini_, 320 - 4 - 44, 156 - 2 - 44);
+    netscan_rows_ = lv_obj_create(netscan_);
+    lv_obj_remove_style_all(netscan_rows_);
+    lv_obj_remove_flag(netscan_rows_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_pos(netscan_rows_, 0, 20);
+    lv_obj_set_size(netscan_rows_, 320, 134);
+    netscan_details_ = box(netscan_, 24, 22, 244, 128, kPanelBlue);
+    set_border(netscan_details_, 2, kEdgeBlue);
+    lv_obj_set_style_radius(netscan_details_, 6, 0);
+    lv_obj_add_flag(netscan_details_, LV_OBJ_FLAG_HIDDEN);
+
     // Sleep overlay (ESC on home), above every screen.
     sleep_overlay_ = box(root, 0, 0, 320, 170, 0x000000);
     lv_obj_add_flag(sleep_overlay_, LV_OBJ_FLAG_HIDDEN);
@@ -323,9 +364,9 @@ lv_obj_t* AliceView::make_image(lv_obj_t* parent, const ImageAsset& asset, int x
 }
 
 // Labels cannot embed images, so an icon is drawn over blank spaces reserved in the text.
-void AliceView::place_inline_icon(lv_obj_t* label, uint32_t char_index, const ImageAsset& icon) {
+lv_obj_t* AliceView::place_inline_icon(lv_obj_t* label, uint32_t char_index, const ImageAsset& icon) {
     if (!icon.loaded) {
-        return;
+        return nullptr;
     }
     lv_obj_update_layout(label);
     lv_point_t pos{};
@@ -334,7 +375,7 @@ void AliceView::place_inline_icon(lv_obj_t* label, uint32_t char_index, const Im
     const int line_h = lv_font_get_line_height(font);
     const int x = lv_obj_get_x(label) + pos.x;
     const int y = lv_obj_get_y(label) + pos.y + (line_h - static_cast<int>(icon.desc.header.h)) / 2;
-    make_image(lv_obj_get_parent(label), icon, x, y);
+    return make_image(lv_obj_get_parent(label), icon, x, y);
 }
 
 void AliceView::load_chip_art(const std::filesystem::path& dir) {
@@ -416,6 +457,7 @@ void AliceView::render(const viewmodel::AliceViewModel& vm) {
     show(home_, vm.screen() == viewmodel::Screen::Home);
     show(folder_, vm.screen() == viewmodel::Screen::Folder);
     show(slotted_, vm.screen() == viewmodel::Screen::Slotted);
+    show(netscan_, vm.screen() == viewmodel::Screen::NetScan);
     show(sleep_overlay_, vm.sleeping());
 
     switch (vm.screen()) {
@@ -429,7 +471,140 @@ void AliceView::render(const viewmodel::AliceViewModel& vm) {
         rebuild_slotted(vm.selected_chip());
         break;
     case viewmodel::Screen::Home:
+        render_chat(vm);
         break;
+    case viewmodel::Screen::NetScan:
+        render_netscan(vm);
+        break;
+    }
+}
+
+void AliceView::render_chat(const viewmodel::AliceViewModel& vm) {
+    const auto set_hidden = [](lv_obj_t* obj, bool hidden) {
+        if (!obj) return;
+        if (hidden) lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_remove_flag(obj, LV_OBJ_FLAG_HIDDEN);
+    };
+    const auto state = vm.chat_state();
+    const bool greeting = state == viewmodel::ChatState::Greeting;
+    set_hidden(bubble_greeting_, !greeting);
+    set_hidden(bubble_greeting_icon_, !greeting);
+    set_hidden(bubble_chat_, greeting);
+
+    if (state == viewmodel::ChatState::Thinking) {
+        static const char* kDots[] = {"thinking", "thinking.", "thinking..", "thinking..."};
+        lv_label_set_text(bubble_chat_, kDots[vm.thinking_dots() & 3]);
+        lv_obj_set_style_text_color(bubble_chat_, lv_color_hex(kGridBlue), 0);
+    } else if (!greeting) {
+        std::string joined;
+        for (const auto& line : vm.bubble_page_lines()) {
+            if (!joined.empty()) joined += '\n';
+            joined += line;
+        }
+        lv_label_set_text(bubble_chat_, joined.c_str());
+        lv_obj_set_style_text_color(bubble_chat_,
+                                    lv_color_hex(state == viewmodel::ChatState::Error ? 0xb3263c : kPanelBlue), 0);
+    }
+
+    const size_t pages = greeting || state == viewmodel::ChatState::Thinking ? 1 : vm.bubble_pages();
+    set_hidden(bubble_page_tag_, pages <= 1);
+    if (pages > 1) {
+        const bool more = vm.bubble_page() + 1 < pages;
+        lv_label_set_text_fmt(bubble_page_label_, "%zu/%zu %s", vm.bubble_page() + 1, pages, more ? "↓" : "↑");
+        lv_obj_update_layout(bubble_page_tag_);
+        lv_obj_set_pos(bubble_page_tag_, 124 + 188 - 8 - lv_obj_get_width(bubble_page_tag_), 24 + 74 - 3);
+    }
+
+    const bool typing = !vm.input().empty();
+    set_hidden(prompt_idle_, typing);
+    set_hidden(prompt_idle_icon_, typing);
+    set_hidden(prompt_input_, !typing);
+    if (typing) {
+        // Show the tail that fits: 320 - 126 px at 7 px per glyph, minus "> " and the cursor.
+        constexpr size_t kVisible = 25;
+        const std::string& input = vm.input();
+        std::vector<size_t> starts;
+        for (size_t i = 0; i < input.size(); ++i) {
+            if ((static_cast<unsigned char>(input[i]) & 0xC0) != 0x80) starts.push_back(i);
+        }
+        const size_t from = starts.size() > kVisible ? starts[starts.size() - kVisible] : 0;
+        const std::string shown = std::string(from > 0 ? "<" : ">") + " " + input.substr(from) + "_";
+        lv_label_set_text(prompt_input_, shown.c_str());
+    }
+}
+
+void AliceView::render_netscan(const viewmodel::AliceViewModel& vm) {
+    const auto& hosts = vm.hosts();
+    lv_label_set_text_fmt(netscan_counter_, "%zu/%zu ONLINE", vm.online_count(), hosts.size());
+    lv_label_set_text(netscan_title_, vm.scanning() ? "NET SCAN · scanning..." : "NET SCAN");
+
+    const auto status_of = [](const viewmodel::HostRow& h, uint32_t& color) -> const char* {
+        switch (h.state) {
+        case viewmodel::HostState::Online: color = kGreen; return "OK";
+        case viewmodel::HostState::Rest: color = kYellow; return "REST";
+        case viewmodel::HostState::Offline: color = kRed; return "OFFLINE";
+        case viewmodel::HostState::Checking: color = kHintBlue; return "...";
+        case viewmodel::HostState::Unknown: break;
+        }
+        color = kHintBlue;
+        return "?";
+    };
+
+    lv_obj_clean(netscan_rows_);
+    constexpr int kRowH = 15;
+    constexpr size_t kNameCols = 18;
+    for (size_t i = 0; i < hosts.size() && i < 8; ++i) {
+        const auto& h = hosts[i];
+        const int y = static_cast<int>(i) * kRowH;
+        if (i == vm.selected_host()) {
+            lv_obj_t* hl = box(netscan_rows_, 4, y, 262, kRowH, kEdgeBlue);
+            lv_obj_set_style_bg_opa(hl, LV_OPA_50, 0);
+            lv_obj_set_style_radius(hl, 3, 0);
+        }
+        uint32_t color = kHintBlue;
+        const char* status = status_of(h, color);
+        lv_obj_t* dot = box(netscan_rows_, 10, y + 5, 6, 6, color);
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+
+        // "Mac mini ........." padded with dot leaders to a fixed column (monospace).
+        std::string name = h.name.substr(0, kNameCols - 2) + " ";
+        while (name.size() < kNameCols) name += '.';
+        text(netscan_rows_, name.c_str(), fonts_.small, kScreenText, 20, y + 1);
+        const int status_x = 20 + static_cast<int>(kNameCols + 1) * 7;
+        text(netscan_rows_, status, fonts_.small, color, status_x, y + 1);
+        if (h.latency_ms >= 0 && h.state != viewmodel::HostState::Checking) {
+            char ms[16];
+            std::snprintf(ms, sizeof(ms), "%dms", h.latency_ms);
+            text(netscan_rows_, ms, fonts_.small, kHintBlue, status_x + 8 * 7, y + 1);
+        }
+    }
+    if (hosts.empty()) {
+        text(netscan_rows_, "No hosts. Add [netscan] host= lines\nto /etc/alicepet.conf", fonts_.small, kScreenText, 10, 4);
+    }
+
+    lv_obj_clean(netscan_details_);
+    if (vm.host_details_open() && vm.selected_host() < hosts.size()) {
+        lv_obj_remove_flag(netscan_details_, LV_OBJ_FLAG_HIDDEN);
+        const auto& h = hosts[vm.selected_host()];
+        uint32_t color = kHintBlue;
+        const char* status = status_of(h, color);
+        text(netscan_details_, h.name.c_str(), fonts_.small, kGold, 8, 4);
+        text(netscan_details_, ("addr   " + h.address).c_str(), fonts_.small, kScreenText, 8, 22);
+        text(netscan_details_, ("probe  " + h.probe).c_str(), fonts_.small, kScreenText, 8, 37);
+        lv_obj_t* st = text(netscan_details_, "state  ", fonts_.small, kScreenText, 8, 52);
+        lv_obj_update_layout(st);
+        text(netscan_details_, status, fonts_.small, color, 8 + lv_obj_get_width(st), 52);
+        if (h.latency_ms >= 0) {
+            char ms[24];
+            std::snprintf(ms, sizeof(ms), "%d ms", h.latency_ms);
+            text(netscan_details_, ms, fonts_.small, kHintBlue, 8 + 7 * 15, 52);
+        }
+        lv_obj_t* detail = text(netscan_details_, h.detail.empty() ? "-" : h.detail.c_str(), fonts_.small, kPaleCyan, 8, 67);
+        lv_label_set_long_mode(detail, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(detail, 244 - 16);
+        text(netscan_details_, "[↵/ESC] back", fonts_.small, kHintBlue, 8, 106);
+    } else {
+        lv_obj_add_flag(netscan_details_, LV_OBJ_FLAG_HIDDEN);
     }
 }
 

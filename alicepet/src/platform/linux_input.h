@@ -30,5 +30,9 @@ void clear_key_release_listener(KeyReleaseListener listener, void* user_data);
 void set_global_key_listener(GlobalKeyListener listener, void* user_data);
 void clear_global_key_listener(GlobalKeyListener listener, void* user_data);
 const char* describe_key(uint32_t key);
+// Blocks until a key device has input or `timeout_ms` passes, so a napping pet
+// sleeps in the kernel instead of waking every few milliseconds. Returns true if
+// input is waiting. The desktop build just sleeps (capped so SDL stays responsive).
+bool wait_for_key_input(int timeout_ms);
 
 } // namespace platform

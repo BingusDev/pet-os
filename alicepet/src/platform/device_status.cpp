@@ -51,7 +51,7 @@ int32_t read_int_file(const std::filesystem::path& path, int32_t fallback = -1) 
     return file >> value ? value : fallback;
 }
 
-void read_battery(DeviceStatus& status) {
+[[maybe_unused]] void read_battery(DeviceStatus& status) {
     const std::filesystem::path root(APP_POWER_SUPPLY_ROOT);
     std::error_code ec;
     if (!std::filesystem::exists(root, ec)) {
@@ -97,7 +97,7 @@ void read_wifi_strength(DeviceStatus& status, const std::string& interface_name)
     }
 }
 
-void read_network(DeviceStatus& status) {
+[[maybe_unused]] void read_network(DeviceStatus& status) {
     const std::filesystem::path root(APP_NETWORK_CLASS_ROOT);
     std::error_code ec;
     if (!std::filesystem::exists(root, ec)) {

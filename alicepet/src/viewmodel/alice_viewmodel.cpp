@@ -147,13 +147,15 @@ void AliceViewModel::tick(uint32_t elapsed_ms) {
         }
     }
 
-    if (!sleeping_ && sleep_after_ms_ > 0) {
+    if (!sleeping_ && (sleep_after_ms_ > 0 || dim_after_ms_ > 0)) {
         const ChipModule* chip = active_chip();
-        if (chip && chip->keep_awake()) {
+        // Waiting on Alice or a scan counts as activity: no dimming or napping mid-answer.
+        const bool busy = (chip && chip->keep_awake()) || chat_state_ == ChatState::Thinking || scanning_;
+        if (busy) {
             idle_ms_ = 0;
         } else {
             idle_ms_ += elapsed_ms;
-            if (idle_ms_ >= sleep_after_ms_) {
+            if (sleep_after_ms_ > 0 && idle_ms_ >= sleep_after_ms_) {
                 sleep_now();
             }
         }

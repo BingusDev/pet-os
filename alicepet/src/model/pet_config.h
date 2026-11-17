@@ -42,6 +42,9 @@ struct PetConfig {
     // [power]: idle seconds before the PET naps (0 = never); backlight sysfs dir ("auto" = first in /sys/class/backlight).
     int sleep_after_s{300};
     std::string backlight{"auto"};
+    // Dim the backlight to dim_percent of max after this many idle seconds (0 = never dim).
+    int dim_after_s{45};
+    int dim_percent{15};
 
     // [voice]: recorder writes a WAV to the path appended as the last argument and stops on SIGINT.
     std::string voice_record_cmd{"arecord -q -D default -f S16_LE -r 16000 -c 1 -t wav"};

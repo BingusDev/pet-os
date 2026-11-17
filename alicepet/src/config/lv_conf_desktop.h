@@ -31,7 +31,9 @@
 /* Memory size */
 #define LV_MEM_SIZE                        (16U * 1024U * 1024U)
 
-#define LV_DRAW_THREAD_STACK_SIZE          (32U * 1024U)
+/* FreeType renders glyphs on this thread and can need more than 32 KB of stack
+ * (it overflowed at 32 KB with Ubuntu's FreeType 2.13.2). */
+#define LV_DRAW_THREAD_STACK_SIZE          (128U * 1024U)
 
 #define LV_USE_FLOAT                       1
 

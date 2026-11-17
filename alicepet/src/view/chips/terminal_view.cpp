@@ -15,7 +15,11 @@ using viewmodel::chips::TerminalChip;
 constexpr ChipTheme kTermTheme{0x05080a, 0x05080a, 0x0e1418, 0x2b6b44, 0x47f08a};
 constexpr uint32_t kSel = 0x2b6b44;
 constexpr uint32_t kOut = 0xd6f5df;
-constexpr uint32_t kSalmon = 0xff7a7a;
+// Ask-Alice colours from mockups/comms.html (.t pink Alice line, .r error red).
+constexpr uint32_t kAskPink = 0xffb3d6;
+constexpr uint32_t kAskRed = 0xff5a6e;
+constexpr int kTop = 4;
+constexpr int kPillH = 14;
 constexpr int kRowH = 15;
 constexpr size_t kVisibleHosts = 9;
 constexpr int kLineH = 12;
@@ -101,66 +105,97 @@ void TerminalView::render_shell(const TerminalChip& term) {
 }
 
 void TerminalView::render_ask(const TerminalChip& term) {
+    // mockups/comms.html screen 5: white question, pink Alice line, the command in
+    // a dark green-edged box, then small pills; footer says nothing runs by itself.
     const auto* host = term.current_host();
+    const auto state = term.ask_state();
     lv_label_set_text(frame_.title, ("ASK ALICE · " + clip_cols(host ? host->label : "?", 28)).c_str());
-    lv_label_set_text(frame_.tag, "suggest");
-    lv_obj_set_style_text_color(frame_.tag, lv_color_hex(kYellow), 0);
+    const char* tag = state == TerminalChip::AskState::Typing    ? "ask"
+                      : state == TerminalChip::AskState::Waiting ? "thinking"
+                      : state == TerminalChip::AskState::Error   ? "error"
+                                                                 : "suggest";
+    lv_label_set_text(frame_.tag, tag);
+    lv_obj_set_style_text_color(frame_.tag, lv_color_hex(state == TerminalChip::AskState::Error ? kAskRed : kYellow), 0);
     lv_label_set_text(frame_.footer, "nothing runs until you press Enter");
     lv_obj_clean(ask_);
 
+    constexpr int kLeft = 8;
+    constexpr int kWidth = 304;
     const auto wrap_label = [&](const std::string& value, uint32_t color, int y) {
-        lv_obj_t* label = text(ask_, value, fonts_.small, color, 8, y);
+        lv_obj_t* label = text(ask_, value, fonts_.small, color, kLeft, y);
         lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(label, 304);
-        lv_obj_set_style_text_line_space(label, 2, 0);
+        lv_obj_set_width(label, kWidth);
+        lv_obj_set_style_text_line_space(label, 1, 0);
         lv_obj_update_layout(label);
         return y + lv_obj_get_height(label);
     };
+    // A pill button; returns the x for the next one.
+    const auto pill = [&](const char* label, int x, int y, bool filled) {
+        lv_obj_t* b = box(ask_, x, y, 0, kPillH, filled ? kTermTheme.text : kTermTheme.bg_top);
+        lv_obj_set_size(b, LV_SIZE_CONTENT, kPillH);
+        lv_obj_set_style_pad_hor(b, 4, 0);
+        set_border(b, 1, kTermTheme.text);
+        lv_obj_set_style_radius(b, 3, 0);
+        lv_obj_t* t = text(b, label, fonts_.small, filled ? kTermTheme.bg_top : kTermTheme.text, 0, 0);
+        lv_obj_align(t, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_update_layout(b);
+        return x + lv_obj_get_width(b) + 5;
+    };
+    const std::string question = clip_cols("? " + term.ask_question(), 43);
 
-    switch (term.ask_state()) {
-    case TerminalChip::AskState::Typing:
-        wrap_label("? " + term.ask_input() + "_", kWhite, 6);
-        wrap_label("Ask Alice about " + (host ? host->label : std::string("this host")) +
-                       ". She suggests one command; you decide.",
-                   kOut, 56);
-        lv_label_set_text(frame_.footer, "[↵]ask [ESC]back · nothing runs by itself");
+    switch (state) {
+    case TerminalChip::AskState::Typing: {
+        int y = wrap_label("? " + term.ask_input() + "_", kWhite, kTop);
+        y = wrap_label("Alice suggests one command; you decide.", kAskPink, y + 3);
+        pill("ESC Back", pill("↵ Ask", kLeft, y + 5, true), y + 5, false);
         break;
+    }
     case TerminalChip::AskState::Waiting: {
         static const char* kDots[] = {"", ".", "..", "..."};
-        const int y = wrap_label("? " + term.ask_question(), kWhite, 6);
-        wrap_label(std::string("Alice is thinking") + kDots[term.thinking_dots() & 3], kSalmon, y + 6);
+        const int y = wrap_label(question, kWhite, kTop);
+        wrap_label(std::string("Alice is thinking") + kDots[term.thinking_dots() & 3], kAskPink, y + 3);
+        lv_label_set_text(frame_.footer, "[ESC]cancel");
         break;
     }
     case TerminalChip::AskState::Error: {
-        const int y = wrap_label("? " + term.ask_question(), kWhite, 6);
-        wrap_label("Alice: " + term.ask_error(), kSalmon, y + 6);
+        int y = wrap_label(question, kWhite, kTop);
+        y = wrap_label("Alice: " + clip_cols(term.ask_error(), 79), kAskRed, y + 3);
+        pill("ESC Back", kLeft, y + 5, false);
         lv_label_set_text(frame_.footer, "[ESC]back");
         break;
     }
     case TerminalChip::AskState::Suggestion: {
-        int y = wrap_label("? " + term.ask_question(), kWhite, 6);
-        y = wrap_label("Alice: " + clip_cols(term.ask_why(), 88), kSalmon, y + 4);
-        lv_obj_t* cmd = box(ask_, 8, y + 6, 304, 22, 0x0b1a10);
-        set_border(cmd, 1, kTermTheme.edge);
+        // Budget (139 px): question 1 line, Alice <= 2 lines, the command in full
+        // (<= kCommandLines lines, every character shown), then the pills.
+        int y = wrap_label(question, kWhite, kTop);
+        y = wrap_label("Alice: " + clip_cols(term.ask_why(), 79), kAskPink, y + 3);
+        const auto lines = term.ask_command_lines();
+        const bool fits = term.ask_command_fits();
+        std::string shown;
+        for (size_t i = 0; i < lines.size() && i < TerminalChip::kCommandLines; ++i) {
+            if (i) shown += '\n';
+            shown += lines[i];
+        }
+        lv_obj_t* cmd = box(ask_, kLeft, y + 4, kWidth, 20, kTermTheme.bar);
+        set_border(cmd, 1, fits ? kTermTheme.edge : kAskRed);
         lv_obj_set_style_radius(cmd, 3, 0);
-        lv_obj_t* cmd_text = text(cmd, term.ask_command(), fonts_.small, kTermTheme.text, 6, 4);
+        lv_obj_t* cmd_text = text(cmd, shown, fonts_.small, kTermTheme.text, 4, 3);
         lv_label_set_long_mode(cmd_text, LV_LABEL_LONG_CLIP);
-        lv_obj_set_width(cmd_text, 290);
-        const int by = y + 36;
-        const auto button = [&](const char* label, int x, bool filled) {
-            lv_obj_t* b = box(ask_, x, by, 0, 16, filled ? kTermTheme.text : kTermTheme.bg_top);
-            lv_obj_set_size(b, LV_SIZE_CONTENT, 16);
-            lv_obj_set_style_pad_hor(b, 5, 0);
-            set_border(b, 1, kTermTheme.text);
-            lv_obj_set_style_radius(b, 3, 0);
-            lv_obj_t* t = text(b, label, fonts_.small, filled ? 0x05080a : kTermTheme.text, 0, 0);
-            lv_obj_align(t, LV_ALIGN_LEFT_MID, 0, 0);
-            lv_obj_update_layout(b);
-            return x + lv_obj_get_width(b) + 6;
-        };
-        int x = button("↵ Run", 8, true);
-        x = button("E Edit", x, false);
-        button("ESC No", x, false);
+        lv_obj_set_width(cmd_text, static_cast<int>(TerminalChip::kCommandCols) * kGlyphW + 2);
+        lv_obj_set_height(cmd_text, LV_SIZE_CONTENT);
+        lv_obj_set_style_text_line_space(cmd_text, 1, 0);
+        lv_obj_update_layout(cmd_text);
+        // The box grows to the label, so every shown line is fully visible.
+        const int box_h = lv_obj_get_height(cmd_text) + 7;
+        lv_obj_set_height(cmd, box_h);
+        const int py = y + 4 + box_h + 5;
+        if (fits) {
+            pill("ESC No", pill("E Edit", pill("↵ Run", kLeft, py, true), py, false), py, false);
+        } else {
+            // Too long to show whole: it can only be typed into the shell and read there.
+            pill("ESC No", pill("E Type it", kLeft, py, true), py, false);
+            lv_label_set_text(frame_.footer, "too long to show: E types it, you run it");
+        }
         break;
     }
     }

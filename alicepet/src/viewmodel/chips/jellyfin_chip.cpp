@@ -14,7 +14,12 @@
 #include <cctype>
 #include <csignal>
 #include <cstdio>
+#include <fcntl.h>
 #include <unistd.h>
+
+#ifndef APP_VERSION
+#define APP_VERSION "0.0.0"
+#endif
 
 namespace viewmodel::chips {
 namespace {
@@ -57,15 +62,17 @@ JellyfinChip::JellyfinChip(model::PetConfig config) : config_(std::move(config))
     while (!base_.empty() && base_.back() == '/') base_.pop_back();
     device_id_ = "alicepet-" + host_name();
     ipc_path_ = "/tmp/alicepet-mpv-" + std::to_string(getpid()) + ".sock";
+    mpv_conf_path_ = "/tmp/alicepet-mpv-" + std::to_string(getpid()) + ".conf";
 }
 
 JellyfinChip::~JellyfinChip() {
     if (player_ > 0) platform::proc::stop(player_, SIGTERM, 500);
+    std::remove(mpv_conf_path_.c_str());
 }
 
 std::string JellyfinChip::auth_header() const {
     return "Authorization: MediaBrowser Client=\"AlicePET\", Device=\"CardputerZero\", DeviceId=\"" + device_id_ +
-           "\", Version=\"0.5.0\", Token=\"" + config_.jellyfin_api_key + "\"";
+           "\", Version=\"" APP_VERSION "\", Token=\"" + config_.jellyfin_api_key + "\"";
 }
 
 std::string JellyfinChip::clock_text(long long ticks) {
@@ -208,14 +215,25 @@ void JellyfinChip::choose(const Item& item) {
     }
 }
 
-std::string JellyfinChip::stream_url(const Item& item, long long start_ticks) const {
+std::string JellyfinChip::stream_url(const Item& item, long long start_ticks, bool with_key) const {
     // Server-side transcode to the panel: H.264 + AAC stereo HLS, <= width x 170.
     return base_ + "/Videos/" + item.id + "/master.m3u8?MediaSourceId=" + item.id + "&DeviceId=" + device_id_ +
            "&PlaySessionId=" + play_session_ + "&VideoCodec=h264&AudioCodec=aac&MaxWidth=" +
            std::to_string(config_.jellyfin_width) + "&MaxHeight=170&VideoBitrate=" +
            std::to_string(config_.jellyfin_max_bitrate) +
            "&AudioBitrate=64000&MaxAudioChannels=2&TranscodingMaxAudioChannels=2&SegmentContainer=ts&StartTimeTicks=" +
-           std::to_string(start_ticks) + "&ApiKey=" + platform::net::url_encode(config_.jellyfin_api_key);
+           std::to_string(start_ticks) +
+           (with_key ? "&ApiKey=" + platform::net::url_encode(config_.jellyfin_api_key) : std::string());
+}
+
+std::string JellyfinChip::write_mpv_auth_config() const {
+    // mpv applies http-header-fields to the playlist and every HLS segment request.
+    const int fd = ::open(mpv_conf_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) return "";
+    const std::string body = "http-header-fields=\"X-Emby-Token: " + config_.jellyfin_api_key + "\"\n";
+    const bool ok = ::write(fd, body.data(), body.size()) == static_cast<ssize_t>(body.size());
+    ::close(fd);
+    return ok ? mpv_conf_path_ : "";
 }
 
 void JellyfinChip::start_playback(long long start_ticks) {
@@ -226,14 +244,14 @@ void JellyfinChip::start_playback(long long start_ticks) {
     play_ms_ = poll_ms_ = report_ms_ = 0;
     stream_info_ = "requesting transcode...";
     view_ = View::Playing;
-    const std::string url = stream_url(playing_, start_ticks);
-
 #if USE_DESKTOP
+    const std::string url = stream_url(playing_, start_ticks, false);
+    const std::string token_header = "X-Emby-Token: " + config_.jellyfin_api_key;
     // STUB: the simulator has no video output. Fetch the HLS master playlist to
     // prove the server accepted the transcode, then show the playing screen.
-    results_.run([url, gen = generation_]() {
+    results_.run([url, token_header, gen = generation_]() {
         Result result{Result::What::Stream, {}, {}, "", 0, gen};
-        const auto response = platform::net::http_get(url, {}, kTimeoutMs);
+        const auto response = platform::net::http_get(url, {token_header}, kTimeoutMs);
         if (!response.ok || response.status != 200) {
             result.text = response.ok ? "transcode refused (HTTP " + std::to_string(response.status) + ")"
                                       : "stream error: " + response.error;
@@ -250,8 +268,12 @@ void JellyfinChip::start_playback(long long start_ticks) {
 #else
     auto argv = platform::proc::split_command(config_.jellyfin_player);
     ipc_ = !argv.empty() && argv[0].find("mpv") != std::string::npos;
+    // mpv gets the API key as a header from a 0600 file, so it never shows in `ps`.
+    // Other players only accept the key in the URL.
+    const std::string auth_conf = ipc_ ? write_mpv_auth_config() : std::string();
     if (ipc_) argv.push_back("--input-ipc-server=" + ipc_path_);
-    argv.push_back(url);
+    if (!auth_conf.empty()) argv.push_back("--include=" + auth_conf);
+    argv.push_back(stream_url(playing_, start_ticks, auth_conf.empty()));
     player_ = platform::proc::spawn(argv);
     if (player_ < 0) {
         view_ = View::Error;

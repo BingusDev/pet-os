@@ -36,7 +36,11 @@ public:
     AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesystem::path& chip_art_dir);
 
     void render(const viewmodel::AliceViewModel& vm);
+    // Clock + battery for the status bar. Cheap to call every frame: the clock is
+    // formatted once a second and the battery/sysfs status is read at most every
+    // kStatusPollMs (each read can touch the fuel gauge over I2C).
     void update_clock();
+    static constexpr uint32_t kStatusPollMs = 10000;
     // Registers the screen for chip `index`; it is shown while that chip is open.
     void add_chip_view(size_t index, std::unique_ptr<ChipView> chip_view);
     const AliceFonts& fonts() const { return fonts_; }
@@ -114,6 +118,9 @@ private:
     bool rendered_sleeping_{false};
     char clock_text_[8]{};
     char battery_text_[8]{};
+    uint32_t last_clock_ms_{0};
+    uint32_t last_status_ms_{0};
+    bool status_read_once_{false};
 };
 
 } // namespace view

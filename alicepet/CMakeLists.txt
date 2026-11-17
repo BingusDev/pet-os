@@ -6,7 +6,7 @@
 
 cmake_minimum_required(VERSION 3.31)
 
-project(alicepet VERSION 0.4.0 LANGUAGES C CXX)
+project(alicepet VERSION 0.5.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -505,6 +505,11 @@ target_link_libraries(${PROJECT_NAME}_viewmodel
         ${PROJECT_NAME}_platform
 )
 
+target_compile_definitions(${PROJECT_NAME}_viewmodel
+    PRIVATE
+        APP_VERSION="${PROJECT_VERSION}"
+)
+
 
 # ====================================================
 #   Core sources
@@ -603,6 +608,35 @@ target_link_libraries(${PROJECT_NAME}
         ${PROJECT_NAME}_view
         ${PROJECT_NAME}_viewmodel
 )
+
+# ====================================================
+# Warnings for AlicePET's own code (not LVGL / fmt)
+# ====================================================
+set(ALICEPET_TARGETS
+    ${PROJECT_NAME}_platform ${PROJECT_NAME}_model ${PROJECT_NAME}_view
+    ${PROJECT_NAME}_viewmodel ${PROJECT_NAME}_core logger ${PROJECT_NAME})
+foreach(target IN LISTS ALICEPET_TARGETS)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra)
+    endif()
+endforeach()
+
+# ====================================================
+# Unit tests (desktop builds): LVGL-free view-model logic
+# ====================================================
+option(ALICEPET_BUILD_TESTS "Build the view-model unit tests" ${USE_DESKTOP})
+if(ALICEPET_BUILD_TESTS)
+    enable_testing()
+    add_executable(${PROJECT_NAME}_tests tests/viewmodel_tests.cpp)
+    target_link_libraries(${PROJECT_NAME}_tests PRIVATE ${PROJECT_NAME}_viewmodel ${PROJECT_NAME}_model ${PROJECT_NAME}_platform)
+    target_include_directories(${PROJECT_NAME}_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    if(NOT MSVC)
+        target_compile_options(${PROJECT_NAME}_tests PRIVATE -Wall -Wextra)
+    endif()
+    add_test(NAME viewmodel COMMAND ${PROJECT_NAME}_tests)
+endif()
 
 # Package deb
 include(cmake/cm0-package.cmake)

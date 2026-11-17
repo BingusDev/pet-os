@@ -32,10 +32,6 @@ public:
     bool busy() const;
     bool poll(ChatResult& out);
 
-    // Push-to-talk hook: a future mic recorder uploads audio here and the reply
-    // flows through the same poll(). Not implemented yet (no mic on desktop).
-    bool voice_supported() const { return false; }
-
 private:
     struct Inbox;
     model::PetConfig config_;

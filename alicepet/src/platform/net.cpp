@@ -172,45 +172,6 @@ std::string decode_chunked(const std::string& body) {
     return out;
 }
 
-void append_utf8(std::string& out, uint32_t cp) {
-    if (cp < 0x80) {
-        out += static_cast<char>(cp);
-    } else if (cp < 0x800) {
-        out += static_cast<char>(0xC0 | (cp >> 6));
-        out += static_cast<char>(0x80 | (cp & 0x3F));
-    } else if (cp < 0x10000) {
-        out += static_cast<char>(0xE0 | (cp >> 12));
-        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-        out += static_cast<char>(0x80 | (cp & 0x3F));
-    } else {
-        out += static_cast<char>(0xF0 | (cp >> 18));
-        out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-        out += static_cast<char>(0x80 | (cp & 0x3F));
-    }
-}
-
-// Position just after `"key"` + optional whitespace + ':' + whitespace, or npos.
-size_t find_value(const std::string& json, const std::string& key) {
-    const std::string needle = "\"" + key + "\"";
-    size_t pos = 0;
-    while ((pos = json.find(needle, pos)) != std::string::npos) {
-        size_t p = pos + needle.size();
-        while (p < json.size() && std::isspace(static_cast<unsigned char>(json[p]))) {
-            ++p;
-        }
-        if (p < json.size() && json[p] == ':') {
-            ++p;
-            while (p < json.size() && std::isspace(static_cast<unsigned char>(json[p]))) {
-                ++p;
-            }
-            return p;
-        }
-        pos = p;
-    }
-    return std::string::npos;
-}
-
 } // namespace
 
 HttpResponse http_post_json(const std::string& url, const std::string& json_body,
@@ -474,81 +435,6 @@ std::string json_escape(const std::string& value) {
         }
     }
     return out;
-}
-
-bool json_string_field(const std::string& json, const std::string& key, std::string& out) {
-    size_t p = find_value(json, key);
-    if (p == std::string::npos || p >= json.size() || json[p] != '"') {
-        return false;
-    }
-    ++p;
-    out.clear();
-    while (p < json.size() && json[p] != '"') {
-        char c = json[p++];
-        if (c != '\\') {
-            out += c;
-            continue;
-        }
-        if (p >= json.size()) {
-            break;
-        }
-        c = json[p++];
-        switch (c) {
-        case 'n': out += '\n'; break;
-        case 't': out += '\t'; break;
-        case 'r': break;
-        case 'b': case 'f': break;
-        case 'u': {
-            if (p + 4 > json.size()) {
-                return false;
-            }
-            uint32_t cp = std::strtoul(json.substr(p, 4).c_str(), nullptr, 16);
-            p += 4;
-            // Surrogate pair.
-            if (cp >= 0xD800 && cp <= 0xDBFF && p + 6 <= json.size() && json[p] == '\\' && json[p + 1] == 'u') {
-                const uint32_t low = std::strtoul(json.substr(p + 2, 4).c_str(), nullptr, 16);
-                if (low >= 0xDC00 && low <= 0xDFFF) {
-                    cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
-                    p += 6;
-                }
-            }
-            append_utf8(out, cp);
-            break;
-        }
-        default: out += c; break;
-        }
-    }
-    return true;
-}
-
-bool json_bool_field(const std::string& json, const std::string& key, bool& out) {
-    const size_t p = find_value(json, key);
-    if (p == std::string::npos) {
-        return false;
-    }
-    if (json.compare(p, 4, "true") == 0) {
-        out = true;
-        return true;
-    }
-    if (json.compare(p, 5, "false") == 0) {
-        out = false;
-        return true;
-    }
-    return false;
-}
-
-bool json_int_field(const std::string& json, const std::string& key, long long& out) {
-    const size_t p = find_value(json, key);
-    if (p == std::string::npos) {
-        return false;
-    }
-    char* end = nullptr;
-    const long long value = std::strtoll(json.c_str() + p, &end, 10);
-    if (end == json.c_str() + p) {
-        return false;
-    }
-    out = value;
-    return true;
 }
 
 std::string url_encode(const std::string& value) {

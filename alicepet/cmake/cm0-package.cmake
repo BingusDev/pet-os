@@ -101,6 +101,9 @@ if(FMT_INCLUDE_DIR AND FMT_LIBRARY)
     string(APPEND APP_DEBIAN_DEPENDS ", libfmt10")
 endif()
 set(CPACK_DEBIAN_PACKAGE_DEPENDS "${APP_DEBIAN_DEPENDS}")
+# Programs the chips start: VOICE (arecord), TERMINAL (ssh), JELLYFIN (mpv),
+# https:// requests (curl). Recommends, so the launcher still installs without them.
+set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "alsa-utils, openssh-client, mpv, curl")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF)
 set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION TRUE)
 

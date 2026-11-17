@@ -54,7 +54,7 @@ std::string timestamp_filename() {
     localtime_r(&timestamp, &local_time);
 #endif
 
-    char buffer[48]{};
+    char buffer[96]{};
     std::snprintf(buffer,
                   sizeof(buffer),
                   "alicepet_%04d%02d%02d_%02d%02d%02d_%03d.png",

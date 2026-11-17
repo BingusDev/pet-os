@@ -4,7 +4,7 @@ Device: M5Stack CardputerZero (Pi CM0, 512 MB RAM, 320×170 ST7789, H.264 HW dec
 Mockups: `mockups/AlicePET-master-v1.png` (+ per-area HTML in `mockups/`). Chips: `CHIPS.md`.
 
 ## Architecture
-- **PET** runs a single full-screen app (Python + LVGL via M5 AppBuilder, or pygame on fbdev as fallback), plus small helpers (mpv, emulator cores, IR tools).
+- **PET** runs a single full-screen app (C++ / LVGL 9.5 from the M5 CardputerZero app template, fbdev), plus small helpers (mpv, emulator cores, IR tools).
 - **Alice stays on the Mac mini.** PET talks to her over Tailscale (OpenClaw node pairing or a small HTTPS bridge). Heavy work (STT/TTS, transcodes, LLM) never runs on the PET.
 - **Every chip = one module** with the same contract: `screen()`, `keys()`, `status()`. Folder/launcher just loads modules.
 

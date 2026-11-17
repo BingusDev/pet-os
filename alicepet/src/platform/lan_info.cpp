@@ -133,7 +133,7 @@ std::string default_gateway(const std::string& interface_name) {
 #endif
 }
 
-std::string dhcp_state(const std::string& interface_name, std::string& server) {
+std::string dhcp_state(const std::string& interface_name, [[maybe_unused]] std::string& server) {
     std::string out;
 #if defined(__APPLE__)
     if (proc::run_capture({"ipconfig", "getpacket", interface_name}, out, 2000) != 0 || out.empty()) return "static";

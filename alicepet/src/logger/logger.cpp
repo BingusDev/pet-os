@@ -98,7 +98,7 @@ std::string current_timestamp() {
 #endif
 
 
-    char buffer[32];
+    char buffer[64];
     std::snprintf(buffer,
                   sizeof(buffer),
                   "%d-%d-%d %02d:%02d:%02d",

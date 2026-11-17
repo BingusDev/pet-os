@@ -12,6 +12,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <linux/input.h>
+#include <poll.h>
 #include <string>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -506,6 +507,25 @@ const char* describe_key(uint32_t key) {
         std::snprintf(buffer, sizeof(buffer), "Key_%u", key);
     }
     return buffer;
+}
+
+bool wait_for_key_input(int timeout_ms) {
+#if USE_DESKTOP
+    lv_delay_ms(static_cast<uint32_t>(std::clamp(timeout_ms, 0, 40)));
+    return false;
+#else
+    std::vector<pollfd> fds;
+    for (lv_indev_t* indev = lv_indev_get_next(nullptr); indev; indev = lv_indev_get_next(indev)) {
+        if (lv_indev_get_read_cb(indev) != evdev_read_cb) continue;
+        const auto* keypad = static_cast<const EvdevKeypad*>(lv_indev_get_driver_data(indev));
+        if (keypad && keypad->fd >= 0) fds.push_back(pollfd{keypad->fd, POLLIN, 0});
+    }
+    if (fds.empty()) {
+        lv_delay_ms(static_cast<uint32_t>(std::max(0, timeout_ms)));
+        return false;
+    }
+    return poll(fds.data(), fds.size(), timeout_ms) > 0;
+#endif
 }
 
 } // namespace platform

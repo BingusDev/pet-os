@@ -70,7 +70,10 @@ public:
     void handle_char(const std::string& utf8) override;
     void handle_ctrl(char letter) override;
     void tick(uint32_t elapsed_ms) override;
-    bool keep_awake() const override { return mode_ != Mode::Hosts; }
+    // Awake while Alice is answering or the open shell printed something in the
+    // last kShellAwakeMs (a running build, a log tail). An idle shell may nap.
+    bool keep_awake() const override;
+    static constexpr uint32_t kShellAwakeMs = 30000;
     bool wants_text() const override { return mode_ != Mode::Hosts; }
 
     Mode mode() const { return mode_; }

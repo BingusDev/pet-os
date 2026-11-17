@@ -61,6 +61,9 @@ public:
     // Sleep / nap: ESC on an idle Home, or `sleep_after_ms` without a key press.
     // Any key wakes back to Home (the waking key is swallowed).
     void set_sleep_after_ms(uint32_t ms) { sleep_after_ms_ = ms; }
+    // Dim: after `dim_after_ms` idle (0 = never) the app dims the backlight; any key undims.
+    void set_dim_after_ms(uint32_t ms) { dim_after_ms_ = ms; }
+    bool dimmed() const { return !sleeping_ && dim_after_ms_ > 0 && idle_ms_ >= dim_after_ms_; }
     void sleep_now();
     // 0..100 boot progress.
     int boot_progress() const { return boot_progress_; }
@@ -121,6 +124,7 @@ private:
     size_t selected_chip_{0};
     bool sleeping_{false};
     uint32_t sleep_after_ms_{0};
+    uint32_t dim_after_ms_{0};
     uint32_t idle_ms_{0};
     uint32_t slot_elapsed_ms_{0};
     std::array<std::unique_ptr<ChipModule>, kMaxChips> chips_{};

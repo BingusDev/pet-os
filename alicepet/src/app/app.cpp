@@ -452,7 +452,11 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         // No SSH host: still capture the suggestion screen (UI only, nothing runs).
         vm.handle_char("a");
         type("how full is the disk");
+        advance(virtual_now + kStepMs);
+        capture("terminal-ask-typing.png");
         vm.handle_key(viewmodel::Key::Enter);
+        advance(virtual_now + kStepMs);
+        capture("terminal-ask-waiting.png");
         viewmodel::chips::BridgeReply reply;
         reply.ok = true;
         reply.reply = canned;
@@ -590,6 +594,7 @@ int Application::run() {
 
     viewmodel::AliceViewModel view_model;
     view_model.set_sleep_after_ms(static_cast<uint32_t>(std::max(0, pet_config.sleep_after_s)) * 1000u);
+    view_model.set_dim_after_ms(static_cast<uint32_t>(std::max(0, pet_config.dim_after_s)) * 1000u);
     view_model.set_chat_available(chat.configured());
     view_model.set_hosts(host_rows(pet_config));
     const auto art_dir = assets.resolve("images/chips");
@@ -611,6 +616,7 @@ int Application::run() {
     uint32_t last_ms = lv_tick_get();
     bool running = true;
     bool screen_on = true;
+    auto screen_level = platform::ScreenLevel::On;
     bool display_lent = false;
     while (running
 #if USE_DESKTOP
@@ -622,11 +628,21 @@ int Application::run() {
         last_ms = now_ms;
         pump_services(view_model, chat, scanner);
 
-        // Sleep: backlight off on the device (the overlay covers the desktop).
-        if (view_model.sleeping() == screen_on) {
-            screen_on = !view_model.sleeping();
-            const bool switched = platform::set_screen_power(screen_on, pet_config.backlight);
-            LOG_INFO("screen {} (backlight {})", screen_on ? "on" : "off", switched ? "switched" : "n/a");
+        // Idle: dim the backlight first, then nap with it off (the overlay covers
+        // the desktop). The backlight is the biggest single draw on the pet.
+        const auto want_level = view_model.sleeping() ? platform::ScreenLevel::Off
+                                : view_model.dimmed()  ? platform::ScreenLevel::Dim
+                                                       : platform::ScreenLevel::On;
+        if (want_level != screen_level) {
+            screen_level = want_level;
+            screen_on = screen_level != platform::ScreenLevel::Off;
+            const bool switched =
+                platform::set_screen_level(screen_level, pet_config.backlight, pet_config.dim_percent);
+            LOG_INFO("screen {} (backlight {})",
+                     screen_level == platform::ScreenLevel::On    ? "on"
+                     : screen_level == platform::ScreenLevel::Dim ? "dim"
+                                                                  : "off",
+                     switched ? "switched" : "n/a");
         }
 
         // While the video player owns the panel, keep reading keys (lv_timer_handler)
@@ -644,9 +660,15 @@ int Application::run() {
         } else {
             display_lent = true;
         }
-        lv_timer_handler();
-        // Napping: poll keys less often to save power.
-        lv_delay_ms(screen_on ? 5 : 40);
+        const uint32_t next_timer_ms = lv_timer_handler();
+        if (screen_on) {
+            // Sleep until LVGL's next timer is due (indev read, redraw, animation),
+            // between 5 ms and one 30 fps frame, instead of spinning every 5 ms.
+            lv_delay_ms(std::clamp<uint32_t>(next_timer_ms, 5, 33));
+        } else {
+            // Napping: wait in the kernel for a key, waking once a second for workers.
+            platform::wait_for_key_input(1000);
+        }
     }
 
     return 0;

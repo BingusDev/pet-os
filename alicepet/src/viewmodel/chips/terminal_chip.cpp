@@ -352,22 +352,39 @@ void TerminalChip::handle_ctrl(char letter) {
     }
 }
 
+bool TerminalChip::keep_awake() const {
+    if (mode_ == Mode::Ask) return ask_state_ == AskState::Waiting;
+    if (mode_ == Mode::Shell) {
+        const Session* s = session();
+        return s && !s->ended && s->quiet_ms < kShellAwakeMs;
+    }
+    return false;
+}
+
 std::vector<std::string> TerminalChip::ask_command_lines() const {
-    std::vector<std::string> lines;
-    std::string line;
-    size_t cols = 0;
+    // Split into code points, then wrap at kCommandCols. A line breaks after its last
+    // space when there is one (the space stays at the end of the line), otherwise
+    // mid-word. Nothing is dropped: joining the lines gives the command back.
+    std::vector<std::string> cps;
     for (size_t i = 0; i < ask_command_.size();) {
         const size_t len = std::min(utf8_len(static_cast<unsigned char>(ask_command_[i])), ask_command_.size() - i);
-        if (cols == kCommandCols) {
-            lines.push_back(line);
-            line.clear();
-            cols = 0;
-        }
-        line += ask_command_.substr(i, len);
-        ++cols;
+        cps.push_back(ask_command_.substr(i, len));
         i += len;
     }
-    if (!line.empty()) lines.push_back(line);
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (start < cps.size()) {
+        size_t end = std::min(start + kCommandCols, cps.size());
+        if (end < cps.size()) {
+            size_t space = end;
+            while (space > start && cps[space - 1] != " ") --space;
+            if (space > start) end = space;
+        }
+        std::string line;
+        for (size_t i = start; i < end; ++i) line += cps[i];
+        lines.push_back(line);
+        start = end;
+    }
     return lines;
 }
 

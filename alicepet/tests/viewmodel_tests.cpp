@@ -154,6 +154,24 @@ void test_sleep_and_wake() {
     CHECK(vm.sleeping());
 }
 
+void test_dim_then_sleep() {
+    AliceViewModel vm;
+    booted(vm);
+    vm.set_dim_after_ms(500);
+    vm.set_sleep_after_ms(1000);
+    vm.tick(499);
+    CHECK(!vm.dimmed());
+    vm.tick(2);
+    CHECK(vm.dimmed());
+    CHECK(!vm.sleeping());
+    vm.handle_char("q");  // a key while dimmed brightens and is NOT swallowed
+    CHECK(!vm.dimmed());
+    CHECK(vm.input() == "q");
+    vm.tick(1001);
+    CHECK(vm.sleeping());
+    CHECK(!vm.dimmed());  // asleep means off, not dim
+}
+
 // --- TERMINAL chip ------------------------------------------------------------
 
 model::PetConfig terminal_config() {
@@ -228,6 +246,37 @@ void test_terminal_command_lines() {
     CHECK(term.ask_command_fits());
 }
 
+void test_terminal_soft_wrap() {
+    TerminalChip term(terminal_config());
+    ask(term, "x");
+    viewmodel::chips::BridgeReply reply;
+    reply.ok = true;
+    const std::string command = "sudo journalctl -u jellyfin --since today --no-pager | tail -n 40";
+    reply.reply = "CMD: " + command;
+    term.on_ask_reply(reply);
+    const auto lines = term.ask_command_lines();
+    CHECK(lines.size() == 2);
+    std::string joined;
+    for (const auto& line : lines) {
+        CHECK(line.size() <= TerminalChip::kCommandCols);
+        joined += line;
+    }
+    CHECK(joined == command);  // wrapping only moves where lines break
+    CHECK(lines[0].back() == ' ');  // broken after a space, not mid-word
+}
+
+void test_terminal_keep_awake() {
+    TerminalChip term(terminal_config());
+    CHECK(!term.keep_awake());  // host list can nap
+    ask(term, "disk");
+    CHECK(term.keep_awake());  // waiting on Alice
+    viewmodel::chips::BridgeReply reply;
+    reply.ok = true;
+    reply.reply = "CMD: df -h";
+    term.on_ask_reply(reply);
+    CHECK(!term.keep_awake());  // a suggestion on screen doesn't hold the pet awake
+}
+
 void test_sanitize_and_prompt() {
     using viewmodel::chips::build_ask_prompt;
     using viewmodel::chips::sanitize_command;
@@ -286,9 +335,12 @@ int main() {
         {"folder_wraps", test_folder_wraps},
         {"chat_prompt", test_chat_prompt},
         {"sleep_and_wake", test_sleep_and_wake},
+        {"dim_then_sleep", test_dim_then_sleep},
         {"terminal_reply_parsing", test_terminal_reply_parsing},
         {"terminal_long_command_cannot_run", test_terminal_long_command_cannot_run},
         {"terminal_command_lines", test_terminal_command_lines},
+        {"terminal_soft_wrap", test_terminal_soft_wrap},
+        {"terminal_keep_awake", test_terminal_keep_awake},
         {"sanitize_and_prompt", test_sanitize_and_prompt},
         {"vt_screen", test_vt_screen},
         {"split_command", test_split_command},

@@ -55,7 +55,11 @@ public:
     bool handle_key(Key key) override;
     void handle_char(const std::string& utf8) override;
     void tick(uint32_t elapsed_ms) override;
-    bool keep_awake() const override { return view_ == View::Playing || view_ == View::Loading; }
+    // A paused video doesn't hold the PET awake: after the idle timeout it naps,
+    // and waking stops the player (leave()) with the resume point saved.
+    bool keep_awake() const override { return (view_ == View::Playing && !paused_) || view_ == View::Loading; }
+    // Leaving the chip (including a wake from nap) never leaves mpv running behind the UI.
+    void leave() override { stop_playback(); }
     bool wants_text() const override { return searching_; }
     bool owns_display() const override { return view_ == View::Playing && player_ > 0; }
 

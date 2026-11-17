@@ -134,6 +134,8 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
         } else if (section == "power") {
             if (key == "sleep_after_s") config.sleep_after_s = to_int(value, config.sleep_after_s);
             else if (key == "backlight") config.backlight = value;
+            else if (key == "dim_after_s") config.dim_after_s = to_int(value, config.dim_after_s);
+            else if (key == "dim_percent") config.dim_percent = to_int(value, config.dim_percent);
         } else if (section == "voice") {
             if (key == "record_cmd") config.voice_record_cmd = value;
             else if (key == "max_s") config.voice_max_s = to_int(value, config.voice_max_s);

@@ -17,7 +17,9 @@
 #include "model/chip_registry.h"
 #include "model/pet_config.h"
 #include "pet_services.h"
+#include "view/chips/terminal_view.h"
 #include "view/chips/voice_view.h"
+#include "viewmodel/chips/terminal_chip.h"
 #include "viewmodel/chips/voice_chip.h"
 
 #include <algorithm>
@@ -207,6 +209,8 @@ void install_chips(viewmodel::AliceViewModel& vm, view::AliceView& view, const m
     };
     add("voice", std::make_unique<viewmodel::chips::VoiceChip>(config),
         std::make_unique<view::VoiceView>(root, fonts, art_dir));
+    add("terminal", std::make_unique<viewmodel::chips::TerminalChip>(config),
+        std::make_unique<view::TerminalView>(root, fonts));
 }
 
 #if !USE_DESKTOP
@@ -361,7 +365,9 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
     // VOICE: idle, listening (live levels from the WAV), then the real bridge round trip
     // when ALICEPET_VOICE_WAV is set (needs bin/alicepet-bridge.sh running locally).
     const auto go_home = [&] {
-        while (vm.screen() != viewmodel::Screen::Home) vm.handle_key(viewmodel::Key::Escape);
+        for (int i = 0; i < 8 && vm.screen() != viewmodel::Screen::Home; ++i) {
+            vm.handle_key(i < 2 ? viewmodel::Key::HoldEscape : viewmodel::Key::Escape);
+        }
     };
     go_home();
     vm.handle_key(viewmodel::Key::Digit3);
@@ -385,6 +391,58 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
             advance(virtual_now + kStepMs);
             capture("voice-answer-p2.png");
         }
+    }
+    // TERMINAL: host list with live SSH-port probes; ALICEPET_SNAPSHOT_SSH=<label> also
+    // opens a real ssh session there and runs `uptime`. The Ask-Alice suggestion uses
+    // ALICEPET_SNAPSHOT_ASK_CANNED (a fixed reply, UI only) when set.
+    go_home();
+    using viewmodel::chips::TerminalChip;
+    vm.open_chip(model::chip_index("terminal"));
+    auto* term = static_cast<TerminalChip*>(vm.active_chip());
+    const auto all_probed = [&] {
+        for (const auto& h : term->hosts()) {
+            if (h.reach == TerminalChip::Reach::Checking) return false;
+        }
+        return true;
+    };
+    wait_real(all_probed, 6000);
+    capture("terminal-hosts.png");
+    const auto type = [&](const std::string& value) {
+        for (char c : value) vm.handle_char(std::string(1, c));
+    };
+    if (const char* ssh_label = std::getenv("ALICEPET_SNAPSHOT_SSH")) {
+        for (size_t i = 0; i < term->hosts().size(); ++i) {
+            if (term->hosts()[i].label == ssh_label) {
+                while (term->selected() != i) vm.handle_key(viewmodel::Key::Down);
+            }
+        }
+        vm.handle_key(viewmodel::Key::Enter);
+        wait_real([] { return false; }, 6000);
+        type("uptime");
+        vm.handle_key(viewmodel::Key::Enter);
+        wait_real([] { return false; }, 2500);
+        capture("terminal-shell.png");
+        vm.handle_key(viewmodel::Key::HoldEscape);
+        advance(virtual_now + kStepMs);
+        capture("terminal-hosts-connected.png");
+        if (const char* canned = std::getenv("ALICEPET_SNAPSHOT_ASK_CANNED")) {
+            vm.handle_char("a");
+            type("how full is the disk");
+            advance(virtual_now + kStepMs);
+            capture("terminal-ask-typing.png");
+            vm.handle_key(viewmodel::Key::Enter);
+            viewmodel::chips::BridgeReply reply;
+            reply.ok = true;
+            reply.reply = canned;
+            term->on_ask_reply(reply);
+            advance(virtual_now + kStepMs);
+            capture("terminal-ask.png");
+            vm.handle_key(viewmodel::Key::Enter);  // Run (the user's confirmation)
+            wait_real([] { return false; }, 3000);
+            capture("terminal-shell-ran.png");
+            vm.handle_key(viewmodel::Key::HoldEscape);
+        }
+        vm.handle_char("d");
     }
     go_home();
     vm.handle_key(viewmodel::Key::Digit2);

@@ -151,4 +151,21 @@ DeviceStatus read_device_status() {
 #endif
 }
 
+NetRoute net_route(const DeviceStatus& status, bool pc_sharing) {
+    if (pc_sharing) return NetRoute::PcNet;
+    if (status.ethernet_connected) return NetRoute::Lan;
+    if (status.wifi_connected) return NetRoute::WiFi;
+    return NetRoute::Offline;
+}
+
+const char* net_route_label(NetRoute route) {
+    switch (route) {
+    case NetRoute::PcNet: return "PC NET";
+    case NetRoute::Lan: return "LAN";
+    case NetRoute::WiFi: return "WI-FI";
+    case NetRoute::Offline: break;
+    }
+    return "OFFLINE";
+}
+
 } // namespace platform

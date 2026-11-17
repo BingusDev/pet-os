@@ -10,7 +10,8 @@
 # (backlight, CPU cores, CPU clock, Wi-Fi power save) is put back at the end.
 #
 # Tools it uses (and the app needs), if the image lacks them:
-#   sudo apt install alsa-utils openssh-client mpv curl v4l-utils iw evtest lldpd retroarch
+#   sudo apt install alsa-utils openssh-client mpv curl v4l-utils iw evtest lldpd retroarch \
+#                    dosfstools mtools dnsmasq-base
 set -uo pipefail
 
 AUTO=0
@@ -274,6 +275,49 @@ evidence "libretro cores" sh -c 'ls -1 /usr/lib/libretro /usr/lib/*-linux-gnu/li
 if have mpv && [[ -n "$(ls /sys/class/drm/card*-*/status 2>/dev/null)" ]]; then
     result CHECK "mpv on the panel" "try: mpv --vo=drm --drm-device=/dev/dri/cardN <video>, and --hwdec=v4l2m2m-copy"
 fi
+
+# --- 11. JACK IN and LAN TECH ------------------------------------------------
+section "JACK IN and LAN TECH"
+GADGET=/usr/libexec/alicepet/usb-gadget.sh
+APP_USER="${SUDO_USER:-$(id -un)}"
+[[ -x "$GADGET" ]] && result PASS "JACK IN gadget script" "$GADGET" || result FAIL "JACK IN gadget script" "missing; install the AlicePET .deb"
+if sudo -n -l -U "$APP_USER" 2>/dev/null | grep -q "usb-gadget.sh"; then
+    result PASS "JACK IN sudo rule" "$APP_USER may run the gadget script"
+else
+    result FAIL "JACK IN sudo rule" "run bin/pet-setup.sh (or install alicepet-jackin.sudoers)"
+fi
+for tool in mkfs.vfat mcopy dnsmasq; do
+    have "$tool" && result PASS "$tool" "$(command -v "$tool")" || result FAIL "$tool" "not installed (apt install dosfstools mtools dnsmasq-base)"
+done
+if (( IS_ROOT )); then
+    ip link add alicepet-bt type bridge 2>/dev/null && ip link del alicepet-bt && result PASS "Network bridges" "JACK IN's br-jack can be made" \
+        || result FAIL "Network bridges" "ip link add type bridge failed (bridge module missing?)"
+fi
+if [[ -x "$GADGET" ]] && ls /sys/class/udc/* >/dev/null 2>&1 && (( IS_ROOT )); then
+    echo "  JACK IN test: turns the USB-C port into a device for a minute. USB-A and Ethernet go off until it's undone;"
+    echo "  if you're connected over USB Ethernet, answer s and run this over Wi-Fi."
+    if ask "Bring the JACK IN gadget up now?"; then
+        before="$(lsusb 2>/dev/null | wc -l)"
+        evidence "usb-gadget.sh up" "$GADGET" up
+        if [[ -d /sys/kernel/config/usb_gadget/alicepet ]]; then
+            result PASS "JACK IN gadget up" "UDC state $(cat /sys/class/udc/*/state 2>/dev/null | head -n 1)"
+            evidence "Gadget status" "$GADGET" status
+            echo "  Plug the PET's USB-C into a Windows PC now."
+            judge "PC sees the ALICEPET drive" "Does an ALICEPET drive with JackIn.cmd appear on the PC?" "read-only drive from jackin.img"
+            judge "PC gets a network adapter" "Does the PC show a new network adapter with address 10.55.0.2 (ipconfig)?" "RNDIS + dnsmasq"
+            judge "Jack In app links" "Run JackIn.cmd from that drive and slot JACK IN on the PET: does the PET show the PC?" "first real test of the Windows app"
+        else
+            result FAIL "JACK IN gadget up" "see the evidence above"
+        fi
+        evidence "usb-gadget.sh down" "$GADGET" down
+        sleep 3
+        after="$(lsusb 2>/dev/null | wc -l)"
+        [[ "$after" -ge "$before" ]] && result PASS "USB host back after down" "lsusb $before -> $after devices" \
+            || result FAIL "USB host back after down" "lsusb $before -> $after devices (hub didn't come back; reboot)"
+    fi
+fi
+have ping && result PASS "ping (LAN TECH device check)" "$(command -v ping)" || result FAIL "ping" "apt install iputils-ping"
+have ip && result PASS "ip (LAN TECH static IP)" "$(command -v ip)" || result FAIL "ip" "apt install iproute2"
 
 # --- summary -----------------------------------------------------------------
 out ""

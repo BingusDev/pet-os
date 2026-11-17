@@ -420,7 +420,14 @@ bool base64_decode(const std::string& text, std::string& out) {
     return true;
 }
 
+namespace {
+std::atomic<bool> g_proxy_active{false};
+} // namespace
+
+bool proxy_active() { return g_proxy_active.load(); }
+
 void set_proxy_env(const std::string& proxy_url) {
+    g_proxy_active = !proxy_url.empty();
     for (const char* name : {"http_proxy", "https_proxy", "HTTPS_PROXY"}) {
         if (proxy_url.empty()) ::unsetenv(name);
         else ::setenv(name, proxy_url.c_str(), 1);

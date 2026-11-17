@@ -6,6 +6,7 @@
 #include "view/widgets.h"
 
 #include "platform/device_status.h"
+#include "platform/jack_link.h"
 
 #include <png.h>
 
@@ -98,9 +99,10 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     set_border(top, 1, kEdgeBlue);
     lv_obj_set_style_border_side(top, LV_BORDER_SIDE_BOTTOM, 0);
     text(top, "ALICE.EXE", fonts_.tiny, kPaleCyan, 6, 2);
-    lv_obj_t* dot = box(top, 6 + 9 * 7 + 5, 5, 5, 5, kGreen);
-    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-    text(top, "ONLINE", fonts_.tiny, kGreen, 6 + 9 * 7 + 14, 2);
+    // How the PET is online (updated with the battery): Wi-Fi, LAN, PC net (JACK IN sharing) or offline.
+    route_dot_ = box(top, 6 + 9 * 7 + 5, 5, 5, 5, kGreen);
+    lv_obj_set_style_radius(route_dot_, LV_RADIUS_CIRCLE, 0);
+    route_label_ = text(top, "...", fonts_.tiny, kGreen, 6 + 9 * 7 + 14, 2);
 
     // Right cluster: signal bars, battery gauge, battery %, clock (right to left via flex).
     lv_obj_t* status_right = lv_obj_create(top);
@@ -559,6 +561,17 @@ void AliceView::update_clock() {
     status_read_once_ = true;
     last_status_ms_ = tick;
     const platform::DeviceStatus status = platform::read_device_status();
+    const auto route = platform::net_route(status, platform::jack::proxy_active());
+    if (route != route_ || !route_shown_) {
+        route_ = route;
+        route_shown_ = true;
+        const uint32_t color = route == platform::NetRoute::Offline ? kRed
+                               : route == platform::NetRoute::PcNet ? kEdgeBlue
+                                                                    : kGreen;
+        lv_label_set_text(route_label_, platform::net_route_label(route));
+        lv_obj_set_style_text_color(route_label_, lv_color_hex(color), 0);
+        lv_obj_set_style_bg_color(route_dot_, lv_color_hex(color), 0);
+    }
     char battery[8]{};
     if (status.battery_present) {
         std::snprintf(battery, sizeof(battery), "%d%%", status.battery_percent);

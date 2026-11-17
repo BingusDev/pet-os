@@ -10,6 +10,8 @@
 #  - Share PC Internet: the PET borrows this PC's internet (outbound connections only).
 #  - Chat with Alice: type, or hold the mic button to talk (the mic records only
 #    while you hold it). The PET carries it to Alice and her answer shows here.
+#  - With Full Access, each PET command still asks you first (untick "Ask before
+#    each command" to stop that). Alice's answers can be read aloud; hold F9 to talk.
 #  - Every command is shown in the live log. JACK OUT ends everything at once.
 # The app only dials out to the PET (10.55.0.1); it never listens. See PROTOCOL.md.
 
@@ -45,7 +47,9 @@ $S = [ordered]@{
     Tunnels    = @()      # @{Id; Target; Pet; Phase; Tasks}
     Log        = New-Object System.Collections.Generic.List[string]
     Closing    = $false
-    Busy       = $false    # a scan is running (it pumps UI events)
+    Busy       = $false    # a scan or a confirm box is up (they pump UI events)
+    Confirm    = $true     # ask before each PET command, even with Full Access
+    Speak      = $true     # read Alice's answers aloud
     Linked     = $false
 }
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
@@ -88,7 +92,7 @@ $modeLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.
 $left.Controls.Add($modeLabel)
 
 $extraLabel = New-Object System.Windows.Forms.Label
-$extraLabel.SetBounds(10, 290, 170, 60)
+$extraLabel.SetBounds(10, 290, 170, 40)
 $extraLabel.TextAlign = 'TopCenter'
 $extraLabel.ForeColor = [System.Drawing.Color]::White
 $extraLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
@@ -126,6 +130,26 @@ $btnMic.FlatStyle = 'Flat'
 $btnMic.BackColor = [System.Drawing.Color]::FromArgb(0xc0, 0x4a, 0xff)
 $btnMic.ForeColor = [System.Drawing.Color]::White
 $form.Controls.Add($btnMic)
+
+function New-Check($text, $y, $checked) {
+    $c = New-Object System.Windows.Forms.CheckBox
+    $c.Text = $text
+    $c.Checked = $checked
+    $c.ForeColor = [System.Drawing.Color]::White
+    $c.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $c.SetBounds(14, $y, 170, 22)
+    $left.Controls.Add($c)
+    return $c
+}
+$chkConfirm = New-Check 'Ask before each command' 334 $true
+$chkSpeak = New-Check 'Alice reads answers aloud' 356 $true
+$hint = New-Object System.Windows.Forms.Label
+$hint.Text = 'Hold F9 to talk'
+$hint.ForeColor = [System.Drawing.Color]::FromArgb(0x7f, 0xd3, 0xff)
+$hint.Font = New-Object System.Drawing.Font('Segoe UI', 8)
+$hint.SetBounds(14, 382, 170, 18)
+$left.Controls.Add($hint)
+$form.KeyPreview = $true
 
 $logBox = New-Object System.Windows.Forms.TextBox
 $logBox.Multiline = $true
@@ -274,6 +298,18 @@ function Start-PetCommand($id, [string]$cmd) {
         Show-Ask 'full'
         return
     }
+    if ($S.Confirm) {
+        $S.Busy = $true
+        $answer = [System.Windows.Forms.MessageBox]::Show($form,
+            "The PET wants to run this as $env:USERNAME$(if ($S.Admin) { ' (admin)' }):`r`n`r`n$cmd`r`n`r`nRun it?",
+            'Jack In: run a command?', 'YesNo', 'Question', 'Button2')
+        $S.Busy = $false
+        if ($answer -ne 'Yes') {
+            Add-Log "you declined: $cmd"
+            Send-Pet ([ordered]@{ t = 'result'; id = $id; ok = $false; out = 'declined on the PC' })
+            return
+        }
+    }
     Add-Log "PET > $cmd"
     $ps = [PowerShell]::Create()
     [void]$ps.AddScript($cmd).AddCommand('Out-String').AddParameter('Width', 120)
@@ -360,6 +396,25 @@ function Stop-Sharing {
     foreach ($t in $S.Tunnels) { Close-Tunnel $t }
     $S.Tunnels = @()
     $S.Net = $false
+}
+
+# Alice's answers read aloud with the Windows voice (System.Speech, built in).
+$Voice = $null
+function Speak-Alice([string]$text) {
+    if (-not $S.Speak -or -not $text) { return }
+    try {
+        if ($null -eq $script:Voice) {
+            Add-Type -AssemblyName System.Speech
+            $script:Voice = New-Object System.Speech.Synthesis.SpeechSynthesizer
+            $female = $script:Voice.GetInstalledVoices() | Where-Object { $_.VoiceInfo.Gender -eq 'Female' } | Select-Object -First 1
+            if ($female) { $script:Voice.SelectVoice($female.VoiceInfo.Name) }
+        }
+        $script:Voice.SpeakAsyncCancelAll()
+        [void]$script:Voice.SpeakAsync($text)
+    } catch {
+        Add-Log "voice: can't speak ($($_.Exception.Message))"
+        $S.Speak = $false
+    }
 }
 
 # --- chat with Alice ---------------------------------------------------------------
@@ -482,6 +537,7 @@ function On-Line([string]$line) {
             if ($msg.heard) { Add-Log "you (heard): $($msg.heard)" }
             $alice.Text = 'Alice: ' + $msg.text
             Add-Log ('Alice: ' + $msg.text)
+            if ($msg.ok) { Speak-Alice ([string]$msg.text) }
             if ($msg.cmd) { Add-Log "Alice suggests: $($msg.cmd)   (press Enter on the PET to run it; needs Full Access)" }
         }
     }
@@ -594,6 +650,17 @@ $btnLog.Add_Click({
 $btnSend.Add_Click({ Send-Chat })
 $btnMic.Add_MouseDown({ Start-Mic })
 $btnMic.Add_MouseUp({ Stop-Mic })
+# Hold F9 anywhere in the window to talk (key repeat is ignored while recording).
+$form.Add_KeyDown({ param($sender, $e) if ($e.KeyCode -eq 'F9') { $e.Handled = $true; if (-not $Mic.On) { Start-Mic } } })
+$form.Add_KeyUp({ param($sender, $e) if ($e.KeyCode -eq 'F9') { $e.Handled = $true; Stop-Mic } })
+$chkConfirm.Add_CheckedChanged({
+    $S.Confirm = $chkConfirm.Checked
+    Add-Log $(if ($S.Confirm) { 'you will be asked before each PET command' } else { 'PET commands run without asking while Full Access is on' })
+})
+$chkSpeak.Add_CheckedChanged({
+    $S.Speak = $chkSpeak.Checked
+    if (-not $S.Speak -and $Voice) { $Voice.SpeakAsyncCancelAll() }
+})
 
 $btnOut.Add_Click({ Add-Log 'you pressed JACK OUT'; Jack-Out 'PC' })
 $form.Add_FormClosing({ if (-not $S.Closing) { Jack-Out 'window closed' } })
@@ -623,4 +690,5 @@ Update-Ui
 $timer.Start()
 [void]$form.ShowDialog()
 $timer.Dispose()
+if ($Voice) { $Voice.Dispose() }
 $form.Dispose()

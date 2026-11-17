@@ -18,6 +18,7 @@
 #include "viewmodel/chips/lan_tech_chip.h"
 #include "viewmodel/chips/jack_in_chip.h"
 #include "platform/jack_link.h"
+#include "platform/device_status.h"
 #include "viewmodel/chips/remote_chip.h"
 #include "viewmodel/chips/retro_chip.h"
 #include "viewmodel/chips/terminal_chip.h"
@@ -716,6 +717,14 @@ void test_jack_session() {
     jack.on_line(R"({"t":"voice","wav":"not base64!"})");
     CHECK(!jack.chat_waiting());
     CHECK(jack.sent.back().find("didn't come through") != std::string::npos);
+    platform::DeviceStatus st;
+    CHECK(platform::net_route(st, false) == platform::NetRoute::Offline);
+    st.wifi_connected = true;
+    CHECK(platform::net_route(st, false) == platform::NetRoute::WiFi);
+    st.ethernet_connected = true;
+    CHECK(platform::net_route(st, false) == platform::NetRoute::Lan);
+    CHECK(platform::net_route(st, true) == platform::NetRoute::PcNet);
+    CHECK(std::string(platform::net_route_label(platform::NetRoute::PcNet)) == "PC NET");
     std::string raw;
     CHECK(platform::jack::base64_decode("UklGRg==", raw) && raw == "RIFF");
     CHECK(platform::jack::base64_decode("YWJj\nZA", raw) && raw == "abcd");

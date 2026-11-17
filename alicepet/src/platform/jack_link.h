@@ -86,5 +86,7 @@ bool base64_decode(const std::string& text, std::string& out);
 
 // Sets / clears http(s)_proxy for this process, so curl in every chip uses the relay.
 void set_proxy_env(const std::string& proxy_url);
+// True while set_proxy_env has a proxy set (the status bar shows "PC NET").
+bool proxy_active();
 
 } // namespace platform::jack

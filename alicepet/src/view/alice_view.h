@@ -9,28 +9,24 @@
 #include "model/alice_art.h"
 #include "model/chip_registry.h"
 #include "viewmodel/alice_viewmodel.h"
+#include "view/widgets.h"
 
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace view {
 
-// Fonts are supplied by the app so the view uses the bundled Departure Mono face.
-struct AliceFonts {
-    const lv_font_t* tiny{nullptr};  // status bar, footers, prompt
-    const lv_font_t* body{nullptr};  // bubbles, chip names
-    const lv_font_t* title{nullptr}; // boot title
-    const lv_font_t* small{nullptr}; // chip folder / slotted bars and detail text (11 px grid)
-};
-
-// A decoded PNG kept alive for LVGL (ARGB8888, LVGL byte order B, G, R, A).
-struct ImageAsset {
-    lv_image_dsc_t desc{};
-    std::vector<uint8_t> pixels;
-    bool loaded{false};
+// Renders one chip module's own screen (view/chips/). Implementations build
+// their LVGL tree on construction (hidden) and redraw in render().
+class ChipView {
+public:
+    virtual ~ChipView() = default;
+    virtual lv_obj_t* screen() const = 0;
+    virtual void render(const viewmodel::ChipModule& chip) = 0;
 };
 
 // Builds the four AlicePET screens on a 320x170 root and renders the view model.
@@ -41,6 +37,10 @@ public:
 
     void render(const viewmodel::AliceViewModel& vm);
     void update_clock();
+    // Registers the screen for chip `index`; it is shown while that chip is open.
+    void add_chip_view(size_t index, std::unique_ptr<ChipView> chip_view);
+    const AliceFonts& fonts() const { return fonts_; }
+    const ImageAsset& alice_mini() const { return alice_mini_; }
 
 private:
     // Sprite slots keep pixel buffers and image descriptors alive for LVGL.
@@ -100,6 +100,7 @@ private:
     std::array<lv_image_dsc_t, kSpriteSlots> descriptors_{};
     std::array<std::vector<uint8_t>, kSpriteSlots> pixels_{};
     std::array<ChipArt, model::kChipCount> chip_art_{};
+    std::array<std::unique_ptr<ChipView>, viewmodel::AliceViewModel::kMaxChips> chip_views_{};
     ImageAsset icon_check_{};
     ImageAsset icon_bolt_{};
     ImageAsset icon_bolt_large_{};

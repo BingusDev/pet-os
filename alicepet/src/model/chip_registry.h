@@ -40,6 +40,8 @@ constexpr size_t kChipCount = 7;
 
 const ChipInfo& chip_at(size_t index);
 size_t chip_count();
+// Index of the chip with this id, or kChipCount if unknown.
+size_t chip_index(const char* id);
 
 // 16x16 avatar used by Alice on the home screen.
 const Sprite& alice_sprite();

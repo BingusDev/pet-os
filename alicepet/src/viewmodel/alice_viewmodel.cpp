@@ -119,6 +119,7 @@ std::vector<std::string> AliceViewModel::wrap(const std::string& text, size_t co
 }
 
 void AliceViewModel::tick(uint32_t elapsed_ms) {
+    tick_chips(elapsed_ms);
     if (screen_ == Screen::Boot) {
         boot_elapsed_ms_ = std::min(boot_elapsed_ms_ + elapsed_ms, kBootDurationMs);
         const int progress = static_cast<int>(boot_elapsed_ms_ * 100 / kBootDurationMs);
@@ -130,6 +131,25 @@ void AliceViewModel::tick(uint32_t elapsed_ms) {
             show(Screen::Home);
         }
         return;
+    }
+
+    if (screen_ == Screen::Slotted && chip_module(selected_chip_)) {
+        slot_elapsed_ms_ += elapsed_ms;
+        if (slot_elapsed_ms_ >= kSlotInMs) {
+            open_chip(selected_chip_);
+        }
+    }
+
+    if (!sleeping_ && sleep_after_ms_ > 0) {
+        const ChipModule* chip = active_chip();
+        if (chip && chip->keep_awake()) {
+            idle_ms_ = 0;
+        } else {
+            idle_ms_ += elapsed_ms;
+            if (idle_ms_ >= sleep_after_ms_) {
+                sleep_now();
+            }
+        }
     }
 
     if (chat_state_ == ChatState::Thinking) {
@@ -148,22 +168,26 @@ void AliceViewModel::handle_key(Key key) {
         show(Screen::Home);
         return;
     }
+    idle_ms_ = 0;
+    if (sleeping_) {
+        // Any key wakes back to Home; the waking key is swallowed (a release
+        // still has to reach a chip that is recording).
+        if (key == Key::PushToTalkRelease) {
+            if (ChipModule* chip = chip_module(selected_chip_)) chip->handle_key(key);
+        }
+        wake();
+        return;
+    }
 
     switch (screen_) {
     case Screen::Home:
-        if (sleeping_) {
-            // Any key wakes; ESC is the documented toggle.
-            sleeping_ = false;
-            ++revision_;
-            return;
-        }
         if (key == Key::Escape) {
             if (!input_.empty()) {
                 input_.clear();
+                ++revision_;
             } else {
-                sleeping_ = true;
+                sleep_now();
             }
-            ++revision_;
         } else if (key == Key::Backspace) {
             if (!input_.empty()) {
                 size_t cut = input_.size() - 1;
@@ -196,8 +220,14 @@ void AliceViewModel::handle_key(Key key) {
                 ++revision_;
             }
         } else if (key == Key::PushToTalk) {
-            // Hook for push-to-talk: the app will start/stop the mic recorder here.
-            set_bubble(ChatState::Error, "Voice isn't wired up yet. Type to me instead!");
+            // Holding SPACE on Home jumps into VOICE and starts recording.
+            const size_t voice = model::chip_index("voice");
+            if (chip_module(voice)) {
+                open_chip(voice);
+                chip_module(voice)->handle_key(Key::PushToTalk);
+            } else {
+                set_bubble(ChatState::Error, "Voice isn't wired up yet. Type to me instead!");
+            }
         } else if (input_.empty()) {
             // Digits are hotkeys only while the prompt is empty; once typing they are text.
             if (key == Key::Digit1) {
@@ -205,6 +235,8 @@ void AliceViewModel::handle_key(Key key) {
                 if (!scanned_once_) request_scan();
             } else if (key == Key::Digit2) {
                 show(Screen::Folder);
+            } else if (key == Key::Digit3) {
+                open_chip(model::chip_index("voice"));
             }
         }
         break;
@@ -218,6 +250,7 @@ void AliceViewModel::handle_key(Key key) {
             selected_chip_ = (selected_chip_ + 1) % count;
             ++revision_;
         } else if (key == Key::Enter) {
+            slot_elapsed_ms_ = 0;
             show(Screen::Slotted);
         } else if (key == Key::Escape) {
             show(Screen::Home);
@@ -228,6 +261,16 @@ void AliceViewModel::handle_key(Key key) {
     case Screen::Slotted:
         if (key == Key::Escape) {
             show(Screen::Folder);
+        } else if (key == Key::Enter && chip_module(selected_chip_)) {
+            open_chip(selected_chip_);
+        }
+        break;
+
+    case Screen::Chip:
+        if (ChipModule* chip = active_chip()) {
+            if (!chip->handle_key(key)) {
+                leave_chip(Screen::Folder);
+            }
         }
         break;
 
@@ -263,12 +306,22 @@ void AliceViewModel::handle_char(const std::string& utf8) {
         show(Screen::Home);
         return;
     }
-    if (screen_ == Screen::Home) {
-        if (sleeping_) {
-            sleeping_ = false;
-            ++revision_;
-            return;
+    idle_ms_ = 0;
+    if (sleeping_) {
+        wake();
+        return;
+    }
+    if (screen_ == Screen::Chip) {
+        if (ChipModule* chip = active_chip()) {
+            if (chip->wants_text()) {
+                chip->handle_char(utf8);
+                return;
+            }
+            chip->handle_char(utf8);
         }
+        // Chips without text entry also take the letter navigation below.
+    }
+    if (screen_ == Screen::Home) {
         if (input_.empty()) {
             if (utf8 == "1") { handle_key(Key::Digit1); return; }
             if (utf8 == "2") { handle_key(Key::Digit2); return; }
@@ -292,6 +345,81 @@ void AliceViewModel::handle_char(const std::string& utf8) {
         else if (utf8 == "z" || utf8 == "Z") handle_key(Key::Left);
         else if (utf8 == "c" || utf8 == "C") handle_key(Key::Right);
     }
+}
+
+void AliceViewModel::handle_ctrl(char letter) {
+    idle_ms_ = 0;
+    if (sleeping_) {
+        wake();
+        return;
+    }
+    if (ChipModule* chip = active_chip()) {
+        chip->handle_ctrl(letter);
+    }
+}
+
+uint32_t AliceViewModel::revision() const {
+    const ChipModule* chip = active_chip();
+    return revision_ * 65599u + (chip ? chip->revision() : 0u);
+}
+
+void AliceViewModel::set_chip_module(size_t chip_index, std::unique_ptr<ChipModule> module) {
+    if (chip_index < chips_.size()) {
+        chips_[chip_index] = std::move(module);
+        ++revision_;
+    }
+}
+
+ChipModule* AliceViewModel::chip_module(size_t chip_index) const {
+    return chip_index < chips_.size() ? chips_[chip_index].get() : nullptr;
+}
+
+void AliceViewModel::open_chip(size_t chip_index) {
+    ChipModule* chip = chip_module(chip_index);
+    if (!chip) {
+        return;
+    }
+    if (screen_ == Screen::Chip && selected_chip_ == chip_index) {
+        return;
+    }
+    if (ChipModule* current = active_chip()) {
+        current->leave();
+    }
+    selected_chip_ = chip_index;
+    chip->enter();
+    show(Screen::Chip);
+}
+
+void AliceViewModel::leave_chip(Screen next) {
+    if (ChipModule* chip = active_chip()) {
+        chip->leave();
+    }
+    show(next);
+}
+
+void AliceViewModel::tick_chips(uint32_t elapsed_ms) {
+    for (auto& chip : chips_) {
+        if (chip) chip->tick(elapsed_ms);
+    }
+}
+
+void AliceViewModel::sleep_now() {
+    if (sleeping_ || screen_ == Screen::Boot) {
+        return;
+    }
+    sleeping_ = true;
+    ++revision_;
+}
+
+void AliceViewModel::wake() {
+    sleeping_ = false;
+    idle_ms_ = 0;
+    if (screen_ == Screen::Chip) {
+        leave_chip(Screen::Home);
+    } else {
+        show(Screen::Home);
+    }
+    ++revision_;
 }
 
 std::vector<std::string> AliceViewModel::bubble_page_lines() const {

@@ -4,18 +4,20 @@
 
 #pragma once
 
+#include "viewmodel/chip_module.h"
+#include "viewmodel/keys.h"
+
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace viewmodel {
 
-enum class Screen { Boot, Home, Folder, Slotted, NetScan };
-
-// Keys the view model understands, decoupled from LVGL / SDL key codes.
-// Printable characters go through handle_char() instead.
-enum class Key { Left, Right, Up, Down, Enter, Escape, Backspace, Digit1, Digit2, Digit3, PushToTalk };
+// Chip = a slotted chip module's own screen (see chip_module.h).
+enum class Screen { Boot, Home, Folder, Slotted, NetScan, Chip };
 
 // Home speech bubble state.
 enum class ChatState { Greeting, Thinking, Reply, Error };
@@ -38,6 +40,9 @@ struct HostRow {
 class AliceViewModel {
 public:
     static constexpr uint32_t kBootDurationMs = 2000;
+    // BATTLE CHIP IN! is shown this long before a chip with a module opens.
+    static constexpr uint32_t kSlotInMs = 900;
+    static constexpr size_t kMaxChips = 8;
     // Bubble text grid: Departure Mono 11 px is 7 px wide, the bubble text area is 170 px.
     static constexpr size_t kBubbleCols = 24;
     static constexpr size_t kBubbleRows = 4;
@@ -48,14 +53,28 @@ public:
     void handle_key(Key key);
     // A printable character (UTF-8 encoded, one code point).
     void handle_char(const std::string& utf8);
+    // Ctrl+letter.
+    void handle_ctrl(char letter);
 
     Screen screen() const { return screen_; }
     bool sleeping() const { return sleeping_; }
+    // Sleep / nap: ESC on an idle Home, or `sleep_after_ms` without a key press.
+    // Any key wakes back to Home (the waking key is swallowed).
+    void set_sleep_after_ms(uint32_t ms) { sleep_after_ms_ = ms; }
+    void sleep_now();
     // 0..100 boot progress.
     int boot_progress() const { return boot_progress_; }
     size_t selected_chip() const { return selected_chip_; }
     // Changes whenever the visible state changes, so the view can skip redraws.
-    uint32_t revision() const { return revision_; }
+    uint32_t revision() const;
+
+    // --- Chip modules ---
+    // Chips without a module keep the "BATTLE CHIP IN!" placeholder screen.
+    void set_chip_module(size_t chip_index, std::unique_ptr<ChipModule> module);
+    ChipModule* chip_module(size_t chip_index) const;
+    ChipModule* active_chip() const { return screen_ == Screen::Chip ? chip_module(selected_chip_) : nullptr; }
+    // Opens a chip directly (Home hotkeys such as [3] VOICE).
+    void open_chip(size_t chip_index);
 
     // --- Talk to Alice (Home) ---
     const std::string& input() const { return input_; }
@@ -89,12 +108,20 @@ private:
     void show(Screen next);
     void set_bubble(ChatState state, const std::string& text);
     void request_scan();
+    void wake();
+    void leave_chip(Screen next);
+    // Ticks every chip module (workers keep delivering while their screen is closed).
+    void tick_chips(uint32_t elapsed_ms);
 
     Screen screen_{Screen::Boot};
     uint32_t boot_elapsed_ms_{0};
     int boot_progress_{0};
     size_t selected_chip_{0};
     bool sleeping_{false};
+    uint32_t sleep_after_ms_{0};
+    uint32_t idle_ms_{0};
+    uint32_t slot_elapsed_ms_{0};
+    std::array<std::unique_ptr<ChipModule>, kMaxChips> chips_{};
     uint32_t revision_{0};
 
     std::string input_;

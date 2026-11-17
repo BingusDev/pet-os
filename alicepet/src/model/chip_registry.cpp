@@ -4,6 +4,8 @@
 
 #include "model/chip_registry.h"
 
+#include <string_view>
+
 namespace model {
 
 namespace {
@@ -206,6 +208,13 @@ const ChipInfo& chip_at(size_t index) {
 }
 
 size_t chip_count() {
+    return kChipCount;
+}
+
+size_t chip_index(const char* id) {
+    for (size_t i = 0; i < kChipCount; ++i) {
+        if (std::string_view(kChips[i].id) == id) return i;
+    }
     return kChipCount;
 }
 

@@ -47,6 +47,7 @@ struct EvdevKeypad {
     uint32_t router_key{0};
     bool router_pressed{false};
     bool shift{false};
+    bool ctrl{false};
 };
 #endif
 
@@ -279,7 +280,18 @@ void evdev_read_cb(lv_indev_t* indev, lv_indev_data_t* data) {
             continue;
         }
 
-        const auto key = map_evdev_key(input.code, keypad->shift);
+        if (input.code == KEY_LEFTCTRL || input.code == KEY_RIGHTCTRL) {
+            keypad->ctrl = input.value != 0;
+            continue;
+        }
+
+        auto key = map_evdev_key(input.code, keypad->shift);
+        // TODO(device): confirm the CardputerZero Ctrl key reports KEY_LEFTCTRL.
+        if (keypad->ctrl && key >= 'a' && key <= 'z') {
+            key = kKeyCtrlBase | key;
+        } else if (keypad->ctrl && key >= 'A' && key <= 'Z') {
+            key = kKeyCtrlBase | (key - 'A' + 'a');
+        }
         if (!key || input.value == 2) {
             continue;
         }

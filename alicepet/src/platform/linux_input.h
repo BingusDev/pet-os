@@ -11,6 +11,8 @@ constexpr size_t kNavKeyCount = 5;
 constexpr uint32_t kSpecialKeyBase = 0x200000U;
 constexpr uint32_t kKeyPrintScreen = kSpecialKeyBase | 18U;
 constexpr uint32_t kKeyHelp = kSpecialKeyBase | 19U;
+// Ctrl+<letter> arrives as kKeyCtrlBase | 'a'..'z'.
+constexpr uint32_t kKeyCtrlBase = kSpecialKeyBase | 0x100U;
 
 using KeyReleaseListener = void (*)(uint32_t key, const char* key_name, void* user_data);
 using GlobalKeyListener = bool (*)(uint32_t key,

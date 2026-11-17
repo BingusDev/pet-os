@@ -65,6 +65,9 @@ uint32_t map_control_key(SDL_Keycode key) {
         case SDLK_4:
         case SDLK_KP_4:
             return '4';
+        // SPACE as a physical key so holding it is push-to-talk (text input skips spaces).
+        case SDLK_SPACE:
+            return ' ';
         default:
             return 0;
     }
@@ -373,6 +376,13 @@ void DesktopSimulatorFrame::handle_event(const SDL_Event& event, bool& running) 
             if (event.key.repeat) {
                 return;
             }
+            // Ctrl+letter (no SDL_TEXTINPUT is generated for it): terminal ^C etc.
+            const SDL_Keycode sym = event.key.keysym.sym;
+            if ((event.key.keysym.mod & KMOD_CTRL) && sym >= SDLK_a && sym <= SDLK_z) {
+                emit_physical_key(static_cast<int32_t>(platform::kKeyCtrlBase | static_cast<uint32_t>(sym)),
+                                  event.type == SDL_KEYDOWN);
+                return;
+            }
             const auto control = map_control_key(event.key.keysym.sym);
             if (control != 0) {
                 emit_physical_key(static_cast<int32_t>(control), event.type == SDL_KEYDOWN);
@@ -383,6 +393,10 @@ void DesktopSimulatorFrame::handle_event(const SDL_Event& event, bool& running) 
             const char* cursor = event.text.text;
             while (*cursor != '\0') {
                 const auto length = utf8_character_size(cursor);
+                if (*cursor == ' ') {  // delivered as a physical key (push-to-talk)
+                    cursor += length;
+                    continue;
+                }
                 uint32_t key = 0;
                 std::copy_n(reinterpret_cast<const uint8_t*>(cursor),
                             std::min<uint32_t>(length, sizeof(key)),

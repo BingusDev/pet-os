@@ -22,6 +22,14 @@ struct HostConfig {
     std::string probe_label() const;
 };
 
+// TERMINAL bookmark: `ssh <target>`; target may be an ~/.ssh/config alias or user@host.
+struct SshBookmark {
+    std::string label;   // "grandworld-pi"
+    std::string target;  // "holden@100.103.43.8" or "grandworld-pi"
+    std::string note;    // "Pi · home"
+    int port{0};         // 0 = ssh default / ssh_config
+};
+
 struct PetConfig {
     // Talk-to-Alice bridge (cardputer-pet-terminal protocol).
     std::string bridge_url;
@@ -30,6 +38,40 @@ struct PetConfig {
 
     int netscan_timeout_ms{1500};
     std::vector<HostConfig> hosts;
+
+    // [power]: idle seconds before the PET naps (0 = never); backlight sysfs dir ("auto" = first in /sys/class/backlight).
+    int sleep_after_s{300};
+    std::string backlight{"auto"};
+
+    // [voice]: recorder writes a WAV to the path appended as the last argument and stops on SIGINT.
+    std::string voice_record_cmd{"arecord -q -D default -f S16_LE -r 16000 -c 1 -t wav"};
+    int voice_max_s{30};
+    // Optional reply TTS: the reply text is piped to this command's stdin. Empty = off.
+    std::string voice_tts_cmd;
+    // Desktop only: send this WAV instead of recording (no mic in the simulator).
+    std::string voice_desktop_wav;
+
+    // [terminal]
+    std::string ssh_cmd{"ssh"};
+    std::vector<SshBookmark> bookmarks;
+    // Also list Host entries from this ssh_config that are not bookmarked ("" = off).
+    std::string ssh_config_import{"~/.ssh/config"};
+
+    // [jellyfin]: api_key is a secret; it lives only in /etc/alicepet.conf on the device.
+    std::string jellyfin_url;
+    std::string jellyfin_api_key;
+    std::string jellyfin_user;  // user name or id; empty = first user
+    std::string jellyfin_player{"mpv --really-quiet --fs --vo=drm --hwdec=auto"};
+    int jellyfin_max_bitrate{450000};
+    int jellyfin_width{320};
+
+    // [romm]
+    std::string romm_url;
+    std::string romm_user;
+    std::string romm_password;
+
+    // [lantech]: interface to test (empty = first non-loopback with a carrier).
+    std::string lan_interface;
 };
 
 // Parses the INI-style /etc/alicepet.conf. Unknown keys are ignored; malformed

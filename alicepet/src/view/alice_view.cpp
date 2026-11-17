@@ -3,6 +3,7 @@
  */
 
 #include "view/alice_view.h"
+#include "view/widgets.h"
 
 #include "platform/device_status.h"
 
@@ -16,23 +17,6 @@
 namespace view {
 
 namespace {
-
-constexpr uint32_t kInk = 0x0d1b3d;
-constexpr uint32_t kPanelBlue = 0x0a2350;
-constexpr uint32_t kDeepBlue = 0x061633;
-constexpr uint32_t kEdgeBlue = 0x2f7de0;
-constexpr uint32_t kGridBlue = 0x1d5fb8;
-constexpr uint32_t kHintBlue = 0x7fb6ff;
-constexpr uint32_t kCyan = 0x7fd3ff;
-constexpr uint32_t kPaleCyan = 0x9fd8ff;
-constexpr uint32_t kGold = 0xffd200;
-constexpr uint32_t kGreen = 0x47f08a;
-constexpr uint32_t kBubble = 0xe9f4ff;
-constexpr uint32_t kScreenText = 0xcfe8ff;
-constexpr uint32_t kBarBlue = 0x47b3ff;
-constexpr uint32_t kSubtitle = 0x9fc7ff;
-constexpr uint32_t kYellow = 0xffd54a;
-constexpr uint32_t kRed = 0xff5a6e;
 
 // Slotted-screen copy per chip, in registry order (001-007). Description is the
 // chip's purpose from CHIPS.md; the two status lines are PLACEHOLDERS until each
@@ -51,92 +35,6 @@ constexpr SlotCopy kSlotCopy[model::kChipCount] = {
     {"Play your RomM library on the PET", "Library: RomM", "save sync ready"},
     {"SSH bookmarks over Tailscale", "Hosts: 6 bookmarks", "tailnet connected"},
 };
-
-// Decodes a PNG into LVGL's ARGB8888 byte order (B, G, R, A, straight alpha).
-bool load_png(const std::filesystem::path& path, ImageAsset& out) {
-    png_image image{};
-    image.version = PNG_IMAGE_VERSION;
-    if (!png_image_begin_read_from_file(&image, path.string().c_str())) {
-        return false;
-    }
-    image.format = PNG_FORMAT_BGRA;
-    out.pixels.assign(PNG_IMAGE_SIZE(image), 0);
-    if (!png_image_finish_read(&image, nullptr, out.pixels.data(), 0, nullptr)) {
-        png_image_free(&image);
-        return false;
-    }
-    out.desc = lv_image_dsc_t{};
-    out.desc.header.magic = LV_IMAGE_HEADER_MAGIC;
-    out.desc.header.cf = LV_COLOR_FORMAT_ARGB8888;
-    out.desc.header.w = image.width;
-    out.desc.header.h = image.height;
-    out.desc.header.stride = image.width * 4;
-    out.desc.data_size = static_cast<uint32_t>(out.pixels.size());
-    out.desc.data = out.pixels.data();
-    out.loaded = true;
-    return true;
-}
-
-lv_obj_t* box(lv_obj_t* parent, int x, int y, int w, int h, uint32_t bg) {
-    lv_obj_t* obj = lv_obj_create(parent);
-    lv_obj_remove_style_all(obj);
-    lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_pos(obj, x, y);
-    lv_obj_set_size(obj, w, h);
-    lv_obj_set_style_bg_color(obj, lv_color_hex(bg), 0);
-    lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
-    return obj;
-}
-
-void set_gradient(lv_obj_t* obj, uint32_t bottom) {
-    lv_obj_set_style_bg_grad_color(obj, lv_color_hex(bottom), 0);
-    lv_obj_set_style_bg_grad_dir(obj, LV_GRAD_DIR_VER, 0);
-}
-
-void set_border(lv_obj_t* obj, int width, uint32_t color) {
-    lv_obj_set_style_border_width(obj, width, 0);
-    lv_obj_set_style_border_color(obj, lv_color_hex(color), 0);
-}
-
-lv_obj_t* text(lv_obj_t* parent, const char* value, const lv_font_t* font, uint32_t color, int x, int y) {
-    lv_obj_t* label = lv_label_create(parent);
-    lv_label_set_text(label, value);
-    lv_obj_set_style_text_font(label, font, 0);
-    lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
-    lv_obj_set_pos(label, x, y);
-    return label;
-}
-
-// Faint 20px grid across a full screen; add it right after the background.
-void add_grid(lv_obj_t* parent) {
-    for (int x = 0; x < 320; x += 20) {
-        lv_obj_t* line = box(parent, x, 0, 1, 170, kGridBlue);
-        lv_obj_set_style_bg_opa(line, LV_OPA_40, 0);
-    }
-    for (int y = 0; y < 170; y += 20) {
-        lv_obj_t* line = box(parent, 0, y, 320, 1, kGridBlue);
-        lv_obj_set_style_bg_opa(line, LV_OPA_40, 0);
-    }
-}
-
-// Soft glow: a transparent disc whose box shadow spreads outward.
-void add_glow(lv_obj_t* parent, int cx, int cy, int radius, uint32_t color, lv_opa_t opa) {
-    lv_obj_t* glow = box(parent, cx - radius, cy - radius, radius * 2, radius * 2, color);
-    lv_obj_set_style_bg_opa(glow, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_radius(glow, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_shadow_width(glow, radius * 2, 0);
-    lv_obj_set_style_shadow_spread(glow, 0, 0);
-    lv_obj_set_style_shadow_color(glow, lv_color_hex(color), 0);
-    lv_obj_set_style_shadow_opa(glow, opa, 0);
-}
-
-// Blue grid background with a gradient and a central glow.
-lv_obj_t* make_screen_background(lv_obj_t* root, uint32_t top, uint32_t bottom) {
-    lv_obj_t* screen = box(root, 0, 0, 320, 170, top);
-    set_gradient(screen, bottom);
-    add_grid(screen);
-    return screen;
-}
 
 // Expands a palette-indexed bitmap into ARGB8888 (LVGL byte order: B, G, R, A).
 void fill_bitmap(std::vector<uint8_t>& out, const model::IndexedBitmap& bitmap) {
@@ -328,9 +226,27 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     lv_obj_set_style_radius(netscan_details_, 6, 0);
     lv_obj_add_flag(netscan_details_, LV_OBJ_FLAG_HIDDEN);
 
-    // Sleep overlay (ESC on home), above every screen.
+    // Sleep overlay (ESC on Home or idle timeout), above every screen. On the
+    // device the backlight is off as well; the desktop only has this overlay.
     sleep_overlay_ = box(root, 0, 0, 320, 170, 0x000000);
+    lv_obj_t* z_big = text(sleep_overlay_, "Z", fonts_.body, 0x1d3f73, 232, 104);
+    lv_obj_t* z_small = text(sleep_overlay_, "z", fonts_.tiny, 0x16325c, 252, 92);
+    (void)z_big;
+    (void)z_small;
+    text(sleep_overlay_, "z", fonts_.tiny, 0x10264a, 264, 82);
+    text(sleep_overlay_, "ALICE.EXE napping · any key wakes", fonts_.tiny, 0x16325c, 0, 0);
+    lv_obj_align(lv_obj_get_child(sleep_overlay_, -1), LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_add_flag(sleep_overlay_, LV_OBJ_FLAG_HIDDEN);
+}
+
+void AliceView::add_chip_view(size_t index, std::unique_ptr<ChipView> chip_view) {
+    if (index >= chip_views_.size() || !chip_view) {
+        return;
+    }
+    lv_obj_add_flag(chip_view->screen(), LV_OBJ_FLAG_HIDDEN);
+    chip_views_[index] = std::move(chip_view);
+    lv_obj_move_foreground(sleep_overlay_);
+    rendered_revision_ = UINT32_MAX;
 }
 
 lv_obj_t* AliceView::make_bitmap(lv_obj_t* parent, size_t slot, const model::IndexedBitmap& bitmap, int x, int y) {
@@ -458,6 +374,11 @@ void AliceView::render(const viewmodel::AliceViewModel& vm) {
     show(folder_, vm.screen() == viewmodel::Screen::Folder);
     show(slotted_, vm.screen() == viewmodel::Screen::Slotted);
     show(netscan_, vm.screen() == viewmodel::Screen::NetScan);
+    for (size_t i = 0; i < chip_views_.size(); ++i) {
+        if (chip_views_[i]) {
+            show(chip_views_[i]->screen(), vm.screen() == viewmodel::Screen::Chip && vm.selected_chip() == i);
+        }
+    }
     show(sleep_overlay_, vm.sleeping());
 
     switch (vm.screen()) {
@@ -475,6 +396,12 @@ void AliceView::render(const viewmodel::AliceViewModel& vm) {
         break;
     case viewmodel::Screen::NetScan:
         render_netscan(vm);
+        break;
+    case viewmodel::Screen::Chip:
+        if (const auto* chip = vm.active_chip(); chip && vm.selected_chip() < chip_views_.size() &&
+                                                chip_views_[vm.selected_chip()]) {
+            chip_views_[vm.selected_chip()]->render(*chip);
+        }
         break;
     }
 }

@@ -7,6 +7,7 @@
 #include "app.h"
 
 #include "asset_manager.h"
+#include "backlight.h"
 #include "linux_input.h"
 #include "logger.h"
 #include "screenshot_service.h"
@@ -17,6 +18,7 @@
 #include "model/pet_config.h"
 #include "pet_services.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -95,25 +97,48 @@ class KeyRouter {
 public:
     explicit KeyRouter(viewmodel::AliceViewModel& vm) : vm_(vm) {
         platform::set_global_key_listener(listener, this);
+        platform::set_key_release_listener(release_listener, this);
     }
 
     ~KeyRouter() {
         platform::clear_global_key_listener(listener, this);
+        platform::clear_key_release_listener(release_listener, this);
     }
 
 private:
+    static void release_listener(uint32_t key, const char*, void* user_data) {
+        auto* self = static_cast<KeyRouter*>(user_data);
+        if (self && key == ' ') {
+            self->vm_.handle_key(viewmodel::Key::PushToTalkRelease);
+        }
+    }
+
     static bool listener(uint32_t key, const char*, bool long_pressed, void* user_data) {
         auto* self = static_cast<KeyRouter*>(user_data);
         if (!self) {
             return false;
         }
         if (long_pressed) {
-            // Push-to-talk hook: holding SPACE. A mic recorder plugs in here later.
+            // Holding SPACE on Home = push-to-talk (VOICE takes a plain press itself).
             if (key == ' ') {
-                self->vm_.handle_key(viewmodel::Key::PushToTalk);
+                if (self->vm_.screen() == viewmodel::Screen::Home) {
+                    self->vm_.handle_key(viewmodel::Key::PushToTalk);
+                }
+                return true;
+            }
+            if (key == LV_KEY_ESC) {
+                self->vm_.handle_key(viewmodel::Key::HoldEscape);
                 return true;
             }
             return false;
+        }
+        if ((key & ~0xffu) == platform::kKeyCtrlBase) {
+            self->vm_.handle_ctrl(static_cast<char>(key & 0xff));
+            return true;
+        }
+        if (key == LV_KEY_NEXT) {
+            self->vm_.handle_key(viewmodel::Key::Tab);
+            return true;
         }
         viewmodel::Key mapped{};
         if (map_key(key, mapped)) {
@@ -248,6 +273,19 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
     vm.handle_key(viewmodel::Key::Enter);
     advance(virtual_now + kStepMs);
     capture("slotted.png");
+
+    // Sleep: ESC from Home, then any key wakes back to Home.
+    vm.handle_key(viewmodel::Key::Escape);
+    vm.handle_key(viewmodel::Key::Escape);
+    vm.handle_key(viewmodel::Key::Escape);
+    advance(virtual_now + kStepMs);
+    capture("sleep.png");
+    vm.handle_char("q");
+    advance(virtual_now + kStepMs);
+    capture("sleep-woke.png");
+    vm.handle_key(viewmodel::Key::Digit2);
+    vm.handle_key(viewmodel::Key::Enter);
+    advance(virtual_now + kStepMs);
 
     // Optional live checks (real network): ALICEPET_SNAPSHOT_CHAT="hello" types the
     // message on Home, sends it through the bridge and captures thinking + reply pages;
@@ -388,6 +426,7 @@ int Application::run() {
     NetScanner scanner(pet_config);
 
     viewmodel::AliceViewModel view_model;
+    view_model.set_sleep_after_ms(static_cast<uint32_t>(std::max(0, pet_config.sleep_after_s)) * 1000u);
     view_model.set_chat_available(chat.configured());
     view_model.set_hosts(host_rows(pet_config));
     view::AliceView view(root, alice_fonts, assets.resolve("images/chips"));
@@ -406,6 +445,7 @@ int Application::run() {
 
     uint32_t last_ms = lv_tick_get();
     bool running = true;
+    bool screen_on = true;
     while (running
 #if USE_DESKTOP
            && simulator_frame.process_events()
@@ -416,10 +456,18 @@ int Application::run() {
         last_ms = now_ms;
         pump_services(view_model, chat, scanner);
 
+        // Sleep: backlight off on the device (the overlay covers the desktop).
+        if (view_model.sleeping() == screen_on) {
+            screen_on = !view_model.sleeping();
+            const bool switched = platform::set_screen_power(screen_on, pet_config.backlight);
+            LOG_INFO("screen {} (backlight {})", screen_on ? "on" : "off", switched ? "switched" : "n/a");
+        }
+
         view.render(view_model);
         view.update_clock();
         lv_timer_handler();
-        lv_delay_ms(5);
+        // Napping: poll keys less often to save power.
+        lv_delay_ms(screen_on ? 5 : 40);
     }
 
     return 0;

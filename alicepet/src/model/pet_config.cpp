@@ -63,6 +63,26 @@ bool parse_host(const std::string& value, HostConfig& host) {
     return false;
 }
 
+// "<label>|<ssh target>|<note>[|<port>]"
+bool parse_bookmark(const std::string& value, SshBookmark& out) {
+    std::vector<std::string> parts;
+    size_t start = 0;
+    while (true) {
+        const size_t bar = value.find('|', start);
+        parts.push_back(trim(value.substr(start, bar == std::string::npos ? std::string::npos : bar - start)));
+        if (bar == std::string::npos) break;
+        start = bar + 1;
+    }
+    if (parts.size() < 2 || parts[0].empty() || parts[1].empty()) {
+        return false;
+    }
+    out.label = parts[0];
+    out.target = parts[1];
+    out.note = parts.size() > 2 ? parts[2] : "";
+    out.port = parts.size() > 3 ? to_int(parts[3], 0) : 0;
+    return true;
+}
+
 } // namespace
 
 std::string HostConfig::probe_label() const {
@@ -111,6 +131,40 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
                     warnings->push_back("bad host line " + std::to_string(line_number) + ": " + value);
                 }
             }
+        } else if (section == "power") {
+            if (key == "sleep_after_s") config.sleep_after_s = to_int(value, config.sleep_after_s);
+            else if (key == "backlight") config.backlight = value;
+        } else if (section == "voice") {
+            if (key == "record_cmd") config.voice_record_cmd = value;
+            else if (key == "max_s") config.voice_max_s = to_int(value, config.voice_max_s);
+            else if (key == "tts_cmd") config.voice_tts_cmd = value;
+            else if (key == "desktop_wav") config.voice_desktop_wav = value;
+        } else if (section == "terminal") {
+            if (key == "ssh_cmd") {
+                config.ssh_cmd = value;
+            } else if (key == "ssh_config_import") {
+                config.ssh_config_import = value;
+            } else if (key == "host") {
+                SshBookmark bookmark;
+                if (parse_bookmark(value, bookmark)) {
+                    config.bookmarks.push_back(std::move(bookmark));
+                } else if (warnings) {
+                    warnings->push_back("bad terminal host line " + std::to_string(line_number) + ": " + value);
+                }
+            }
+        } else if (section == "jellyfin") {
+            if (key == "url") config.jellyfin_url = value;
+            else if (key == "api_key") config.jellyfin_api_key = value;
+            else if (key == "user") config.jellyfin_user = value;
+            else if (key == "player") config.jellyfin_player = value;
+            else if (key == "max_bitrate") config.jellyfin_max_bitrate = to_int(value, config.jellyfin_max_bitrate);
+            else if (key == "width") config.jellyfin_width = to_int(value, config.jellyfin_width);
+        } else if (section == "romm") {
+            if (key == "url") config.romm_url = value;
+            else if (key == "user") config.romm_user = value;
+            else if (key == "password") config.romm_password = value;
+        } else if (section == "lantech") {
+            if (key == "interface") config.lan_interface = value;
         }
     }
     return config;

@@ -566,6 +566,100 @@ void test_retro_save_sync_helpers() {
     game.file = "Golden_Sun.zip";
     game.platform = "gba";
     CHECK(retro.local_save_path(game) == "/data/roms/gba/saves/Golden_Sun.srm");
+
+    // Newest-wins needs a believable clock: one that was never set, or one that
+    // is behind a RomM save's stamp, pauses the sync instead of guessing.
+    const long long nov14 = RetroChip::parse_iso_time("2026-11-14T00:00:00+00:00");
+    CHECK(RetroChip::clock_trusted(saves, nov14 + 3600));
+    CHECK(RetroChip::clock_trusted(saves, nov14 - 60));      // small skew is fine
+    CHECK(!RetroChip::clock_trusted(saves, nov14 - 86400));  // RomM has a save "from tomorrow"
+    CHECK(!RetroChip::clock_trusted({}, 1700000000LL));      // clock never set (2023)
+    CHECK(RetroChip::clock_trusted({}, nov14));
+}
+
+void test_retro_failed_pull_keeps_both_saves() {
+    using viewmodel::chips::RetroChip;
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("alicepet-retro-test-" + std::to_string(::getpid()));
+    fs::remove_all(dir);
+    fs::create_directories(dir / "gba" / "saves");
+    const fs::path save = dir / "gba" / "saves" / "G.srm";
+    const fs::path marker = dir / "gba" / "saves" / "G.srm.conflict";
+    std::ofstream(dir / "gba" / "G.gba") << "rom";
+    std::ofstream(save) << "old";
+    fs::last_write_time(save, fs::file_time_type::clock::now() - std::chrono::hours(1));
+    const fs::path player = dir / "player.sh";
+    std::ofstream(player) << "#!/bin/sh\nsleep 0.2\necho played > \"$1/G.srm\"\n";
+    fs::permissions(player, fs::perms::owner_all);
+
+    model::PetConfig config;
+    config.romm_url = "http://127.0.0.1:9";  // nothing listens: every request fails at once
+    config.retro_dir = dir.string();
+    config.retro_cores["gba"] = "core";
+    config.retro_player = player.string() + " {savedir}";
+    RetroChip retro(config);
+    const auto wait_until = [&](const std::function<bool()>& done) {
+        for (int i = 0; i < 400 && !done(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            retro.tick(10);
+        }
+        return done();
+    };
+
+    RetroChip::Result games;
+    games.what = RetroChip::Result::What::Games;
+    RetroChip::Game game;
+    game.id = 1;
+    game.name = "G";
+    game.file = "G.gba";
+    game.platform = "gba";
+    games.games.push_back(game);
+    retro.on_result(games);
+    retro.handle_key(Key::Enter);  // open the game: asks RomM for its saves (fails)
+    CHECK(retro.view() == RetroChip::View::Details);
+    bool good = false;
+    CHECK(wait_until([&] { return retro.save_text(good) != "checking RomM..."; }));
+
+    // RomM has a save from ten seconds ago; the PET's is an hour old.
+    RetroChip::Result saves;
+    saves.what = RetroChip::Result::What::Saves;
+    saves.rom_id = 1;
+    RetroChip::Save remote;
+    remote.id = 5;
+    remote.file_name = "G.srm";
+    remote.updated = static_cast<long long>(std::time(nullptr)) - 10;
+    saves.saves.push_back(remote);
+    retro.on_result(saves);
+
+    retro.handle_key(Key::Enter);  // play: pulls the newer save first, and that fails
+    CHECK(wait_until([&] { return retro.view() != RetroChip::View::Downloading; }));
+    CHECK(retro.view() == RetroChip::View::Details);  // did not start on the old save by itself
+    CHECK(retro.status().find("ENTER") != std::string::npos);
+    CHECK(!fs::exists(marker));
+
+    retro.handle_key(Key::Enter);  // the user's choice: play the PET's save
+    CHECK(retro.view() == RetroChip::View::Playing);
+    CHECK(fs::exists(marker));
+    CHECK(wait_until([&] { return retro.view() != RetroChip::View::Playing; }));
+    // The session changed the save, but it is not uploaded over RomM's newer one.
+    CHECK(retro.status() == "save kept on the PET: RomM has a different one");
+    CHECK(retro.save_text(good) == "differs (not uploaded)");
+    retro.leave();
+    fs::remove_all(dir);
+}
+
+void test_run_capture_cap() {
+    // A reply bigger than the default 1 MiB cap is kept whole when the caller
+    // asks for more room (https downloads go through curl's stdout), and the
+    // child is drained either way so it exits normally.
+    const std::vector<std::string> argv = {"sh", "-c", "head -c 3000000 /dev/zero; printf END"};
+    std::string big;
+    CHECK(platform::proc::run_capture(argv, big, 10000, false, 4 * 1024 * 1024) == 0);
+    CHECK(big.size() == 3000003);
+    CHECK(big.compare(big.size() - 3, 3, "END") == 0);
+    std::string capped;
+    CHECK(platform::proc::run_capture(argv, capped, 10000, false) == 0);
+    CHECK(capped.size() == 1024 * 1024);
 }
 
 void test_retro_needs_server() {
@@ -848,6 +942,8 @@ int main() {
         {"retro_parsing", test_retro_parsing},
         {"retro_needs_server", test_retro_needs_server},
         {"retro_save_sync_helpers", test_retro_save_sync_helpers},
+        {"retro_failed_pull_keeps_both_saves", test_retro_failed_pull_keeps_both_saves},
+        {"run_capture_cap", test_run_capture_cap},
         {"lan_who_is_new", test_lan_who_is_new},
         {"lan_helpers", test_lan_helpers},
         {"lan_static_config", test_lan_static_config},

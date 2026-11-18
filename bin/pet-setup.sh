@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # AlicePET first-boot setup. Run ON the CardputerZero, once, after flashing:
 #
-#   scp bin/pet-setup.sh alicepet/dist/alicepet_*.deb <user>@<pet>:~
-#   ssh -t <user>@<pet> 'sudo bash ~/pet-setup.sh ~/alicepet_*.deb'
+#   scp bin/pet-setup.sh alicepet/dist/AlicePET_*.deb <user>@<pet>:~
+#   ssh -t <user>@<pet> 'sudo bash ~/pet-setup.sh ~/AlicePET_*.deb'
 #
 # What it does (each step says what it changed; nothing secret is written):
 #   1. installs the AlicePET .deb (if given) and the tools the chips use
@@ -32,6 +32,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ $(id -u) -eq 0 ]] || { echo "run with sudo" >&2; exit 1; }
+# A pattern that matched nothing arrives here unexpanded: say so before changing anything.
+[[ -z "$DEB" || -f "$DEB" ]] || { echo "no such .deb: $DEB (the package is named AlicePET_<version>_arm64.deb)" >&2; exit 1; }
 [[ -n "$APP_USER" ]] && id "$APP_USER" >/dev/null 2>&1 || { echo "which user runs AlicePET? use --user <name>" >&2; exit 1; }
 
 step() { printf '\n\033[1;36m== %s ==\033[0m\n' "$1"; }
@@ -49,7 +51,7 @@ if (( APT )); then
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$(realpath "$DEB")" >/dev/null
         done_ "installed $(basename "$DEB")"
     else
-        note "no .deb given; install it later with: sudo apt install ./alicepet_<version>.deb"
+        note "no .deb given; install it later with: sudo apt install ./AlicePET_<version>_arm64.deb"
     fi
     # dnsmasq-base only; make sure no system dnsmasq service grabs port 53 or every interface.
 else
@@ -123,15 +125,42 @@ CONFIG=""
 for c in /boot/firmware/config.txt /boot/config.txt; do [[ -f "$c" ]] && { CONFIG="$c"; break; }; done
 if [[ -z "$CONFIG" ]]; then
     note "no config.txt found"
-elif grep -qE '^\s*dtoverlay=dwc2' "$CONFIG"; then
-    done_ "dwc2 overlay already set: $(grep -E '^\s*dtoverlay=dwc2' "$CONFIG" | head -n 1)"
-elif (( USB_OTG )); then
-    cp "$CONFIG" "$CONFIG.alicepet-bak"
-    printf '\n# AlicePET JACK IN: USB-C can act as a device (added by pet-setup.sh)\ndtoverlay=dwc2,dr_mode=otg\n' >>"$CONFIG"
-    done_ "added dtoverlay=dwc2,dr_mode=otg to $CONFIG (backup: $CONFIG.alicepet-bak). Reboot to apply."
-    note "if USB-A or Ethernet stop working after the reboot, restore the backup"
 else
-    note "not changed. JACK IN needs dtoverlay=dwc2,dr_mode=otg; rerun with --usb-otg once device-day shows it's safe"
+    # Only a dwc2 line that applies to every board ([all], or before any [section])
+    # and leaves the port able to act as a device counts. Stock images carry
+    # `dtoverlay=dwc2,dr_mode=host` under [cm4]/[cm5], which is neither.
+    DWC2_LINES="$(awk '
+        /^[[:space:]]*\[/ { sec = $0; gsub(/[[:space:]]/, "", sec); next }
+        /^[[:space:]]*dtoverlay=dwc2([,[:space:]]|$)/ {
+            line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+            print ((sec == "" || sec == "[all]") ? "all" : sec) "\t" line
+        }' "$CONFIG")"
+    # The last line for every board is the one that takes effect.
+    LAST_LINE="$(awk -F'\t' '$1 == "all" { print $2 }' <<<"$DWC2_LINES" | tail -n 1)"
+    DEVICE_LINE=""
+    HOST_LINE=""
+    case "$LAST_LINE" in
+    "") ;;
+    *dr_mode=host*) HOST_LINE="$LAST_LINE" ;;
+    *) DEVICE_LINE="$LAST_LINE" ;;
+    esac
+    OTHER_LINES="$(awk -F'\t' '$1 != "all" && $1 != "" { print $2 " (under " $1 ")" }' <<<"$DWC2_LINES")"
+    if [[ -n "$DEVICE_LINE" ]]; then
+        done_ "device mode already set: $DEVICE_LINE"
+    elif (( USB_OTG )); then
+        [[ -f "$CONFIG.alicepet-bak" ]] || cp "$CONFIG" "$CONFIG.alicepet-bak"  # keep the first, untouched copy
+        # [all] first, so the line applies whatever section the file ends in.
+        printf '\n# AlicePET JACK IN: USB-C can act as a device (added by pet-setup.sh)\n[all]\ndtoverlay=dwc2,dr_mode=otg\n' >>"$CONFIG"
+        done_ "added [all] dtoverlay=dwc2,dr_mode=otg to $CONFIG (backup: $CONFIG.alicepet-bak). Reboot to apply."
+        [[ -z "$HOST_LINE" ]] || note "the new line follows '$HOST_LINE'; if JACK IN finds no USB device controller after the reboot, comment that older line out"
+        note "if USB-A or Ethernet stop working after the reboot, restore the backup"
+    else
+        note "not changed. JACK IN needs dtoverlay=dwc2,dr_mode=otg under [all]; rerun with --usb-otg to add it (config.txt is backed up first)"
+        [[ -z "$HOST_LINE" ]] || note "found for every board, host mode only: $HOST_LINE"
+    fi
+    if [[ -n "$OTHER_LINES" ]]; then
+        while IFS= read -r l; do note "ignored, other boards only: $l"; done <<<"$OTHER_LINES"
+    fi
 fi
 
 printf '\n\033[1mSetup done.\033[0m Next: sudo bash device-day.sh\n'

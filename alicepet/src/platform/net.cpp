@@ -239,18 +239,26 @@ HttpResponse https_via_curl(const std::string& method, const std::string& url, c
         return response;
     }
     std::string out;
+    // Room for the largest reply the caller accepts plus the status marker;
+    // anything that fills it is reported as too large, not as a curl failure.
+    const size_t capture_cap = max_reply + 64;
     const int rc = proc::run_capture({"curl", "-sS", "--max-time", std::to_string(std::max(1, timeout_ms / 1000)),
                                       "-K", path, "-w", "\n@@HTTP@@%{http_code}"},
-                                     out, timeout_ms + 2000, false);
+                                     out, timeout_ms + 2000, false, capture_cap);
     unlink(path);
     if (body_file) unlink(body_path);
+    if (rc == 0 && out.size() >= capture_cap) {
+        response.error = "reply too large";
+        return response;
+    }
     const size_t marker = out.rfind("\n@@HTTP@@");
     if (rc != 0 || marker == std::string::npos) {
         response.error = rc == -1 ? "curl missing" : rc == -2 ? "timeout" : "curl exit " + std::to_string(rc);
         return response;
     }
     response.status = std::atoi(out.c_str() + marker + 10);
-    response.body = out.substr(0, marker);
+    out.resize(marker);
+    response.body = std::move(out);  // no second copy of a large download
     if (response.body.size() > max_reply) {
         response.error = "reply too large";
         return response;

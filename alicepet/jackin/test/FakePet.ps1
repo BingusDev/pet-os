@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+﻿# SPDX-License-Identifier: MIT
 #
 # A stand-in PET for trying the Jack In app on any Windows PC, no PET needed.
 # It listens on 127.0.0.1 only (ports 7341 and 7342, like the PET), prints what
@@ -52,6 +52,7 @@ Commands (what the PET's keys do):
   fix                  send the canned fix ([Enter] on Alice's suggestion)
   run <command>        send any PowerShell command (only runs with Full Access)
   scan                 ask for a new scan ([R])
+  busy                 send Alice's short "still answering" reply (the app must stay linked)
   web                  fetch http://example.com through Share PC Internet (tests tunnels)
   jackout              JACK OUT ([X]); the app should close
   quit                 stop this stand-in
@@ -72,6 +73,7 @@ function On-Command([string]$line) {
         'fix' { Send ([ordered]@{ t = 'run'; id = $script:nextId++; cmd = $script:suggestion }) }
         'run' { Send ([ordered]@{ t = 'run'; id = $script:nextId++; cmd = $rest }) }
         'scan' { Send ([ordered]@{ t = 'scan' }) }
+        'busy' { Send ([ordered]@{ t = 'alice'; ok = $false; text = 'Still answering the last one...' }) }
         'web' {
             $id = $script:nextId++
             $script:pendingWeb[$id] = 'example.com'

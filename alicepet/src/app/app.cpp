@@ -791,6 +791,10 @@ int Application::run() {
     // (offline cores, capped clock) is put back for whatever runs next.
     std::signal(SIGTERM, on_stop_signal);
     std::signal(SIGINT, on_stop_signal);
+    std::signal(SIGHUP, on_stop_signal);
+    // A run that was killed or crashed while dimmed or napping leaves the panel
+    // dark: start from a lit screen whatever the last run left behind.
+    platform::set_screen_level(platform::ScreenLevel::On, pet_config.backlight, pet_config.dim_percent);
     bool screen_on = true;
     auto screen_level = platform::ScreenLevel::On;
     // Per-chip power profiles ([power] profiles=on): cores, CPU clock, Wi-Fi power save.
@@ -858,6 +862,10 @@ int Application::run() {
         }
     }
 
+    // Stopped while dimmed or napping: hand the panel back lit.
+    if (screen_level != platform::ScreenLevel::On) {
+        platform::set_screen_level(platform::ScreenLevel::On, pet_config.backlight, pet_config.dim_percent);
+    }
     if (pet_config.power_profiles) power.restore();
     return 0;
 }

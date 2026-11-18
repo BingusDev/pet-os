@@ -28,6 +28,7 @@ BRIDGE=br-jack
 PET_IP=10.55.0.1
 PC_IP=10.55.0.2
 PIDFILE=/run/alicepet-jackin-dnsmasq.pid
+LOCKFILE=/run/alicepet-jackin.lock
 
 say() { echo "usb-gadget: $*" >&2; }
 die() { say "$*"; exit 1; }
@@ -49,11 +50,52 @@ make_image() {
     say "image $IMAGE from $APP_DIR"
 }
 
+# One up/down/image at a time: the app starts `up` and `down` from separate
+# threads, and two of them in the same configfs tree leave a half-built gadget.
+LOCKED=0
+lock() {
+    [ "$LOCKED" -eq 0 ] || return 0
+    exec 9>"$LOCKFILE"
+    flock -w 20 9 || die "another usb-gadget.sh is still running"
+    LOCKED=1
+}
+
+# A gadget is only "up" when it is bound to the controller and the bridge is there.
+gadget_ready() {
+    [ -d "$G" ] && [ -n "$(cat "$G/UDC" 2>/dev/null)" ] && ip link show "$BRIDGE" >/dev/null 2>&1
+}
+
 udc_name() { ls /sys/class/udc 2>/dev/null | head -n1 || true; }
+
+UP_UNFINISHED=0
+undo_failed_up() {
+    local rc=$?
+    [ "$UP_UNFINISHED" -eq 1 ] || return 0
+    UP_UNFINISHED=0
+    set +e
+    say "up failed (exit $rc); removing the half-built gadget"
+    cd /
+    down
+    exit "$([ "$rc" -ne 0 ] && echo "$rc" || echo 1)"
+}
 
 up() {
     need_root
-    [ -d "$G" ] && { say "already up"; return 0; }
+    lock
+    if gadget_ready; then
+        say "already up"
+        return 0
+    fi
+    if [ -d "$G" ]; then
+        # Left behind by an `up` that died part-way (killed, or the bind failed).
+        say "found a half-built gadget; removing it and starting again"
+        down
+        [ ! -d "$G" ] || die "can't clear $G (reboot the PET to reset the USB port)"
+    fi
+    # From here any failure (set -e) takes the gadget back down, so a later
+    # `up` never mistakes the leftovers for a working link.
+    UP_UNFINISHED=1
+    trap undo_failed_up EXIT
     local udc
     udc=$(udc_name)
     [ -n "$udc" ] || die "no USB device controller (add dtoverlay=dwc2,dr_mode=otg to config.txt and reboot)"
@@ -133,15 +175,18 @@ up() {
         # DHCP only: no DNS (port 0), no router, no DNS server option.
         dnsmasq --conf-file=/dev/null --interface="$BRIDGE" --bind-interfaces --except-interface=lo \
             --port=0 --dhcp-range="$PC_IP,$PC_IP,255.255.255.252,10m" --dhcp-option=3 --dhcp-option=6 \
-            --dhcp-authoritative --leasefile-ro --pid-file="$PIDFILE"
+            --dhcp-authoritative --leasefile-ro --pid-file="$PIDFILE" 9>&-  # don't hand dnsmasq the lock
     else
         say "dnsmasq missing: set the PC's address to $PC_IP/30 by hand (apt install dnsmasq-base)"
     fi
+    UP_UNFINISHED=0
+    trap - EXIT
     say "up on $udc: drive + network at $PET_IP"
 }
 
 down() {
     need_root
+    lock
     if [ -f "$PIDFILE" ]; then
         kill "$(cat "$PIDFILE")" 2>/dev/null || true
         rm -f "$PIDFILE"
@@ -162,7 +207,9 @@ down() {
 }
 
 status() {
-    if [ -d "$G" ]; then
+    if [ -d "$G" ] && ! gadget_ready; then
+        echo "gadget: half-built (run: usb-gadget.sh down)"
+    elif [ -d "$G" ]; then
         echo "gadget: up (UDC $(cat "$G/UDC" 2>/dev/null || echo ?))"
         echo "state: $(cat /sys/class/udc/*/state 2>/dev/null | head -n1)"
         ip -br addr show "$BRIDGE" 2>/dev/null || true
@@ -177,6 +224,6 @@ case "${1:-}" in
 up) up ;;
 down) down ;;
 status) status ;;
-image) need_root; make_image ;;
+image) need_root; lock; make_image ;;
 *) echo "usage: $0 up|down|status|image" >&2; exit 2 ;;
 esac

@@ -161,7 +161,8 @@ int stop(pid_t pid, int sig, int wait_ms) {
     return -1;
 }
 
-int run_capture(const std::vector<std::string>& argv, std::string& out, int timeout_ms, bool merge_stderr) {
+int run_capture(const std::vector<std::string>& argv, std::string& out, int timeout_ms, bool merge_stderr,
+                size_t max_bytes) {
     if (argv.empty()) return -1;
     auto args = c_argv(argv);
     const int devnull = null_fd();
@@ -203,7 +204,8 @@ int run_capture(const std::vector<std::string>& argv, std::string& out, int time
         }
         const ssize_t n = ::read(out_pipe[0], buffer, sizeof(buffer));
         if (n <= 0) break;
-        if (out.size() < 1024 * 1024) out.append(buffer, static_cast<size_t>(n));
+        // Keep reading past the cap so the child never blocks on a full pipe.
+        if (out.size() < max_bytes) out.append(buffer, std::min(static_cast<size_t>(n), max_bytes - out.size()));
     }
     ::close(out_pipe[0]);
     if (timed_out) {

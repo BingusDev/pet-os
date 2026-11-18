@@ -287,7 +287,33 @@ long long mtime_of(const std::string& path) {
     struct stat st {};
     return ::stat(path.c_str(), &st) == 0 ? static_cast<long long>(st.st_mtime) : 0;
 }
+
+// Marks a PET save that was played on while RomM held a newer one the PET could
+// not fetch. Neither copy is the other's ancestor, so nothing is uploaded over
+// RomM's until the marker is gone.
+std::string conflict_marker(const std::string& save_path) {
+    return save_path + ".conflict";
+}
+
+// The PET was built after this moment; a clock before it was never set.
+constexpr long long kClockFloor = 1790000000;  // 2026-09-21
+constexpr long long kFutureSlackS = 300;
 }  // namespace
+
+// "Newest wins" only means something when the PET's clock is right, and the
+// CardputerZero has no clock battery. A clock that was never set, or a RomM
+// save stamped later than the PET's "now", says it is wrong.
+bool RetroChip::clock_trusted(const std::vector<Save>& saves, long long now) {
+    if (now < kClockFloor) return false;
+    for (const auto& s : saves) {
+        if (s.updated > now + kFutureSlackS) return false;
+    }
+    return true;
+}
+
+bool RetroChip::sync_paused(const Game& game) const {
+    return saves_rom_ == game.id && !clock_trusted(saves_, static_cast<long long>(std::time(nullptr)));
+}
 
 std::string RetroChip::save_text(bool& good) const {
     good = false;
@@ -298,6 +324,8 @@ std::string RetroChip::save_text(bool& good) const {
     if (!config_.retro_sync_saves || base_.empty()) return local ? "on PET (sync off)" : "none yet";
     if (saves_checking_ && saves_rom_ == g->id) return "checking RomM...";
     if (saves_failed_ && saves_rom_ == g->id) return local ? "on PET (RomM offline)" : "RomM unreachable";
+    if (sync_paused(*g)) return "PET clock wrong (paused)";
+    if (fs::exists(conflict_marker(local_save_path(*g)))) return "differs (not uploaded)";
     const Save* remote = saves_rom_ == g->id ? pick_save(saves_, fs::path(local_save_path(*g)).filename().string()) : nullptr;
     if (remote) {
         good = local == 0 || remote->updated >= local - 2;
@@ -310,6 +338,7 @@ std::string RetroChip::save_text(bool& good) const {
 void RetroChip::fetch_saves(const Game& game) {
     if (!config_.retro_sync_saves || base_.empty()) return;
     saves_rom_ = game.id;
+    play_local_rom_ = 0;
     saves_known_ = false;
     saves_checking_ = true;
     saves_failed_ = false;
@@ -335,10 +364,18 @@ void RetroChip::start(const Game& game) {
     const std::string path = local_save_path(game);
     const Save* remote = config_.retro_sync_saves && saves_rom_ == game.id
                              ? pick_save(saves_, fs::path(path).filename().string()) : nullptr;
-    if (remote && remote->updated > mtime_of(path) + 2) {
-        pull_save(game, *remote);
-        return;
+    if (remote && remote->updated > mtime_of(path) + 2 && !sync_paused(game)) {
+        if (play_local_rom_ != game.id) {
+            pull_save(game, *remote);
+            return;
+        }
+        // The pull failed and the user chose to play the PET's save anyway.
+        // Mark it so this session's save is never uploaded over RomM's newer one.
+        std::error_code ec;
+        fs::create_directories(fs::path(path).parent_path(), ec);
+        std::ofstream(conflict_marker(path)) << remote->id << "\n";
     }
+    play_local_rom_ = 0;
     play(game);
 }
 
@@ -353,22 +390,38 @@ void RetroChip::pull_save(const Game& game, const Save& save) {
         Result result;
         result.generation = gen;
         const auto response = platform::net::http_request("GET", url, "", headers, kApiTimeoutMs, 8 * 1024 * 1024);
-        result.what = Result::What::SaveDown;  // even on failure: play goes ahead with the PET's save
+        result.what = Result::What::SaveDown;  // on failure the user is asked before playing the PET's save
         if (!response.ok || response.status != 200) {
             result.text = response.ok ? "HTTP " + std::to_string(response.status) : response.error;
             return result;
         }
+        if (response.body.empty()) {
+            result.text = "RomM sent an empty save";
+            return result;
+        }
         std::error_code ec;
         fs::create_directories(fs::path(path).parent_path(), ec);
-        if (fs::exists(path, ec)) fs::copy_file(path, path + ".bak", fs::copy_options::overwrite_existing, ec);
+        // Write beside the save and swap it in, so a failed write never leaves
+        // half a save where the good one was.
+        const std::string tmp = path + ".part";
         {
-            std::ofstream out(path, std::ios::binary);
+            std::ofstream out(tmp, std::ios::binary);
             out.write(response.body.data(), static_cast<std::streamsize>(response.body.size()));
+            out.flush();
             if (!out) {
+                fs::remove(tmp, ec);
                 result.text = "can't write the save";
                 return result;
             }
         }
+        if (fs::exists(path, ec)) fs::copy_file(path, path + ".bak", fs::copy_options::overwrite_existing, ec);
+        fs::rename(tmp, path, ec);
+        if (ec) {
+            fs::remove(tmp, ec);
+            result.text = "can't replace the save";
+            return result;
+        }
+        fs::remove(conflict_marker(path), ec);  // RomM's copy won: nothing left to keep apart
         // Stamp it with RomM's time so it isn't uploaded straight back.
         fs::last_write_time(path, fs::file_time_type::clock::now() -
                                       std::chrono::seconds(std::max(0LL, static_cast<long long>(std::time(nullptr)) - updated)), ec);
@@ -379,10 +432,21 @@ void RetroChip::pull_save(const Game& game, const Save& save) {
 
 void RetroChip::push_save(const Game& game) {
     const std::string path = local_save_path(game);
+    if (fs::exists(conflict_marker(path))) {
+        status_ = "save kept on the PET: RomM has a different one";
+        touch();
+        return;
+    }
+    if (sync_paused(game)) {
+        status_ = "save kept on the PET: its clock is wrong, sync paused";
+        touch();
+        return;
+    }
     std::ifstream in(path, std::ios::binary);
     std::stringstream bytes;
-    bytes << in.rdbuf();
-    if (!in && bytes.str().empty()) return;
+    if (in) bytes << in.rdbuf();
+    // Never replace RomM's save with nothing: an unreadable or empty file stays put.
+    if (!in || bytes.str().empty()) return;
     save_status_ = "uploading save...";
     std::random_device rd;
     const std::string boundary = "alicepet" + std::to_string(rd()) + std::to_string(rd());
@@ -543,7 +607,15 @@ void RetroChip::on_result(Result result) {
     case Result::What::SaveUp:
         break;
     case Result::What::SaveDown: {
-        status_ = result.text.empty() ? "save synced from RomM" : "RomM save not fetched (" + result.text + ")";
+        if (!result.text.empty()) {
+            // Don't start on the older PET save behind the user's back: that
+            // session's save would look newest and replace RomM's.
+            play_local_rom_ = downloading_id_;
+            status_ = "RomM's newer save didn't load. ENTER: PET save, no upload";
+            view_ = View::Details;
+            break;
+        }
+        status_ = "save synced from RomM";
         for (const auto& candidate : games_) {
             if (candidate.id == downloading_id_) {
                 play(candidate);

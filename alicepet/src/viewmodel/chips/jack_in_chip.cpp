@@ -19,6 +19,10 @@ namespace {
 
 using platform::net::json_escape;
 
+// usb-gadget.sh takes one up/down at a time and waits up to 20 s for the other
+// to finish, so give it longer than that before giving up on it.
+constexpr int kGadgetTimeoutMs = 40000;
+
 std::string trim(const std::string& value) {
     const auto a = value.find_first_not_of(" \t\r\n");
     if (a == std::string::npos) return "";
@@ -59,7 +63,7 @@ void JackInChip::enter() {
         gadget_.run([cmd = config_.jack_gadget_up]() {
             GadgetResult r;
             r.up = true;
-            r.code = platform::proc::run_capture(platform::proc::split_command(cmd), r.text, 15000);
+            r.code = platform::proc::run_capture(platform::proc::split_command(cmd), r.text, kGadgetTimeoutMs);
             return r;
         });
     }
@@ -75,7 +79,7 @@ void JackInChip::leave() {
     if (!config_.jack_gadget_down.empty()) {
         gadget_.run([cmd = config_.jack_gadget_down]() {
             GadgetResult r;
-            r.code = platform::proc::run_capture(platform::proc::split_command(cmd), r.text, 15000);
+            r.code = platform::proc::run_capture(platform::proc::split_command(cmd), r.text, kGadgetTimeoutMs);
             return r;
         });
     }
@@ -151,7 +155,7 @@ void JackInChip::on_line(const std::string& line) {
     } else if (t == "chat" || t == "voice") {
         // Talking to Alice from the PC app: the PET is the one with the bridge.
         if (chat_waiting_) {
-            send(R"({"t":"alice","ok":false,"text":"Still answering the last one..."})");
+            send(R"({"t":"alice","ok":false,"text":"Still answering the last one...","heard":"","cmd":""})");
         } else if (t == "chat") {
             const std::string text = trim(msg["text"].str());
             if (!text.empty()) {
@@ -171,7 +175,7 @@ void JackInChip::on_line(const std::string& line) {
                 alice_waiting_ = true;
                 chat_.run([config = config_, wav = std::move(wav)]() { return bridge_voice(config, wav); });
             } else {
-                send(R"({"t":"alice","ok":false,"text":"That recording didn't come through. Try again?"})");
+                send(R"({"t":"alice","ok":false,"text":"That recording didn't come through. Try again?","heard":"","cmd":""})");
             }
         }
     } else if (t == "net_fail") {

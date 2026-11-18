@@ -91,6 +91,9 @@ public:
     static std::vector<Save> parse_saves(const std::string& json);
     // Picks the save to sync: same file name as ours, else the newest.
     static const Save* pick_save(const std::vector<Save>& saves, const std::string& file_name);
+    // False when the PET's clock can't be right (never set, or behind a RomM save's
+    // stamp): "newest wins" would then pick the wrong side, so sync is paused.
+    static bool clock_trusted(const std::vector<Save>& saves, long long now);
     static std::string multipart_body(const std::string& boundary, const std::string& field,
                                       const std::string& file_name, const std::string& bytes);
 
@@ -118,6 +121,7 @@ private:
     void fetch_saves(const Game& game);
     void pull_save(const Game& game, const Save& save);
     void push_save(const Game& game);
+    bool sync_paused(const Game& game) const;
     std::string local_path(const Game& game) const;
     std::vector<std::string> headers() const;
 
@@ -149,6 +153,7 @@ private:
     bool saves_failed_{false};
     std::vector<Save> saves_;
     long long launch_save_mtime_{0};
+    int play_local_rom_{0};  // RomM's newer save didn't download; the next ENTER plays the PET's
     std::string save_status_;
 
     Mailbox<Result> results_;

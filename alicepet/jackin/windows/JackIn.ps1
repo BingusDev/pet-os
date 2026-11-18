@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+﻿# SPDX-License-Identifier: MIT
 #
 # AlicePET Jack In for Windows (first cut). Runs from the PET's USB drive with
 # the PowerShell 5.1 that ships with Windows 10/11; nothing is installed and
@@ -520,25 +520,39 @@ function Jack-Out([string]$why) {
     $form.Close()
 }
 
+# A field of a PET message, or $null when the PET left it out. Under
+# Set-StrictMode, reading a missing property throws, and a throw here used to
+# be taken for a broken link.
+function Get-Field($msg, [string]$name) {
+    if ($null -eq $msg) { return $null }
+    $prop = $msg.PSObject.Properties[$name]
+    if ($null -eq $prop) { return $null }
+    return $prop.Value
+}
+
 function On-Line([string]$line) {
     try { $msg = $line | ConvertFrom-Json } catch { return }
-    switch ($msg.t) {
-        'ask' { Show-Ask $msg.what }
+    $what = [string](Get-Field $msg 'what')
+    switch ([string](Get-Field $msg 't')) {
+        'ask' { Show-Ask $what }
         'drop' {
-            if ($msg.what -eq 'full' -and $S.Full) { $S.Full = $false; Add-Log 'PET turned Full Access off'; Send-State }
-            if ($msg.what -eq 'net' -and $S.Net) { Stop-Sharing; Add-Log 'PET stopped sharing'; Send-State }
+            if ($what -eq 'full' -and $S.Full) { $S.Full = $false; Add-Log 'PET turned Full Access off'; Send-State }
+            if ($what -eq 'net' -and $S.Net) { Stop-Sharing; Add-Log 'PET stopped sharing'; Send-State }
             Update-Ui
         }
-        'run' { Start-PetCommand $msg.id ([string]$msg.cmd) }
+        'run' { Start-PetCommand (Get-Field $msg 'id') ([string](Get-Field $msg 'cmd')) }
         'scan' { Invoke-Scan }
-        'net_open' { Open-Tunnel $msg.id ([string]$msg.host) ([int]$msg.port) }
+        'net_open' { Open-Tunnel (Get-Field $msg 'id') ([string](Get-Field $msg 'host')) ([int](Get-Field $msg 'port')) }
         'jackout' { Add-Log 'PET pressed JACK OUT'; Jack-Out 'PET' }
         'alice' {
-            if ($msg.heard) { Add-Log "you (heard): $($msg.heard)" }
-            $alice.Text = 'Alice: ' + $msg.text
-            Add-Log ('Alice: ' + $msg.text)
-            if ($msg.ok) { Speak-Alice ([string]$msg.text) }
-            if ($msg.cmd) { Add-Log "Alice suggests: $($msg.cmd)   (press Enter on the PET to run it; needs Full Access)" }
+            $heard = [string](Get-Field $msg 'heard')
+            $text = [string](Get-Field $msg 'text')
+            $cmd = [string](Get-Field $msg 'cmd')
+            if ($heard) { Add-Log "you (heard): $heard" }
+            $alice.Text = 'Alice: ' + $text
+            Add-Log ('Alice: ' + $text)
+            if (Get-Field $msg 'ok') { Speak-Alice $text }
+            if ($cmd) { Add-Log "Alice suggests: $cmd   (press Enter on the PET to run it; needs Full Access)" }
         }
     }
 }
@@ -585,7 +599,10 @@ function Step-Link {
         while ($S.Stream -and ($i = $S.Buffer.IndexOf("`n")) -ge 0) {
             $line = $S.Buffer.Substring(0, $i).Trim()
             $S.Buffer = $S.Buffer.Substring($i + 1)
-            if ($line) { On-Line $line }
+            if ($line) {
+                # One message the app can't handle is logged, not treated as a lost link.
+                try { On-Line $line } catch { Add-Log "skipped a PET message: $($_.Exception.Message)" }
+            }
         }
     } catch {
         Drop-Link 'the link broke'

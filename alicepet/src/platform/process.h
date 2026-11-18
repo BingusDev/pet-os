@@ -29,7 +29,8 @@ bool alive(pid_t pid, int* exit_status = nullptr);
 // Runs to completion and captures stdout (+stderr if merge_stderr). Blocking:
 // worker threads only. Returns the exit status, -1 if it could not start, or
 // -2 on timeout (the child is killed).
-int run_capture(const std::vector<std::string>& argv, std::string& out, int timeout_ms, bool merge_stderr = true);
+int run_capture(const std::vector<std::string>& argv, std::string& out, int timeout_ms, bool merge_stderr = true,
+                size_t max_bytes = 1024 * 1024);
 
 // A program running on a pseudo-terminal (ssh). Reads never block.
 class PtySession {

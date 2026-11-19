@@ -230,7 +230,10 @@ std::string JellyfinChip::write_mpv_auth_config() const {
     // mpv applies http-header-fields to the playlist and every HLS segment request.
     const int fd = ::open(mpv_conf_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0) return "";
-    const std::string body = "http-header-fields=\"X-Emby-Token: " + config_.jellyfin_api_key + "\"\n";
+    // Jellyfin rejects X-Emby-Token (401); send the MediaBrowser Authorization header.
+    // %len% quoting keeps mpv from parsing the quotes inside the value.
+    const std::string header = "Authorization: MediaBrowser Token=\"" + config_.jellyfin_api_key + "\"";
+    const std::string body = "http-header-fields=%" + std::to_string(header.size()) + "%" + header + "\n";
     const bool ok = ::write(fd, body.data(), body.size()) == static_cast<ssize_t>(body.size());
     ::close(fd);
     return ok ? mpv_conf_path_ : "";

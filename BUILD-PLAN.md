@@ -45,7 +45,7 @@ Pi CM0 has no real suspend; manage power per subsystem.
 - Measure with BQ27220 fuel gauge (real mA); show live draw + per-chip estimate in status bar. Phase 0 task: baseline current for idle / Wi-Fi / video / each knob.
 
 ## Device-day findings (2026-11-18, first boot on CardputerZero trixie stable)
-- [ ] **Volume OSD:** show a volume bar when fn+D / fn+S / fn+A (KEY_VOLUMEUP/DOWN/MUTE on tca8418c) are pressed. A user service (`~/.local/bin/volkeys.py`, `volkeys.service`) already changes PipeWire volume in 5% steps; AlicePET only needs to read the keys or poll `wpctl get-volume` and draw the overlay.
-- [ ] **Jellyfin auth for mpv:** `write_mpv_auth_config()` sends `X-Emby-Token`, which this server rejects (401). Send `Authorization: MediaBrowser Token="<key>"` instead. Until then the device uses `player=/usr/bin/env mpv ...` so the key goes in the URL, which disables mpv IPC (pause, seek, resume).
-- [ ] **Default player audio:** use `--ao=pipewire` in the shipped `[jellyfin] player=`; `--ao=alsa` goes to HDMI on this board.
-- [ ] **pet-setup.sh audio:** install the WirePlumber rule forcing S16LE/48 kHz on `alsa_output.platform-sound.*`; the ES8389 plays silence at PipeWire's default s32le.
+- [x] **Volume OSD:** show a volume bar when fn+D / fn+S / fn+A (KEY_VOLUMEUP/DOWN/MUTE on tca8418c) are pressed. A user service (`~/.local/bin/volkeys.py`, `volkeys.service`) already changes PipeWire volume in 5% steps; AlicePET only needs to read the keys or poll `wpctl get-volume` and draw the overlay.
+- [x] **Jellyfin auth for mpv:** `write_mpv_auth_config()` sends `X-Emby-Token`, which this server rejects (401). Send `Authorization: MediaBrowser Token="<key>"` instead. Until then the device uses `player=/usr/bin/env mpv ...` so the key goes in the URL, which disables mpv IPC (pause, seek, resume).
+- [x] **Default player audio:** use `--ao=pipewire` in the shipped `[jellyfin] player=`; `--ao=alsa` goes to HDMI on this board.
+- [x] **pet-setup.sh audio:** install the WirePlumber rule forcing S16LE/48 kHz on `alsa_output.platform-sound.*`; the ES8389 plays silence at PipeWire's default s32le.

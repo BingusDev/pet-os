@@ -11,6 +11,7 @@
 #   4. builds the JACK IN drive image (/var/lib/alicepet/jackin.img)
 #   5. starts /etc/alicepet.local.conf for your bridge URL and token (you type them)
 #   6. with --usb-otg: adds dtoverlay=dwc2,dr_mode=otg so JACK IN can work (reboot after)
+#   7. speaker at 16-bit 48 kHz (WirePlumber rule) and the fn volume keys (volkeys.service)
 # Then run bin/device-day.sh for the checks.
 #
 # Options: --user <name> (default: the sudo user), --usb-otg, --no-apt
@@ -161,6 +162,46 @@ else
     if [[ -n "$OTHER_LINES" ]]; then
         while IFS= read -r l; do note "ignored, other boards only: $l"; done <<<"$OTHER_LINES"
     fi
+fi
+
+step "7. Speaker audio and volume keys"
+# The ES8389 plays silence at PipeWire's default s32le; force S16LE/48 kHz on the speaker sink.
+APP_HOME=$(getent passwd "$APP_USER" | cut -d: -f6)
+APP_UID=$(id -u "$APP_USER")
+WP_DIR="$APP_HOME/.config/wireplumber/wireplumber.conf.d"
+install -d -o "$APP_USER" -g "$APP_USER" "$APP_HOME/.config" "$APP_HOME/.config/wireplumber" "$WP_DIR"
+cat > "$WP_DIR/60-es8389-s16.conf" <<'WPEOF'
+monitor.alsa.rules = [
+  { matches = [ { node.name = "~alsa_output.platform-sound.*" } ]
+    actions = { update-props = { audio.format = "S16LE", audio.rate = 48000, api.alsa.period-size = 1024, session.suspend-timeout-seconds = 0 } } }
+]
+WPEOF
+chown "$APP_USER:$APP_USER" "$WP_DIR/60-es8389-s16.conf"
+done_ "$WP_DIR/60-es8389-s16.conf (speaker at 16-bit 48 kHz)"
+# fn+D / fn+S / fn+A -> PipeWire volume, and the state file AlicePET's volume bar reads.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$HERE/volkeys.py" ]]; then
+    install -D -o "$APP_USER" -g "$APP_USER" -m 755 "$HERE/volkeys.py" "$APP_HOME/.local/bin/volkeys.py"
+    install -d -o "$APP_USER" -g "$APP_USER" "$APP_HOME/.config/systemd" "$APP_HOME/.config/systemd/user"
+    cat > "$APP_HOME/.config/systemd/user/volkeys.service" <<'SVCEOF'
+[Unit]
+Description=CardputerZero volume keys -> PipeWire
+After=pipewire.service wireplumber.service
+[Service]
+ExecStart=%h/.local/bin/volkeys.py
+Restart=always
+[Install]
+WantedBy=default.target
+SVCEOF
+    chown "$APP_USER:$APP_USER" "$APP_HOME/.config/systemd/user/volkeys.service"
+    loginctl enable-linger "$APP_USER" >/dev/null 2>&1 || true
+    runuser -u "$APP_USER" -- env XDG_RUNTIME_DIR="/run/user/$APP_UID" systemctl --user daemon-reload >/dev/null 2>&1 || true
+    runuser -u "$APP_USER" -- env XDG_RUNTIME_DIR="/run/user/$APP_UID" systemctl --user enable --now volkeys.service >/dev/null 2>&1 \
+        && done_ "volkeys.service (fn+D up, fn+S down, fn+A mute)" \
+        || note "volkeys.service installed; it starts at the next login"
+    runuser -u "$APP_USER" -- env XDG_RUNTIME_DIR="/run/user/$APP_UID" systemctl --user restart wireplumber pipewire pipewire-pulse >/dev/null 2>&1 || true
+else
+    note "volkeys.py not next to this script; copy bin/volkeys.py here and rerun for the volume keys"
 fi
 
 printf '\n\033[1mSetup done.\033[0m Next: sudo bash device-day.sh\n'

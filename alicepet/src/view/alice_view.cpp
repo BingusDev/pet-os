@@ -13,6 +13,9 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <fstream>
+#include <sys/stat.h>
 #include <ctime>
 
 namespace view {
@@ -239,6 +242,46 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     text(sleep_overlay_, "ALICE.EXE napping · any key wakes", fonts_.tiny, 0x16325c, 0, 0);
     lv_obj_align(lv_obj_get_child(sleep_overlay_, -1), LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_add_flag(sleep_overlay_, LV_OBJ_FLAG_HIDDEN);
+
+    // Volume bar, bottom centre, above every screen (see update_volume_osd).
+    volume_osd_ = box(root, 60, 128, 200, 30, kPanelBlue);
+    set_border(volume_osd_, 2, kEdgeBlue);
+    lv_obj_set_style_radius(volume_osd_, 6, 0);
+    volume_label_ = text(volume_osd_, "VOL", fonts_.tiny, 0xffffff, 8, 7);
+    volume_bar_ = lv_bar_create(volume_osd_);
+    lv_obj_set_size(volume_bar_, 120, 10);
+    lv_obj_set_pos(volume_bar_, 66, 8);
+    lv_bar_set_range(volume_bar_, 0, 100);
+    lv_obj_add_flag(volume_osd_, LV_OBJ_FLAG_HIDDEN);
+    if (const char* run = std::getenv("XDG_RUNTIME_DIR")) volume_path_ = std::string(run) + "/alicepet-volume";
+    struct stat st {};
+    if (!volume_path_.empty() && ::stat(volume_path_.c_str(), &st) == 0) {
+        volume_mtime_ns_ = int64_t(st.st_mtim.tv_sec) * 1000000000 + st.st_mtim.tv_nsec;
+    }
+}
+
+void AliceView::update_volume_osd(uint32_t now_ms) {
+    if (!volume_osd_ || volume_path_.empty()) return;
+    struct stat st {};
+    if (::stat(volume_path_.c_str(), &st) == 0) {
+        const int64_t mtime = int64_t(st.st_mtim.tv_sec) * 1000000000 + st.st_mtim.tv_nsec;
+        if (mtime != volume_mtime_ns_) {
+            volume_mtime_ns_ = mtime;
+            int percent = 0, muted = 0;
+            std::ifstream(volume_path_) >> percent >> muted;
+            percent = std::clamp(percent, 0, 100);
+            lv_bar_set_value(volume_bar_, muted ? 0 : percent, LV_ANIM_OFF);
+            lv_label_set_text(volume_label_, muted ? "MUTE" : ("VOL " + std::to_string(percent)).c_str());
+            lv_obj_remove_flag(volume_osd_, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(volume_osd_);
+            volume_hide_at_ms_ = now_ms + kVolumeOsdMs;
+            volume_shown_ = true;
+        }
+    }
+    if (volume_shown_ && int32_t(now_ms - volume_hide_at_ms_) >= 0) {
+        lv_obj_add_flag(volume_osd_, LV_OBJ_FLAG_HIDDEN);
+        volume_shown_ = false;
+    }
 }
 
 void AliceView::add_chip_view(size_t index, std::unique_ptr<ChipView> chip_view) {

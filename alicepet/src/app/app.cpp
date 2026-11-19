@@ -848,6 +848,7 @@ int Application::run() {
             view.render(view_model);
             // Napping: the backlight is off, so skip the status bar (and its sysfs reads).
             if (screen_on) view.update_clock();
+            view.update_volume_osd(now_ms);
         } else {
             display_lent = true;
         }

@@ -4,6 +4,7 @@
 
 #include "view/alice_view.h"
 #include "view/widgets.h"
+#include "logger/logger.h"
 
 #include "platform/device_status.h"
 #include "platform/jack_link.h"
@@ -243,8 +244,9 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     lv_obj_align(lv_obj_get_child(sleep_overlay_, -1), LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_add_flag(sleep_overlay_, LV_OBJ_FLAG_HIDDEN);
 
-    // Volume bar, bottom centre, above every screen (see update_volume_osd).
-    volume_osd_ = box(root, 60, 128, 200, 30, kPanelBlue);
+    // Volume bar, bottom centre, on LVGL's top layer so it draws over every screen
+    // and chip view (see update_volume_osd).
+    volume_osd_ = box(lv_layer_top(), 60, 128, 200, 30, kPanelBlue);
     set_border(volume_osd_, 2, kEdgeBlue);
     lv_obj_set_style_radius(volume_osd_, 6, 0);
     volume_label_ = text(volume_osd_, "VOL", fonts_.tiny, 0xffffff, 8, 7);
@@ -255,6 +257,7 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     lv_obj_add_flag(volume_osd_, LV_OBJ_FLAG_HIDDEN);
     if (const char* run = std::getenv("XDG_RUNTIME_DIR")) volume_path_ = std::string(run) + "/alicepet-volume";
     struct stat st {};
+    LOG_INFO("volume osd watching {}", volume_path_.empty() ? std::string("(no XDG_RUNTIME_DIR)") : volume_path_);
     if (!volume_path_.empty() && ::stat(volume_path_.c_str(), &st) == 0) {
         volume_mtime_ns_ = int64_t(st.st_mtim.tv_sec) * 1000000000 + st.st_mtim.tv_nsec;
     }
@@ -273,7 +276,7 @@ void AliceView::update_volume_osd(uint32_t now_ms) {
             lv_bar_set_value(volume_bar_, muted ? 0 : percent, LV_ANIM_OFF);
             lv_label_set_text(volume_label_, muted ? "MUTE" : ("VOL " + std::to_string(percent)).c_str());
             lv_obj_remove_flag(volume_osd_, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_move_foreground(volume_osd_);
+            LOG_INFO("volume osd {}{}", percent, muted ? " muted" : "");
             volume_hide_at_ms_ = now_ms + kVolumeOsdMs;
             volume_shown_ = true;
         }

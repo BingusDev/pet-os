@@ -1,4 +1,4 @@
-# JACK IN protocol (v1)
+# JACK IN protocol (v2)
 
 The PET is a USB device; the PC sees a read-only drive (`ALICEPET`, the app)
 and a network adapter. `usb-gadget.sh` gives the PET `10.55.0.1` and the PC
@@ -30,9 +30,13 @@ the person holds the app's talk button; the PET can't start it.
 
 | `t` | Fields | Meaning |
 |---|---|---|
-| `hello` | `host`, `os`, `user`, `admin`, `full`, `app` | Session start (also after an elevated relaunch) |
+| `hello` | `host`, `os`, `user`, `admin`, `full`, `input`, `app` | Session start (also after an elevated relaunch). `input`: true in Ask or Full (keys may be forwarded) |
 | `scan` | `cpu`, `ram` (% used), `disk`, `disk_free` (%), `startup`, `defender` (`on`/`off`/`?`), `defender_since`, `top` [`{name, mb}`] | Read-only scan results |
-| `state` | `full`, `admin`, `net`, optional `denied` (`"admin"` when UAC was cancelled) | Something changed on the PC |
+| `state` | `full`, `admin`, `net`, `input`, optional `denied` (`"admin"` when UAC was cancelled) | Something changed on the PC |
+| `open` | `chip` | Open a PC-capable chip (`terminal`, `jellyfin`, `retro`, `lan-tech`) on the PET. Ignored for any other id |
+| `mirror` | `on` | Start (`true`) or stop (`false`) the PET screen mirror. The PET stops when no PC is linked |
+| `key` | `k` | One key: `Left`, `Right`, `Up`, `Down`, `Enter`, `Escape`, `Backspace`, `Tab`. Dropped unless `input` is true |
+| `char` | `c` | One UTF-8 character (1 to 4 bytes). Dropped unless `input` is true |
 | `log` | `text`, `ok` | A command the app ran itself (scan steps) |
 | `result` | `id`, `ok`, `out`, optional `reason` (`"read-only"`) | Result of a PET `run` |
 | `net_fail` | `id` | The PC could not reach the host of `net_open` `id` |
@@ -51,6 +55,8 @@ the person holds the app's talk button; the PET can't start it.
 | `net_open` | `id`, `host`, `port` | Sharing: dial `host:port`, then dial PET:7342 and send `tunnel <id>\n`; then pipe bytes both ways |
 | `jackout` | `why` | Drop everything and close the app |
 | `alice` | `ok`, `text`, `heard` (voice transcript), `cmd` (a suggested fix, or empty) | Alice's answer to `chat` / `voice` |
+| `chips` | `list`: [`{id, name, number, code, desc, art}`] | The PC-capable chips, sent once after `hello`. `art` is the small label PNG, base64 |
+| `frame` | `screen`, `w`, `h`, `y`, `n`, `rle` | Changed rows of the PET screen: `n` rows from row `y`. `rle` is base64 of run-length RGB565 (run `1..255` as one byte, then the pixel as two bytes, big-endian), row-major. A new `screen`, size or link starts with a full frame. Sent about 12 times a second while mirroring |
 
 When the control line closes (unplugged, PET left the chip), the app drops
 Full Access, stops sharing and closes.

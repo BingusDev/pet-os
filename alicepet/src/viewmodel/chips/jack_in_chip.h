@@ -9,7 +9,9 @@
 #include "viewmodel/chip_module.h"
 #include "viewmodel/chips/bridge_client.h"
 
+#include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -106,6 +108,29 @@ public:
 
     static constexpr size_t kMaxLog = 200;
 
+    // --- PC mirror (PROTOCOL.md: chips, open, frame, input) ---
+    // Chips the PC can open (Voice, Remote and Jack In stay on the PET).
+    static bool pc_capable(const std::string& chip_id);
+    // Where chip art lives (<id>-small.png, <id>-big.png).
+    void set_art_dir(std::filesystem::path dir) { art_dir_ = std::move(dir); }
+    // The app sets this around AliceViewModel::open_chip for a PC request, so
+    // leaving Jack In for the requested chip keeps the PC link and USB up.
+    void set_switching(bool on) { switching_ = on; }
+    // A chip the PC asked to open; the app opens it on the UI thread.
+    bool take_open(std::string& chip_id);
+    // A key or character from the PC; the app forwards it to the view model.
+    struct Input {
+        bool text{false};   // false: key, true: utf8
+        Key key{Key::Enter};
+        std::string utf8;
+    };
+    bool take_input(Input& input);
+    // True when a frame should be captured now (about 10 fps while the PC is mirroring).
+    bool wants_frame(uint32_t now_ms);
+    // One LVGL frame (ARGB8888, `stride` bytes per row). `screen` names the PET screen.
+    void offer_frame(const uint8_t* argb, uint32_t stride, int w, int h, const std::string& screen);
+    bool mirroring() const { return mirror_on_ && connected_; }
+
 private:
     void send(const std::string& json);
     void note(const std::string& text, LogLine::Kind kind = LogLine::Kind::Note);
@@ -117,6 +142,8 @@ private:
     void reset_session();
     void set_sharing(bool on);
     void try_listen();
+    void send_chips();
+    void send_frame_band(const std::string& screen, int w, int h, const std::vector<uint16_t>& px, int y0, int y1);
 
     model::PetConfig config_;
     View view_{View::Waiting};
@@ -172,6 +199,16 @@ private:
         std::vector<std::string> lines;
     };
     std::shared_ptr<Opens> opens_;
+
+    std::filesystem::path art_dir_;
+    bool switching_{false};
+    bool input_ok_{false};          // PC mode is Ask or Full (never Read)
+    bool mirror_on_{false};         // the PC window is visible and wants frames
+    std::deque<std::string> opening_;
+    std::deque<Input> inputs_;
+    uint32_t last_frame_ms_{0};
+    std::vector<uint16_t> last_px_;  // RGB565 of the last frame sent
+    std::string last_screen_;
 };
 
 } // namespace viewmodel::chips

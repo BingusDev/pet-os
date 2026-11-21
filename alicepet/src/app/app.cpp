@@ -215,6 +215,44 @@ std::vector<viewmodel::HostRow> host_rows(const model::PetConfig& config) {
 volatile std::sig_atomic_t g_stop_requested = 0;
 void on_stop_signal(int) { g_stop_requested = 1; }
 
+// PC requests from the Jack In link, applied on the UI thread: open one of the
+// PC-capable chips (keeping the link up), then forward keys and characters to it.
+void drain_pc_requests(viewmodel::AliceViewModel& vm) {
+    auto* jack = static_cast<viewmodel::chips::JackInChip*>(vm.chip_module(model::chip_index("jack-in")));
+    if (!jack) return;
+    std::string id;
+    while (jack->take_open(id)) {
+        const size_t index = model::chip_index(id.c_str());
+        if (index >= model::kChipCount) continue;
+        jack->set_switching(true);
+        vm.open_chip(index);
+        jack->set_switching(false);
+    }
+    viewmodel::chips::JackInChip::Input input;
+    while (jack->take_input(input)) {
+        const auto* active = vm.active_chip();
+        if (!active || !viewmodel::chips::JackInChip::pc_capable(active->id())) continue;
+        if (input.text) {
+            vm.handle_char(input.utf8);
+        } else {
+            vm.handle_key(input.key);
+        }
+    }
+}
+
+// Captures the active LVGL screen for the PC mirror (about 12 fps while mirroring).
+void mirror_frame(viewmodel::AliceViewModel& vm, uint32_t now_ms) {
+    auto* jack = static_cast<viewmodel::chips::JackInChip*>(vm.chip_module(model::chip_index("jack-in")));
+    if (!jack || !jack->wants_frame(now_ms)) return;
+    lv_draw_buf_t* snapshot = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_ARGB8888);
+    if (!snapshot) return;
+    const auto* chip = vm.active_chip();
+    jack->offer_frame(static_cast<const uint8_t*>(snapshot->data), snapshot->header.stride,
+                      static_cast<int>(snapshot->header.w), static_cast<int>(snapshot->header.h),
+                      chip ? chip->id() : "launcher");
+    lv_draw_buf_destroy(snapshot);
+}
+
 void install_chips(viewmodel::AliceViewModel& vm, view::AliceView& view, const model::PetConfig& config,
                    lv_obj_t* root, const view::AliceFonts& fonts, const std::filesystem::path& art_dir) {
     const auto add = [&](const char* id, std::unique_ptr<viewmodel::ChipModule> module,
@@ -773,6 +811,9 @@ int Application::run() {
     const auto art_dir = assets.resolve("images/chips");
     view::AliceView view(root, alice_fonts, art_dir);
     install_chips(view_model, view, pet_config, root, alice_fonts, art_dir);
+    if (auto* jack = static_cast<viewmodel::chips::JackInChip*>(view_model.chip_module(model::chip_index("jack-in")))) {
+        jack->set_art_dir(art_dir);
+    }
     KeyRouter keys(view_model);
 
     LOG_INFO("AlicePET started at {}x{}", lv_display_get_horizontal_resolution(display),
@@ -810,6 +851,7 @@ int Application::run() {
         view_model.tick(now_ms - last_ms);
         last_ms = now_ms;
         pump_services(view_model, chat, scanner);
+        drain_pc_requests(view_model);
 
         // Idle: dim the backlight first, then nap with it off (the overlay covers
         // the desktop). The backlight is the biggest single draw on the pet.
@@ -853,6 +895,7 @@ int Application::run() {
             display_lent = true;
         }
         const uint32_t next_timer_ms = lv_timer_handler();
+        if (!external) mirror_frame(view_model, now_ms);
         if (screen_on) {
             // Sleep until LVGL's next timer is due (indev read, redraw, animation),
             // between 5 ms and one 30 fps frame, instead of spinning every 5 ms.

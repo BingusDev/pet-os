@@ -9,11 +9,14 @@
 #include "platform/process.h"
 #include "viewmodel/alice_viewmodel.h"
 #include "viewmodel/chips/terminal_chip.h"
+#include "model/chip_registry.h"
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 
 namespace viewmodel::chips {
@@ -40,7 +43,96 @@ int as_int(const platform::json::Value& v) {
     return v.is_null() ? -1 : static_cast<int>(v.num(-1) + 0.5);
 }
 
+// The chips the PC app can open. Voice, Remote and Jack In stay on the PET.
+struct PcChip {
+    const char* id;
+    const char* code;  // red letter on the PC folder row
+    const char* desc;
+};
+constexpr PcChip kPcChips[] = {
+    {"terminal", "T", "Shell to any host"},
+    {"jellyfin", "J", "Your media library"},
+    {"retro", "R", "Retro games on the PET"},
+    {"lan-tech", "L", "Check the LAN"},
+};
+
+const PcChip* find_pc_chip(const std::string& id) {
+    for (const auto& c : kPcChips) {
+        if (id == c.id) return &c;
+    }
+    return nullptr;
+}
+
+std::string base64_encode(const std::string& in) {
+    static const char* kAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((in.size() + 2) / 3 * 4);
+    size_t i = 0;
+    for (; i + 2 < in.size(); i += 3) {
+        const uint32_t v = (static_cast<uint8_t>(in[i]) << 16) | (static_cast<uint8_t>(in[i + 1]) << 8) |
+                           static_cast<uint8_t>(in[i + 2]);
+        out += kAlphabet[(v >> 18) & 63];
+        out += kAlphabet[(v >> 12) & 63];
+        out += kAlphabet[(v >> 6) & 63];
+        out += kAlphabet[v & 63];
+    }
+    if (i + 1 == in.size()) {
+        const uint32_t v = static_cast<uint8_t>(in[i]) << 16;
+        out += kAlphabet[(v >> 18) & 63];
+        out += kAlphabet[(v >> 12) & 63];
+        out += "==";
+    } else if (i + 2 == in.size()) {
+        const uint32_t v = (static_cast<uint8_t>(in[i]) << 16) | (static_cast<uint8_t>(in[i + 1]) << 8);
+        out += kAlphabet[(v >> 18) & 63];
+        out += kAlphabet[(v >> 12) & 63];
+        out += kAlphabet[(v >> 6) & 63];
+        out += '=';
+    }
+    return out;
+}
+
+// Run-length RGB565: (count 1..255, pixel big-endian), the fastest thing to ship over the cable.
+std::string rle_rgb565(const std::vector<uint16_t>& px, size_t from, size_t count) {
+    std::string out;
+    size_t i = 0;
+    while (i < count) {
+        const uint16_t v = px[from + i];
+        size_t run = 1;
+        while (i + run < count && run < 255 && px[from + i + run] == v) ++run;
+        out += static_cast<char>(run);
+        out += static_cast<char>(v >> 8);
+        out += static_cast<char>(v & 0xff);
+        i += run;
+    }
+    return out;
+}
+
+std::string read_file_base64(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return "";
+    const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return base64_encode(bytes);
+}
+
+bool key_from_name(const std::string& name, Key& key) {
+    static const std::pair<const char*, Key> kKeys[] = {
+        {"Left", Key::Left},   {"Right", Key::Right},         {"Up", Key::Up},           {"Down", Key::Down},
+        {"Enter", Key::Enter}, {"Escape", Key::Escape},       {"Backspace", Key::Backspace}, {"Tab", Key::Tab},
+    };
+    for (const auto& k : kKeys) {
+        if (name == k.first) {
+            key = k.second;
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
+
+bool JackInChip::pc_capable(const std::string& chip_id) {
+    return find_pc_chip(chip_id) != nullptr;
+}
 
 JackInChip::JackInChip(model::PetConfig config)
     : config_(std::move(config)), opens_(std::make_shared<Opens>()) {}
@@ -75,6 +167,8 @@ void JackInChip::enter() {
 }
 
 void JackInChip::leave() {
+    // The PC asked for another chip: the link and the USB port stay up behind it.
+    if (connected_ && switching_) return;
     // Leaving the chip ends the session and gives the USB port back.
     if (connected_) jack_out("PET left JACK IN");
     server_.close();
@@ -108,8 +202,10 @@ void JackInChip::on_line(const std::string& line) {
         user_ = msg["user"].str();
         admin_ = msg["admin"].boolean();
         full_ = msg["full"].boolean();
+        input_ok_ = msg["input"].boolean(false);
         view_ = View::Session;
         note("linked to " + host_ + (admin_ ? " (admin)" : "") + (full_ ? ", full access" : ", read-only"));
+        send_chips();
     } else if (t == "scan") {
         scan_ = Scan{};
         scan_.have = true;
@@ -141,6 +237,28 @@ void JackInChip::on_line(const std::string& line) {
             note("admin prompt was cancelled on the PC", LogLine::Kind::Fail);
         }
         if (net != sharing_) set_sharing(net);
+        input_ok_ = msg["input"].boolean(input_ok_);
+    } else if (t == "open") {
+        const std::string id = msg["chip"].str();
+        if (pc_capable(id)) {
+            opening_.push_back(id);
+        } else {
+            note("PC asked for a chip that stays on the PET", LogLine::Kind::Fail);
+        }
+    } else if (t == "mirror") {
+        const bool on = msg["on"].boolean(false) && connected_;
+        if (on && !mirror_on_) last_px_.clear();  // the next frame is a full one
+        mirror_on_ = on;
+    } else if (t == "key") {
+        Key key{Key::Enter};
+        if (input_ok_ && key_from_name(msg["k"].str(), key) && inputs_.size() < 256) {
+            inputs_.push_back({false, key, ""});
+        }
+    } else if (t == "char") {
+        const std::string c = msg["c"].str();
+        if (input_ok_ && !c.empty() && c.size() <= 4 && inputs_.size() < 256) {
+            inputs_.push_back({true, Key::Enter, c});
+        }
     } else if (t == "log") {
         // A command the PC app ran itself (the read-only scan, or one clicked there).
         const std::string text = first_line(msg["text"].str());
@@ -200,6 +318,12 @@ void JackInChip::reset_session() {
     alice_asked_ = false;
     alice_waiting_ = false;
     chat_waiting_ = false;
+    input_ok_ = false;
+    mirror_on_ = false;
+    opening_.clear();
+    inputs_.clear();
+    last_px_.clear();
+    last_screen_.clear();
     ++alice_generation_;
     alice_text_.clear();
     suggestion_.clear();
@@ -532,6 +656,96 @@ void JackInChip::split_reply(const std::string& reply, std::string& words, std::
         }
     }
     words = AliceViewModel::screen_text(words);
+}
+
+// The chips the PC can open, with their label art, sent once per link.
+void JackInChip::send_chips() {
+    std::string list;
+    for (size_t i = 0; i < model::chip_count(); ++i) {
+        const model::ChipInfo& info = model::chip_at(i);
+        const PcChip* pc = find_pc_chip(info.id);
+        if (!pc) continue;
+        if (!list.empty()) list += ',';
+        list += "{\"id\":\"" + json_escape(info.id) + "\",\"name\":\"" + json_escape(info.name) +
+                "\",\"number\":\"" + json_escape(info.number) + "\",\"code\":\"" + json_escape(pc->code) +
+                "\",\"desc\":\"" + json_escape(pc->desc) + "\",\"art\":\"" +
+                read_file_base64(art_dir_ / (std::string(info.id) + "-small.png")) + "\"}";
+    }
+    send("{\"t\":\"chips\",\"list\":[" + list + "]}");
+}
+
+bool JackInChip::take_open(std::string& chip_id) {
+    if (opening_.empty()) return false;
+    chip_id = opening_.front();
+    opening_.pop_front();
+    return true;
+}
+
+bool JackInChip::take_input(Input& input) {
+    if (inputs_.empty()) return false;
+    input = inputs_.front();
+    inputs_.pop_front();
+    return true;
+}
+
+// About 12 fps while the PC is mirroring; nothing is captured otherwise.
+bool JackInChip::wants_frame(uint32_t now_ms) {
+    if (!mirroring()) return false;
+    if (last_frame_ms_ != 0 && now_ms - last_frame_ms_ < 80) return false;
+    last_frame_ms_ = now_ms;
+    return true;
+}
+
+// Sends only the rows that changed since the last frame, in bands of up to 16 rows.
+void JackInChip::offer_frame(const uint8_t* argb, uint32_t stride, int w, int h, const std::string& screen) {
+    if (!mirroring() || w <= 0 || h <= 0) return;
+    std::vector<uint16_t> px(static_cast<size_t>(w) * h);
+    for (int y = 0; y < h; ++y) {
+        const uint8_t* row = argb + static_cast<size_t>(y) * stride;
+        for (int x = 0; x < w; ++x) {
+            uint32_t v;
+            std::memcpy(&v, row + static_cast<size_t>(x) * 4, 4);
+            const uint16_t r = (v >> 19) & 0x1f;
+            const uint16_t g = (v >> 10) & 0x3f;
+            const uint16_t b = (v >> 3) & 0x1f;
+            px[static_cast<size_t>(y) * w + x] = static_cast<uint16_t>((r << 11) | (g << 5) | b);
+        }
+    }
+    // A new screen, size, or link starts from a full frame.
+    const bool full = last_px_.size() != px.size() || last_screen_ != screen;
+    last_screen_ = screen;
+    int y = 0;
+    while (y < h) {
+        if (!full) {
+            bool same = true;
+            const size_t off = static_cast<size_t>(y) * w;
+            same = std::equal(px.begin() + off, px.begin() + off + w, last_px_.begin() + off);
+            if (same) {
+                ++y;
+                continue;
+            }
+        }
+        int end = y;
+        while (end < h && end - y < 16) {
+            if (!full) {
+                const size_t off = static_cast<size_t>(end) * w;
+                if (std::equal(px.begin() + off, px.begin() + off + w, last_px_.begin() + off)) break;
+            }
+            ++end;
+        }
+        send_frame_band(screen, w, h, px, y, end);
+        y = end;
+    }
+    last_px_ = std::move(px);
+}
+
+void JackInChip::send_frame_band(const std::string& screen, int w, int h, const std::vector<uint16_t>& px, int y0,
+                                 int y1) {
+    const size_t from = static_cast<size_t>(y0) * w;
+    const std::string rle = rle_rgb565(px, from, static_cast<size_t>(y1 - y0) * w);
+    send("{\"t\":\"frame\",\"screen\":\"" + json_escape(screen) + "\",\"w\":" + std::to_string(w) +
+         ",\"h\":" + std::to_string(h) + ",\"y\":" + std::to_string(y0) + ",\"n\":" +
+         std::to_string(y1 - y0) + ",\"rle\":\"" + base64_encode(rle) + "\"}");
 }
 
 } // namespace viewmodel::chips

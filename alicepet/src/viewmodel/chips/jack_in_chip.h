@@ -114,6 +114,13 @@ public:
     const std::string& alice_text() const { return alice_text_; }
     const std::string& suggestion() const { return suggestion_; }
     bool chat_waiting() const { return chat_waiting_; }
+    // PC access mode from hello/state: "read", "ask" or "full".
+    const std::string& mode() const { return mode_; }
+    // Alice running PowerShell on the PC for one chat message: her commands go
+    // to the PC (which decides per mode), their output comes back to her.
+    bool agent_running() const { return agent_running_; }
+    int agent_steps() const { return agent_steps_; }
+    static constexpr int kAgentMaxSteps = 8;
     int relay_active() const { return relay_.active(); }
 
     // One control line from the PC (public for tests and snapshots).
@@ -131,6 +138,11 @@ public:
     static std::string alice_prompt(const std::string& host, const std::string& os, const Scan& scan);
     // Splits Alice's answer into her words and a "CMD:" PowerShell line (if any).
     static void split_reply(const std::string& reply, std::string& words, std::string& command);
+    // The bridge prompt for a chat message typed on the PC, telling Alice the mode and the CMD: rule.
+    static std::string chat_prompt(const std::string& host, const std::string& mode, const std::string& text);
+    // The next agent turn: a command's output (or why it didn't run) back to Alice.
+    static std::string output_prompt(const std::string& mode, const std::string& cmd, bool ok,
+                                     const std::string& reason, const std::string& out);
 
     static constexpr size_t kMaxLog = 200;
 
@@ -179,6 +191,8 @@ private:
     void drop(const char* what);
     void run_suggestion();
     void ask_alice();
+    void ask_chat(const std::string& prompt);
+    void agent_stop(const std::string& why);
     void jack_out(const std::string& why);
     void reset_session();
     void set_sharing(bool on);
@@ -233,6 +247,11 @@ private:
     // Chat from the PC app ({"t":"chat"} / {"t":"voice"}), relayed to Alice by the PET.
     bool chat_waiting_{false};
     Mailbox<BridgeReply> chat_;
+    std::string mode_{"read"};
+    bool agent_running_{false};   // a chat message's command loop is going
+    int agent_steps_{0};          // commands sent for the current chat message
+    int agent_id_{0};             // run id the loop waits on (0 = none)
+    std::string agent_cmd_;
 
     // net_open requests from relay threads, sent on the UI thread.
     struct Opens {

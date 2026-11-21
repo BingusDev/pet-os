@@ -272,8 +272,10 @@ void JackInChip::on_line(const std::string& line) {
         admin_ = msg["admin"].boolean();
         full_ = msg["full"].boolean();
         input_ok_ = msg["input"].boolean(false);
+        mode_ = msg["mode"].str(full_ ? "full" : "read");
         view_ = View::Session;
         note("linked to " + host_ + (admin_ ? " (admin)" : "") + (full_ ? ", full access" : ", read-only"));
+        send("{\"t\":\"pet\",\"operator\":\"" + json_escape(config_.jack_operator) + "\"}");
         send_chips();
     } else if (t == "scan") {
         scan_ = Scan{};
@@ -307,7 +309,13 @@ void JackInChip::on_line(const std::string& line) {
         }
         if (net != sharing_) set_sharing(net);
         input_ok_ = msg["input"].boolean(input_ok_);
-    } else if (t == "open") {
+        const std::string mode = msg["mode"].str(full_ ? mode_ : "read");
+        if (mode != mode_) {
+            mode_ = mode;
+            if (mode_ == "read" && agent_running_) agent_stop("PC switched to Read");
+        }
+    } else if (t == "abort") {
+        if (agent_running_) agent_stop("stopped on the PC");
         const std::string id = msg["chip"].str();
         if (pc_capable(id)) {
             opening_.push_back(id);
@@ -356,7 +364,16 @@ void JackInChip::on_line(const std::string& line) {
         }
         const std::string out = AliceViewModel::screen_text(first_line(msg["out"].str()));
         if (!out.empty()) note("  " + out, ok ? LogLine::Kind::Note : LogLine::Kind::Fail);
-        if (!ok && msg["reason"].str() == "read-only") status_ = "PC is read-only: [F] asks for Full Access";
+        if (!ok && msg["reason"].str() == "read-only" && id != agent_id_) status_ = "PC is read-only: [F] asks for Full Access";
+        if (agent_running_ && id == agent_id_) {
+            agent_id_ = 0;
+            if (chat_waiting_) {
+                agent_stop("busy");
+            } else {
+                note("Alice reads the output (step " + std::to_string(agent_steps_) + ")");
+                ask_chat(output_prompt(mode_, agent_cmd_, ok, msg["reason"].str(), msg["out"].str()));
+            }
+        }
     } else if (t == "chat" || t == "voice") {
         // Talking to Alice from the PC app: the PET is the one with the bridge.
         if (chat_waiting_) {
@@ -364,18 +381,19 @@ void JackInChip::on_line(const std::string& line) {
         } else if (t == "chat") {
             const std::string text = trim(msg["text"].str());
             if (!text.empty()) {
-                note("PC: " + AliceViewModel::screen_text(text));
-                chat_waiting_ = true;
-                alice_waiting_ = true;
-                const std::string prompt = clip_for_bridge(
-                    "(Holden is typing on " + host_ + " through PET JACK IN; answer briefly, plain text. If a "
-                    "PowerShell fix helps, put it alone on a last line 'CMD: <command>'.) " + text);
-                chat_.run([config = config_, prompt]() { return bridge_ask(config, prompt); });
+                note(config_.jack_operator + ": " + AliceViewModel::screen_text(text));
+                agent_running_ = true;
+                agent_steps_ = 0;
+                agent_id_ = 0;
+                ask_chat(chat_prompt(host_, mode_, text));
             }
         } else {
             std::string wav;
             if (platform::jack::base64_decode(msg["wav"].str(), wav) && wav.size() > 44) {
-                note("PC: (voice, " + std::to_string(wav.size() / 32000) + " s)");
+                note(config_.jack_operator + ": (voice, " + std::to_string(wav.size() / 32000) + " s)");
+                agent_running_ = true;
+                agent_steps_ = 0;
+                agent_id_ = 0;
                 chat_waiting_ = true;
                 alice_waiting_ = true;
                 chat_.run([config = config_, wav = std::move(wav)]() { return bridge_voice(config, wav); });
@@ -412,6 +430,11 @@ void JackInChip::reset_session() {
     alice_asked_ = false;
     alice_waiting_ = false;
     chat_waiting_ = false;
+    agent_running_ = false;
+    agent_steps_ = 0;
+    agent_id_ = 0;
+    agent_cmd_.clear();
+    mode_ = "read";
     input_ok_ = false;
     mirror_on_ = false;
     pc_chip_.clear();
@@ -510,18 +533,53 @@ void JackInChip::on_chat_reply(const BridgeReply& reply) {
     std::string words;
     std::string command;
     if (reply.ok) split_reply(reply.reply, words, command);
-    if (!reply.transcript.empty()) note("PC (heard): " + AliceViewModel::screen_text(reply.transcript));
+    if (!reply.transcript.empty()) note(config_.jack_operator + " (heard): " + AliceViewModel::screen_text(reply.transcript));
     if (reply.ok) {
         alice_text_ = words;
-        if (!command.empty()) suggestion_ = command;
         note("Alice: " + words);
     } else {
         note("Alice: (can't reach her: " + reply.error + ")", LogLine::Kind::Fail);
     }
+    // Her command goes straight to the PC while the loop runs; the PC applies its
+    // mode (Read: read-only list, Ask: Yes/No each, Full: Yes/No only if destructive).
+    bool run = reply.ok && !command.empty() && agent_running_ && connected_;
+    std::string stopped;
+    if (run && agent_steps_ >= kAgentMaxSteps) {
+        run = false;
+        stopped = "(Stopped after " + std::to_string(kAgentMaxSteps) + " commands. Say 'go on' to continue.)";
+    }
+    std::string text = reply.ok ? words : "Can't reach Alice: " + reply.error;
+    if (!stopped.empty()) text += (text.empty() ? "" : " ") + stopped;
+    if (!command.empty() && !run && reply.ok) suggestion_ = command;
     send("{\"t\":\"alice\",\"ok\":" + std::string(reply.ok ? "true" : "false") + ",\"text\":\"" +
-         json_escape(reply.ok ? words : "Can't reach Alice: " + reply.error) + "\",\"heard\":\"" +
-         json_escape(reply.transcript) + "\",\"cmd\":\"" + json_escape(command) + "\"}");
+         json_escape(text) + "\",\"heard\":\"" + json_escape(reply.transcript) + "\",\"cmd\":\"" +
+         json_escape(run ? command : "") + "\",\"step\":" + std::to_string(run ? agent_steps_ + 1 : 0) + "}");
+    if (run) {
+        ++agent_steps_;
+        agent_id_ = next_id_++;
+        agent_cmd_ = command;
+        send("{\"t\":\"run\",\"id\":" + std::to_string(agent_id_) + ",\"agent\":true,\"cmd\":\"" +
+             json_escape(command) + "\"}");
+        log_.push_back({LogLine::Kind::Pending, "> " + command, agent_id_});
+        while (log_.size() > kMaxLog) log_.pop_front();
+    } else {
+        agent_running_ = false;
+        agent_id_ = 0;
+    }
     touch();
+}
+
+void JackInChip::ask_chat(const std::string& prompt) {
+    chat_waiting_ = true;
+    alice_waiting_ = true;
+    chat_.run([config = config_, prompt = clip_for_bridge(prompt)]() { return bridge_ask(config, prompt); });
+}
+
+void JackInChip::agent_stop(const std::string& why) {
+    agent_running_ = false;
+    agent_id_ = 0;
+    note("Alice's command loop stopped (" + why + ")");
+    send("{\"t\":\"agent_stop\",\"why\":\"" + json_escape(why) + "\"}");
 }
 
 void JackInChip::run_suggestion() {
@@ -733,6 +791,43 @@ std::string JackInChip::alice_prompt(const std::string& host, const std::string&
         }
     }
     return clip_for_bridge(p);
+}
+
+namespace {
+const char* mode_rule(const std::string& mode) {
+    if (mode == "full") return "FULL: commands run at once, except destructive ones (delete, kill, uninstall, "
+                               "registry/boot/user/policy changes), which Holden must OK on the PC";
+    if (mode == "ask") return "ASK: Holden OKs each command on the PC before it runs";
+    return "READ: only read-only commands run (Get-*, Test-*, sort/select/format, ipconfig, whoami, "
+           "systeminfo, tasklist...); anything else is refused";
+}
+std::string upper(std::string v) {
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return std::toupper(c); });
+    return v;
+}
+}  // namespace
+
+std::string JackInChip::chat_prompt(const std::string& host, const std::string& mode, const std::string& text) {
+    return "[PET JACK IN on " + host + ", mode " + mode_rule(mode) +
+           ". You can run PowerShell on that PC: put ONE line 'CMD: <command>' FIRST in your reply. Its output comes "
+           "back to you automatically; then continue. Reply with no CMD when done. Brief plain text, no markdown.] " +
+           text;
+}
+
+std::string JackInChip::output_prompt(const std::string& mode, const std::string& cmd, bool ok,
+                                      const std::string& reason, const std::string& out) {
+    std::string head = "[JACK IN, mode " + upper(mode) + "] ";
+    if (!ok && reason == "declined") return head + "Holden declined `" + cmd + "` on the PC. Continue without it, or stop.";
+    if (!ok && reason == "read-only")
+        return head + "Not run: `" + cmd + "` is not read-only and the PC is in READ mode. Use a read-only command or stop.";
+    std::string body = trim(out);
+    if (body.empty()) body = "(no output)";
+    head += "Output of `" + cmd + "` (exit " + (ok ? "ok" : "failed") + "): ";
+    // The bridge keeps 600 characters: the command and the start of its output.
+    const size_t room = kBridgeMaxInput > head.size() + 40 ? kBridgeMaxInput - head.size() - 20 : 40;
+    const std::string clipped = clip_for_bridge(body, room);
+    if (clipped.size() < body.size()) body = clipped + " [cut]";
+    return head + body;
 }
 
 void JackInChip::split_reply(const std::string& reply, std::string& words, std::string& command) {

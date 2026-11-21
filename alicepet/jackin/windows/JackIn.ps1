@@ -16,6 +16,9 @@
 #  - Run as admin...: relaunches this app through the Windows UAC prompt that you click.
 #  - NET: the PET borrows this PC's internet (outbound connections only).
 #  - Chat with Alice: type (Enter sends), or hold MIC (or F9) to talk; her answers can be read aloud.
+#    Alice can run PowerShell here to answer you: each command she sends goes through the access
+#    mode (READ: read-only commands only; ASK: Yes/No for each; FULL: Yes/No only for destructive
+#    ones) and its output goes back to her automatically, up to 8 commands per message.
 #  - Jellyfin video and Retro games picked on the PET's chip play HERE: video in a
 #    NOW PLAYING player in the chip area (Windows Media Player; Esc or STOP comes
 #    back to the chip), games in your browser (RomM's web player). Both come
@@ -34,11 +37,51 @@ param(
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
+
+# A failure at startup must never just vanish (JackIn.cmd starts this hidden):
+# show what broke, how to run it by hand, and keep it in %TEMP%\JackIn-error.txt.
+function Show-StartupError($err) {
+    $text = "Jack In could not start:`r`n`r`n$err"
+    try { $text += "`r`n`r`n" + $err.ScriptStackTrace } catch { }
+    $hint = "To see more, run this in a PowerShell window:`r`n  powershell -NoProfile -ExecutionPolicy Bypass -STA -File `"$PSCommandPath`""
+    try { [System.IO.File]::WriteAllText((Join-Path ([IO.Path]::GetTempPath()) 'JackIn-error.txt'), "$text`r`n`r`n$hint") } catch { }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [void][System.Windows.Forms.MessageBox]::Show("$text`r`n`r`n$hint`r`n`r`n(Saved to %TEMP%\JackIn-error.txt)", 'Jack In', 'OK', 'Error')
+    } catch { }
+}
+trap { Show-StartupError $_; exit 1 }
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-[System.Windows.Forms.Application]::EnableVisualStyles()
 
-$AppVersion = '0.7'
+# Layout is written for 96 DPI; [JackInUi]::B scales every position and size by K
+# (the screen's DPI / 96, cut down if the window would not fit), and fonts are
+# made in pixels times K, so 100/125/150% all look the same, only bigger.
+Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
+public static class JackInUi {
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern bool SetProcessDPIAware();
+    public static double K = 1.0;
+    public static void Aware() { try { SetProcessDPIAware(); } catch { } }
+    public static int S(double v) { return (int)System.Math.Round(v * K); }
+    public static void B(System.Windows.Forms.Control c, double x, double y, double w, double h) {
+        c.SetBounds(S(x), S(y), S(w), S(h));
+    }
+}
+'@
+[JackInUi]::Aware()
+[System.Windows.Forms.Application]::EnableVisualStyles()
+$dpiG = [System.Drawing.Graphics]::FromHwnd([IntPtr]::Zero)
+$Dpi = [double]$dpiG.DpiX
+$dpiG.Dispose()
+$work = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+$K = [Math]::Min($Dpi / 96.0, [Math]::Min(($work.Height - 40) / 640.0, ($work.Width - 16) / 1100.0))
+if ($env:JACKIN_SCALE) { $K = [double]$env:JACKIN_SCALE }
+$K = [Math]::Max(0.7, $K)
+[JackInUi]::K = $K
+
+$AppVersion = '0.8'
 $Here = Split-Path -Parent $PSCommandPath
 
 # Draws each PET frame: run-length RGB565 (count, hi, lo) to ARGB pixels.
@@ -93,6 +136,9 @@ $S = [ordered]@{
     ChipId     = ''       # the chip the PC last asked the PET to open
     MirrorSent = $false   # last mirror on/off sent to the PET
     View       = 'home'   # centre shows 'home' or 'chip'
+    Operator   = 'HK'     # who runs the PET (the PET's [jackin] operator=), never the Windows user
+    ShowLog    = $false   # HOME shows the live log instead of the chat
+    Agent      = $false   # Alice's command loop is running for the last chat message
 }
 # Video from the PET (Jellyfin chip) playing in this window.
 $Play = [ordered]@{
@@ -128,8 +174,11 @@ try {
     }
 } catch { }
 
-function Pix([float]$size) { if ($PixFam) { return New-Object System.Drawing.Font($PixFam, $size, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Point) }; return New-Object System.Drawing.Font($PixName, $size, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Point) }
-function Vt([float]$size) { if ($VtFam) { return New-Object System.Drawing.Font($VtFam, $size, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Point) }; return New-Object System.Drawing.Font($VtName, $size, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Point) }
+# Sizes are points at 96 DPI; made in pixels so they scale with the layout (K), not twice.
+function Px([float]$size) { return [float]($size * 96.0 / 72.0 * $K) }
+function F([string]$name, [float]$size, $style = [System.Drawing.FontStyle]::Regular) { return New-Object System.Drawing.Font($name, (Px $size), $style, [System.Drawing.GraphicsUnit]::Pixel) }
+function Pix([float]$size) { if ($PixFam) { return New-Object System.Drawing.Font($PixFam, (Px $size), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel) }; return F $PixName $size }
+function Vt([float]$size) { if ($VtFam) { return New-Object System.Drawing.Font($VtFam, (Px $size), [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel) }; return F $VtName $size }
 function RGB($r, $g, $b) { return [System.Drawing.Color]::FromArgb($r, $g, $b) }
 
 # Palette from mockups/jackin-operator.html.
@@ -156,7 +205,8 @@ $cText = RGB 0xc8 0xe8 0xff
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'Jack In - Alice.exe'
-$form.ClientSize = New-Object System.Drawing.Size(1100, 640)
+$form.AutoScaleMode = 'None'  # scaled by hand (K), see JackInUi
+$form.ClientSize = New-Object System.Drawing.Size([JackInUi]::S(1100), [JackInUi]::S(640))
 $form.FormBorderStyle = 'FixedSingle'
 $form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
@@ -168,17 +218,18 @@ $form.KeyPreview = $true
 function Paint-Frame($panel, $e) {
     $w = $panel.ClientSize.Width
     $h = $panel.ClientSize.Height
-    $pen = New-Object System.Drawing.Pen -ArgumentList $cEdge, 3
+    $pen = New-Object System.Drawing.Pen -ArgumentList $cEdge, ([float](3 * $K))
     $e.Graphics.DrawRectangle($pen, 1, 1, $w - 3, $h - 3)
     $pen.Dispose()
-    $bevel = New-Object System.Drawing.Pen -ArgumentList (RGB 0x58 0xc8 0xf8), 2
-    $e.Graphics.DrawRectangle($bevel, 7, 7, $w - 15, $h - 15)
+    $in = [JackInUi]::S(7)
+    $bevel = New-Object System.Drawing.Pen -ArgumentList (RGB 0x58 0xc8 0xf8), ([float](2 * $K))
+    $e.Graphics.DrawRectangle($bevel, $in, $in, $w - 2 * $in - 1, $h - 2 * $in - 1)
     $bevel.Dispose()
 }
 
 function New-Frame($x, $y, $w, $h, $back) {
     $p = New-Object System.Windows.Forms.Panel
-    $p.SetBounds($x, $y, $w, $h)
+    [JackInUi]::B($p, $x, $y, $w, $h)
     $p.BackColor = $back
     $p.Tag = 'frame'
     $p.Add_Paint({ param($ctl, $e) Paint-Frame $ctl $e })
@@ -190,7 +241,7 @@ function New-Frame($x, $y, $w, $h, $back) {
 function New-Label($text, $x, $y, $w, $h, $font, $fore, $back) {
     $l = New-Object System.Windows.Forms.Label
     $l.Text = $text
-    $l.SetBounds($x, $y, $w, $h)
+    [JackInUi]::B($l, $x, $y, $w, $h)
     $l.Font = $font
     $l.ForeColor = $fore
     $l.BackColor = $back
@@ -201,7 +252,7 @@ function New-Label($text, $x, $y, $w, $h, $font, $fore, $back) {
 function New-Button($text, $x, $y, $w, $h, $back, $fore, $font) {
     $btn = New-Object System.Windows.Forms.Button
     $btn.Text = $text
-    $btn.SetBounds($x, $y, $w, $h)
+    [JackInUi]::B($btn, $x, $y, $w, $h)
     $btn.FlatStyle = 'Flat'
     $btn.FlatAppearance.BorderSize = 2
     $btn.FlatAppearance.BorderColor = $cEdge
@@ -214,32 +265,37 @@ function New-Button($text, $x, $y, $w, $h, $back, $fore, $font) {
 
 # Top bar: title, status, access, NET, JACK OUT.
 $topFrame = New-Frame 8 8 1084 58 $cFrame
-$titleLabel = New-Label 'JACK IN!' 20 22 130 30 (Pix 11) $cYellow $cFrame
-$statusLabel = New-Label '' 160 20 470 34 (Vt 22) $cGreen $cFrame
+# Everything in the bar sits on its centre line (y 37); the status text shrinks to fit.
+$titleLabel = New-Label 'JACK IN!' 20 21 132 32 (Pix 11) $cYellow $cFrame
+$titleLabel.TextAlign = 'MiddleLeft'
+$statusLabel = New-Label '' 158 19 432 36 (Vt 22) $cGreen $cFrame
+$statusLabel.TextAlign = 'MiddleLeft'
+$statusLabel.AutoEllipsis = $true
 $ModeButtons = [ordered]@{}
-$modeX = 640
+$modeX = 600
 foreach ($m in @('Read', 'Ask', 'Full')) {
-    $b = New-Button $m.ToUpper() $modeX 16 80 36 $cIdle $cIdleInk (Pix 8)
+    $b = New-Button $m.ToUpper() $modeX 19 80 36 $cIdle $cIdleInk (Pix 8)
     $b.Tag = $m
     $b.Add_Click({ param($sender, $e) Set-Mode ([string]$sender.Tag) })
     $ModeButtons[$m] = $b
     $modeX += 86
 }
-$btnNet = New-Button 'NET' 904 16 84 36 $cNet (RGB 0xff 0xff 0xff) (Pix 8)
-$btnOut = New-Button 'JACK OUT' 994 16 90 36 $cOut (RGB 0xff 0xff 0xff) (Pix 7)
+$btnNet = New-Button 'NET' 858 19 84 36 $cNet (RGB 0xff 0xff 0xff) (Pix 8)
+$btnOut = New-Button 'JACK OUT' 948 19 132 36 $cOut (RGB 0xff 0xff 0xff) (Pix 8)
+foreach ($b in @($btnNet, $btnOut) + @($ModeButtons.Values)) { $b.TextAlign = 'MiddleCenter'; $b.Padding = New-Object System.Windows.Forms.Padding(0) }
 
 # Left: FOLDER with HOME and the PC-capable chips, the chip's card, admin link.
 $leftFrame = New-Frame 8 76 230 556 $cFrame
 $folderHdr = New-Label 'FOLDER' 18 86 110 24 (Pix 7) $cInk $cYellow
 $folderHdr.TextAlign = 'MiddleCenter'
 $chipList = New-Object System.Windows.Forms.Panel
-$chipList.SetBounds(16, 116, 214, 268)
+[JackInUi]::B($chipList, 16, 116, 214, 268)
 $chipList.BackColor = $cPanel
 $chipList.Add_Paint({ param($ctl, $e) Paint-Frame $ctl $e })
 $form.Controls.Add($chipList)
 $script:ChipRows = @()
 $infoArt = New-Object System.Windows.Forms.PictureBox
-$infoArt.SetBounds(18, 394, 96, 120)
+[JackInUi]::B($infoArt, 18, 394, 96, 120)
 $infoArt.BackColor = $cEdge
 $infoArt.SizeMode = 'CenterImage'
 $form.Controls.Add($infoArt)
@@ -250,7 +306,7 @@ $adminLink.LinkColor = RGB 0xff 0xd5 0x4a
 $adminLink.ActiveLinkColor = RGB 0xff 0xff 0xff
 $adminLink.BackColor = $cFrame
 $adminLink.Font = Vt 17
-$adminLink.SetBounds(18, 534, 210, 22)
+[JackInUi]::B($adminLink, 18, 534, 210, 22)
 $form.Controls.Add($adminLink)
 $footLabel = New-Label 'Voice, Remote and Camera stay in the PET.' 18 578 210 44 (Vt 15) $cHint $cFrame
 
@@ -260,6 +316,8 @@ $alicePng = Join-Path $Here 'alice.png'
 if (Test-Path $alicePng) { $AliceImg = [System.Drawing.Image]::FromFile($alicePng) }
 function Crop-Cover($img, [int]$w, [int]$h, [float]$fx, [float]$fy) {
     if ($null -eq $img) { return $null }
+    $w = [JackInUi]::S($w)
+    $h = [JackInUi]::S($h)
     $scale = [Math]::Max($w / $img.Width, $h / $img.Height)
     $sw = $w / $scale
     $sh = $h / $scale
@@ -275,7 +333,7 @@ function Crop-Cover($img, [int]$w, [int]$h, [float]$fx, [float]$fy) {
 }
 function New-Picture($x, $y, $w, $h, $img) {
     $p = New-Object System.Windows.Forms.PictureBox
-    $p.SetBounds($x, $y, $w, $h)
+    [JackInUi]::B($p, $x, $y, $w, $h)
     $p.BackColor = RGB 0x20 0x30 0x60
     $p.SizeMode = 'Normal'
     $p.Image = $img
@@ -299,48 +357,48 @@ $hintLabel.TextAlign = 'MiddleRight'
 $portrait = New-Picture 256 116 230 342 (Crop-Cover $AliceImg 230 342 0.5 0.2)
 $aliceName = New-Label 'ALICE.EXE' 256 458 124 30 (Pix 8) $cPink $cEdge
 $aliceName.TextAlign = 'MiddleRight'
-$aliceStatus = New-Label '' 380 458 106 30 (New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)) $cGreen $cEdge
+$aliceStatus = New-Label '' 380 458 106 30 (F 'Segoe UI' 10 ([System.Drawing.FontStyle]::Bold)) $cGreen $cEdge
 $aliceStatus.TextAlign = 'MiddleLeft'
 $chatLog = New-Object System.Windows.Forms.RichTextBox
 $chatLog.ReadOnly = $true
 $chatLog.BorderStyle = 'None'
 $chatLog.ScrollBars = 'Vertical'
-$chatLog.SetBounds(496, 116, 586, 334)
+[JackInUi]::B($chatLog, 496, 116, 586, 334)
 $chatLog.BackColor = $cPaper
 $chatLog.ForeColor = RGB 0x10 0x20 0x40
 $chatLog.Font = Vt 18
 $chatLog.SelectionIndent = 8
 $chatLog.SelectionRightIndent = 8
 $form.Controls.Add($chatLog)
-$statusHdr = New-Label 'PC STATUS' 256 496 120 22 (Pix 7) $cInk $cYellow
+$statusHdr = New-Label 'PC STATUS' 256 500 140 26 (Pix 8) $cInk $cYellow
 $statusHdr.TextAlign = 'MiddleCenter'
+$cPlate = RGB 0x04 0x12 0x2c
 $Stats = [ordered]@{}
 $statX = 256
 foreach ($k in @('CPU', 'RAM', 'C:', 'DEFENDER')) {
     $box = New-Object System.Windows.Forms.Panel
-    $box.SetBounds($statX, 524, 200, 50)
+    [JackInUi]::B($box, $statX, 532, 200, 84)
+    $box.BackColor = $cPlate
     $box.Add_Paint({
         param($ctl, $e)
-        $r = New-Object System.Drawing.Rectangle -ArgumentList 0, 0, $ctl.Width, $ctl.Height
-        $br = New-Object System.Drawing.Drawing2D.LinearGradientBrush -ArgumentList $r, (RGB 0x90 0xa8 0xb8), (RGB 0x50 0x68 0x78), 90.0
-        $e.Graphics.FillRectangle($br, $r)
-        $br.Dispose()
-        $pen = New-Object System.Drawing.Pen -ArgumentList $cEdge, 3
+        $pen = New-Object System.Drawing.Pen -ArgumentList (RGB 0x58 0xc8 0xf8), ([float](2 * $K))
         $e.Graphics.DrawRectangle($pen, 1, 1, $ctl.Width - 3, $ctl.Height - 3)
         $pen.Dispose()
     })
     $key = New-Object System.Windows.Forms.Label
     $key.Text = $k
-    $key.SetBounds(8, 5, 180, 14)
-    $key.Font = Pix 6
-    $key.ForeColor = RGB 0xe8 0xf0 0xf8
-    $key.BackColor = [System.Drawing.Color]::Transparent
+    [JackInUi]::B($key, 12, 8, 180, 20)
+    $key.Font = Pix 8
+    $key.ForeColor = RGB 0xc8 0xe0 0xff
+    $key.BackColor = $cPlate
     $val = New-Object System.Windows.Forms.Label
     $val.Text = '--'
-    $val.SetBounds(6, 18, 190, 30)
-    $val.Font = Vt 26
-    $val.ForeColor = $cGreen
-    $val.BackColor = [System.Drawing.Color]::Transparent
+    [JackInUi]::B($val, 10, 30, 184, 48)
+    $val.Font = Vt 34
+    $val.ForeColor = $cIdleInk
+    $val.BackColor = $cPlate
+    $val.TextAlign = 'MiddleLeft'
+    $val.AutoEllipsis = $true
     $box.Controls.Add($key)
     $box.Controls.Add($val)
     $form.Controls.Add($box)
@@ -351,14 +409,16 @@ $logBox = New-Object System.Windows.Forms.RichTextBox
 $logBox.ReadOnly = $true
 $logBox.BorderStyle = 'None'
 $logBox.ScrollBars = 'Vertical'
-$logBox.SetBounds(256, 580, 740, 42)
+[JackInUi]::B($logBox, 496, 116, 586, 334)
 $logBox.BackColor = RGB 0x0b 0x18 0x30
 $logBox.ForeColor = RGB 0xdf 0xe8 0xff
-$logBox.Font = New-Object System.Drawing.Font('Consolas', 9)
+$logBox.Font = F 'Consolas' 9
+$logBox.Visible = $false
 $logBox.SelectionIndent = 8
 $logBox.SelectionRightIndent = 8
 $form.Controls.Add($logBox)
-$btnLog = New-Button 'SAVE LOG' 1000 580 82 42 $cIdle $cIdleInk (Pix 6)
+$btnShowLog = New-Button 'LOG' 992 500 90 26 $cIdle $cIdleInk (Pix 7)
+$btnLog = New-Button 'SAVE LOG' 860 500 126 26 $cIdle $cIdleInk (Pix 7)
 
 # CHIP state
 $btnHome = New-Button '< HOME' 444 84 96 28 (RGB 0x58 0x78 0xa0) (RGB 0xff 0xff 0xff) (Pix 7)
@@ -369,13 +429,13 @@ $viewMode.TextAlign = 'MiddleCenter'
 $viewPet = New-Label 'PET' 1028 86 54 24 (Pix 7) $cText $cFrame
 $viewPet.TextAlign = 'MiddleCenter'
 $mirror = New-Object System.Windows.Forms.Panel
-$mirror.SetBounds(256, 116, 826, 466)
+[JackInUi]::B($mirror, 256, 116, 826, 466)
 $mirror.BackColor = $cScreen
 $mirror.TabStop = $true
 $form.Controls.Add($mirror)
 # NOW PLAYING: the PET's video, in the chip area instead of the mirror.
 $playPanel = New-Object System.Windows.Forms.Panel
-$playPanel.SetBounds(256, 116, 826, 466)
+[JackInUi]::B($playPanel, 256, 116, 826, 466)
 $playPanel.BackColor = [System.Drawing.Color]::Black
 $playPanel.Visible = $false
 $form.Controls.Add($playPanel)
@@ -401,7 +461,33 @@ $chatBox.Font = Vt 20
 $chatBox.BorderStyle = 'FixedSingle'
 $form.Controls.Add($chatBox)
 $btnMic = New-Button 'MIC' 0 0 68 30 (RGB 0xc0 0x50 0xf0) (RGB 0xff 0xff 0xff) (Pix 8)
-$btnVoice = New-Button 'SPK' 0 0 68 30 (RGB 0x40 0x80 0xd0) (RGB 0xff 0xff 0xff) (Pix 8)
+$btnVoice = New-Button '' 0 0 68 30 (RGB 0x40 0x80 0xd0) (RGB 0xff 0xff 0xff) (Pix 8)
+$btnVoice.Add_Paint({
+    param($ctl, $e)
+    $g = $e.Graphics
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $h = [float]$ctl.ClientSize.Height
+    $u = $h / 10.0
+    $cx = [float]($ctl.ClientSize.Width / 2.0 - 2.5 * $u)
+    $cy = $h / 2.0
+    $pts = [System.Drawing.PointF[]]@(
+        (New-Object System.Drawing.PointF -ArgumentList $cx, ($cy - 1.4 * $u)),
+        (New-Object System.Drawing.PointF -ArgumentList ($cx + 1.6 * $u), ($cy - 1.4 * $u)),
+        (New-Object System.Drawing.PointF -ArgumentList ($cx + 3.6 * $u), ($cy - 3.4 * $u)),
+        (New-Object System.Drawing.PointF -ArgumentList ($cx + 3.6 * $u), ($cy + 3.4 * $u)),
+        (New-Object System.Drawing.PointF -ArgumentList ($cx + 1.6 * $u), ($cy + 1.4 * $u)),
+        (New-Object System.Drawing.PointF -ArgumentList $cx, ($cy + 1.4 * $u)))
+    $g.FillPolygon([System.Drawing.Brushes]::White, $pts)
+    $pen = New-Object System.Drawing.Pen -ArgumentList ([System.Drawing.Color]::White), ([float]([Math]::Max(1.5, 0.7 * $u)))
+    if ($S.Speak) {
+        $g.DrawArc($pen, [float]($cx + 2.4 * $u), [float]($cy - 2.2 * $u), [float](3.0 * $u), [float](4.4 * $u), [float]-50, [float]100)
+        $g.DrawArc($pen, [float]($cx + 2.6 * $u), [float]($cy - 3.6 * $u), [float](4.6 * $u), [float](7.2 * $u), [float]-50, [float]100)
+    } else {
+        $g.DrawLine($pen, [float]($cx + 5.0 * $u), [float]($cy - 1.8 * $u), [float]($cx + 8.2 * $u), [float]($cy + 1.8 * $u))
+        $g.DrawLine($pen, [float]($cx + 5.0 * $u), [float]($cy + 1.8 * $u), [float]($cx + 8.2 * $u), [float]($cy - 1.8 * $u))
+    }
+    $pen.Dispose()
+})
 $tips = New-Object System.Windows.Forms.ToolTip
 $tips.SetToolTip($btnVoice, 'Alice reads answers aloud (click to mute)')
 $tips.SetToolTip($btnMic, 'Hold to talk (or hold F9)')
@@ -409,7 +495,7 @@ $tips.SetToolTip($btnHome, 'Back to HOME (Esc; Shift+Esc while typing into the P
 $tips.SetToolTip($chatBox, 'Send mail to Alice (Enter)')
 [JackInFrame]::Cue($chatBox.Handle, 'Send mail...')
 
-$HomeCtl = @($hintLabel, $portrait, $aliceName, $aliceStatus, $chatLog, $statusHdr, $logBox, $btnLog, $btnVoice) + @($Stats.Values | ForEach-Object { $_.Box })
+$HomeCtl = @($hintLabel, $portrait, $aliceName, $aliceStatus, $chatLog, $statusHdr, $logBox, $btnLog, $btnShowLog, $btnVoice) + @($Stats.Values | ForEach-Object { $_.Box })
 $ChipCtl = @($btnHome, $viewKey, $viewMode, $viewPet, $mirror, $miniFace, $aliceWho, $aliceLine)
 
 # Shows HOME or the open chip in the centre.
@@ -419,15 +505,20 @@ function Set-View([string]$view) {
     $form.SuspendLayout()
     foreach ($c in $HomeCtl) { $c.Visible = $atHome }
     foreach ($c in $ChipCtl) { $c.Visible = -not $atHome }
+    # HOME shows the chat or, after LOG, the live log in the same place.
+    $chatLog.Visible = $atHome -and -not $S.ShowLog
+    $logBox.Visible = $atHome -and $S.ShowLog
+    $btnLog.Visible = $atHome -and $S.ShowLog
+    $btnShowLog.Text = $(if ($S.ShowLog) { 'CHAT' } else { 'LOG' })
     if ($atHome) {
-        $tabLabel.SetBounds(256, 86, 90, 24)
-        $chatBox.SetBounds(496, 458, 440, 30)
-        $btnMic.SetBounds(942, 458, 68, 30)
-        $btnVoice.SetBounds(1014, 458, 68, 30)
+        [JackInUi]::B($tabLabel, 256, 86, 90, 24)
+        [JackInUi]::B($chatBox, 496, 458, 440, 30)
+        [JackInUi]::B($btnMic, 942, 458, 68, 30)
+        [JackInUi]::B($btnVoice, 1014, 458, 68, 30)
     } else {
-        $tabLabel.SetBounds(256, 86, 180, 24)
-        $chatBox.SetBounds(736, 590, 270, 32)
-        $btnMic.SetBounds(1012, 590, 70, 32)
+        [JackInUi]::B($tabLabel, 256, 86, 180, 24)
+        [JackInUi]::B($chatBox, 736, 590, 270, 32)
+        [JackInUi]::B($btnMic, 1012, 590, 70, 32)
     }
     $form.ResumeLayout()
     Update-Ui
@@ -441,7 +532,7 @@ function Write-Rich($box, [string]$text, $color, [bool]$bold = $false, $back = $
     $box.SelectionColor = $color
     $box.SelectionBackColor = $(if ($back) { $back } else { $box.BackColor })
     $style = $(if ($bold) { [System.Drawing.FontStyle]::Bold } else { [System.Drawing.FontStyle]::Regular })
-    $box.SelectionFont = New-Object System.Drawing.Font('Consolas', $size, $style)
+    $box.SelectionFont = F 'Consolas' $size $style
     $box.AppendText($text)
 }
 
@@ -462,11 +553,30 @@ function Add-Chat([string]$who, [string]$text) {
         $aliceLine.Text = ($text -replace '\s+', ' ')
         $tips.SetToolTip($aliceLine, $text)
     } else {
-        $name = $(if ($who -eq 'you') { $env:USERNAME.ToUpper() } else { $who })
+        # The operator is whoever runs the PET (HK), never the Windows account.
+        $name = $(if ($who -eq 'you') { $S.Operator.ToUpper() } else { $who })
         Write-Rich $chatLog "${name}: " (RGB 0x20 0x50 0xc0) $true $null 11
         Write-Rich $chatLog "$text`n" (RGB 0x10 0x20 0x40) $false $null 11
     }
-    Write-Rich $chatLog "`n" (RGB 0x10 0x20 0x40) $false $null 4
+    Write-Rich $chatLog "`n" (RGB 0x10 0x20 0x40) $false $null 9
+    $chatLog.ScrollToCaret()
+}
+
+# A command Alice ran (or asked to run) and a short look at what came back.
+function Add-ChatCmd([string]$cmd, [string]$note = '') {
+    $S.Log.Add((Get-Date).ToString('HH:mm:ss') + "  RUN: $cmd")
+    Write-Rich $chatLog "  > $cmd`n" (RGB 0x40 0x50 0x70) $true (RGB 0xe4 0xea 0xf2) 9.5
+    if ($note) { Write-Rich $chatLog "    $note`n" (RGB 0x80 0x60 0x10) $false $null 9.5 }
+    $chatLog.ScrollToCaret()
+}
+function Add-ChatResult([bool]$ok, [string]$out) {
+    $lines = @(($out -split "`r?`n") | Where-Object { $_.Trim() } | Select-Object -First 3)
+    $short = (($lines | ForEach-Object { $_.TrimEnd() }) -join "`n    ")
+    if ($short.Length -gt 300) { $short = $short.Substring(0, 300) + '...' }
+    if (-not $short) { $short = '(no output)' }
+    Write-Rich $chatLog ("    " + $(if ($ok) { 'ok: ' } else { 'failed: ' })) $(if ($ok) { RGB 0x10 0x80 0x40 } else { RGB 0xc0 0x20 0x20 }) $true $null 9.5
+    Write-Rich $chatLog "$short`n" (RGB 0x30 0x40 0x60) $false $null 9.5
+    Write-Rich $chatLog "`n" (RGB 0x10 0x20 0x40) $false $null 6
     $chatLog.ScrollToCaret()
 }
 
@@ -480,7 +590,7 @@ function Send-Pet($obj) {
 }
 
 function Send-State([string]$denied = '') {
-    $msg = [ordered]@{ t = 'state'; full = $S.Full; admin = $S.Admin; net = $S.Net; input = [bool]$S.Full }
+    $msg = [ordered]@{ t = 'state'; full = $S.Full; admin = $S.Admin; net = $S.Net; input = [bool]$S.Full; mode = (Get-Mode).ToLower() }
     if ($denied) { $msg.denied = $denied }
     Send-Pet $msg
 }
@@ -499,11 +609,11 @@ function Input-Allowed {
 function Update-Ui {
     $mode = Get-Mode
     if ($S.Linked) {
-        $statusLabel.Text = "> OPERATOR: $env:USERNAME  -  LINK: $($env:COMPUTERNAME)" + $(if ($S.Net) { '  -  NET ON' } else { '' })
+        Fit-Label $statusLabel ("OPERATOR: $($S.Operator)  |  LINK: $($env:COMPUTERNAME)" + $(if ($S.Net) { '  |  NET ON' } else { '' })) 22 14
         $aliceStatus.Text = [string][char]0x25CF + ' ONLINE'
         $aliceStatus.ForeColor = $cGreen
     } else {
-        $statusLabel.Text = '- looking for the PET...'
+        Fit-Label $statusLabel 'looking for the PET...' 22 14
         $aliceStatus.Text = [string][char]0x25CB + ' NO LINK'
         $aliceStatus.ForeColor = $cHint
     }
@@ -536,6 +646,24 @@ function Update-Ui {
     $mirror.Invalidate()
 }
 
+# Shows `text` in the label at the biggest VT323 size (max..min) that fits on one
+# line; past the minimum it ends in "..." and the tooltip has all of it.
+function Fit-Label($label, [string]$text, [float]$max, [float]$min) {
+    if ($label.Text -eq $text -and $label.Tag -eq 'fit') { return }
+    $label.Tag = 'fit'
+    $label.Text = $text
+    $tips.SetToolTip($label, $text)
+    $g = $label.CreateGraphics()
+    try {
+        $room = $label.ClientSize.Width - [JackInUi]::S(4)
+        for ($sz = $max; $sz -ge $min; $sz -= 1) {
+            $f = Vt $sz
+            if ($sz -le $min -or $g.MeasureString($text, $f).Width -le $room) { $label.Font = $f; break }
+            $f.Dispose()
+        }
+    } finally { $g.Dispose() }
+}
+
 function Set-Mode([string]$mode) {
     $before = Get-Mode
     if ($mode -eq $before) { return }
@@ -548,6 +676,8 @@ function Set-Mode([string]$mode) {
             default { 'you set access to Full: the PET can run commands as you without asking, and take keys' }
         })
     if ($S.Linked) { Send-State }
+    # Read stops Alice's command loop (the PET stops it when it sees mode read).
+    if ($mode -eq 'Read') { $S.Agent = $false }
     Update-Ui
 }
 
@@ -569,7 +699,7 @@ function Show-Ask([string]$what) {
 # Scales a small chip image by a whole number so it stays sharp (nearest neighbour).
 function Scale-Art($img, [int]$boxW, [int]$boxH) {
     if ($null -eq $img) { return $null }
-    $f = [Math]::Max(1, [Math]::Min([Math]::Floor($boxW / $img.Width), [Math]::Floor($boxH / $img.Height)))
+    $f = [Math]::Max(1, [Math]::Min([Math]::Floor([JackInUi]::S($boxW) / $img.Width), [Math]::Floor([JackInUi]::S($boxH) / $img.Height)))
     $bmp = New-Object System.Drawing.Bitmap -ArgumentList ([int]($img.Width * $f)), ([int]($img.Height * $f))
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::NearestNeighbor
@@ -629,12 +759,12 @@ function Build-Chips([object[]]$list) {
             $S.Chips += [pscustomobject]$chip
         }
         $row = New-Object System.Windows.Forms.Panel
-        $row.SetBounds(6, $y, 202, 46)
+        [JackInUi]::B($row, 6, $y, 202, 46)
         $row.Tag = $id
         $row.Cursor = [System.Windows.Forms.Cursors]::Hand
         $row.Add_Click({ param($sender, $e) Select-ChipClick $sender $e })
         $art = New-Object System.Windows.Forms.PictureBox
-        $art.SetBounds(4, 6, 34, 34)
+        [JackInUi]::B($art, 4, 6, 34, 34)
         $art.BackColor = $cEdge
         $art.SizeMode = 'Zoom'
         $art.Tag = $id
@@ -648,7 +778,7 @@ function Build-Chips([object[]]$list) {
         }
         $name = New-Object System.Windows.Forms.Label
         $name.Text = $chip.name
-        $name.SetBounds(46, 8, 124, 30)
+        [JackInUi]::B($name, 46, 8, 124, 30)
         $name.Font = Vt 22
         $name.ForeColor = $cPaper
         $name.BackColor = $cPanel
@@ -656,7 +786,7 @@ function Build-Chips([object[]]$list) {
         $name.Add_Click({ param($sender, $e) Select-ChipClick $sender $e })
         $code = New-Object System.Windows.Forms.Label
         $code.Text = $chip.code
-        $code.SetBounds(172, 11, 24, 24)
+        [JackInUi]::B($code, 172, 11, 24, 24)
         $code.Font = Pix 8
         $code.ForeColor = $(if ($r.home) { RGB 0x20 0x50 0xc0 } else { RGB 0xc0 0x18 0x18 })
         $code.BackColor = $cPaper
@@ -969,29 +1099,127 @@ function Update-Stats($scan) {
 
 # --- commands from the PET -------------------------------------------------------
 
-function Start-PetCommand($id, [string]$cmd) {
-    if (-not $S.Full) {
-        Add-Log "PET asked to run (refused, read-only): $cmd"
-        Send-Pet ([ordered]@{ t = 'result'; id = $id; ok = $false; out = 'read-only: pick Ask or Full on the PC'; reason = 'read-only' })
-        Show-Ask 'full'
+# Every command the PET sends (Alice's, or one picked on the PET) is parsed here
+# and judged by what it would call, never just by how it starts.
+function Get-CmdAst([string]$cmd) {
+    $tokens = $null
+    $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($cmd, [ref]$tokens, [ref]$errors)
+    if ($errors -and @($errors).Count -gt 0) { return $null }
+    return $ast
+}
+
+function Get-CmdCalls($ast) {
+    $calls = @()
+    foreach ($c in @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))) {
+        $name = $c.GetCommandName()
+        $argv = @($c.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.Extent.Text.Trim([char]39, [char]34).ToLower() })
+        $raw = $(if ($name) { $name.ToLower() } else { '' })
+        $calls += [pscustomobject]@{ Name = ($raw -replace '\.exe$', ''); Raw = $raw; Args = $argv }
+    }
+    return $calls
+}
+
+function Get-CmdMethods($ast) {
+    return @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true) |
+        ForEach-Object { $_.Member.Extent.Text.Trim([char]39, [char]34).ToLower() })
+}
+
+# READ mode runs only these: look-only cmdlet verbs, the pipeline helpers, and
+# native tools that only report (with their changing switches refused).
+$ReadVerbs = '^((get|test|measure|select|sort|where|group|compare|convertto|convertfrom|resolve|join|split)-|format-(table|list|wide|custom)$)'
+$ReadNames = @('foreach-object', 'where-object', 'write-output', 'out-string', 'out-null', '%', '?', 'foreach', 'where', 'sort', 'select', 'measure',
+    'group', 'ft', 'fl', 'fw', 'gps', 'ps', 'gci', 'ls', 'dir', 'gc', 'cat', 'type', 'gsv', 'gcim', 'gwmi', 'gp', 'gi', 'gl', 'pwd', 'echo', 'write', 'gm',
+    'whoami', 'ipconfig', 'systeminfo', 'tasklist', 'hostname', 'ping', 'tracert', 'pathping', 'nslookup', 'netstat', 'getmac', 'driverquery',
+    'gpresult', 'quser', 'qwinsta', 'ver', 'arp', 'nbtstat', 'route', 'w32tm', 'powercfg', 'manage-bde', 'dsregcmd', 'winver', 'chcp')
+$ReadMethods = @('tostring', 'trim', 'trimend', 'trimstart', 'split', 'tolower', 'toupper', 'substring', 'replace', 'contains', 'startswith',
+    'endswith', 'indexof', 'padleft', 'padright', 'gettype', 'equals', 'tostring', 'join', 'format', 'round', 'floor', 'ceiling', 'count')
+function Test-ReadOnly([string]$cmd) {
+    $ast = Get-CmdAst $cmd
+    if ($null -eq $ast) { return $false }
+    if (@($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FileRedirectionAst] }, $true)).Count -gt 0) { return $false }
+    foreach ($m in (Get-CmdMethods $ast)) { if ($ReadMethods -notcontains $m) { return $false } }
+    foreach ($c in (Get-CmdCalls $ast)) {
+        $n = $c.Name
+        $a = ' ' + ($c.Args -join ' ') + ' '
+        if (-not $n) { return $false }   # & $something: can't tell what it runs
+        if ($n -like 'get-credential') { return $false }
+        if ($n -eq 'ipconfig' -and $a -match ' /(release|renew|flushdns|registerdns|setclassid)') { return $false }
+        if ($n -eq 'route' -and $a -notmatch '^\s*print\s') { return $false }
+        if ($n -eq 'arp' -and $a -match ' -(d|s) ') { return $false }
+        if ($n -eq 'w32tm' -and $a -match ' /(resync|config|register|unregister)') { return $false }
+        if ($n -eq 'powercfg' -and $a -notmatch ' /(l|list|q|query|a|availablesleepstates|batteryreport|getactivescheme|requests)( |$)') { return $false }
+        if ($n -eq 'manage-bde' -and $a -notmatch ' -status ') { return $false }
+        if ($c.Raw -eq 'sc') { return $false }  # sc is Set-Content in PowerShell
+        if ($c.Raw -eq 'sc.exe') { if ($a -match '^\s*(query|queryex|qc|qdescription)\s') { continue }; return $false }
+        if ($n -match $ReadVerbs -or $ReadNames -contains $n) { continue }
+        return $false
+    }
+    return $true
+}
+
+# FULL mode still asks Yes/No for these: anything that deletes, kills, uninstalls,
+# changes accounts, security, registry, boot or services, or that we can't read.
+function Test-Destructive([string]$cmd) {
+    $ast = Get-CmdAst $cmd
+    if ($null -eq $ast) { return $true }
+    foreach ($m in (Get-CmdMethods $ast)) { if ($m -match '^(delete|kill|remove|format|uninstall|terminate|clear|stop|shutdown|reboot|setacl)') { return $true } }
+    foreach ($c in (Get-CmdCalls $ast)) {
+        $n = $c.Name
+        $a = ' ' + ($c.Args -join ' ') + ' '
+        if (-not $n) { return $true }
+        if ($n -eq 'clear-host' -or $n -eq 'cls') { continue }
+        if ($n -match '^(remove|uninstall|disable|clear|reset|stop|unregister|dismount|suspend|revoke|block|restart|initialize|repair|format-volume|set-mppreference|add-mppreference|set-executionpolicy|set-acl|set-service|set-localuser|new-localuser|add-localgroupmember|set-itemproperty|new-itemproperty|rename-computer|add-computer|set-netfirewall|set-bitlocker|enable-bitlocker|invoke-expression|invoke-command|invoke-wmimethod|invoke-cimmethod|set-date|set-tpm|set-processmitigation)') { return $true }
+        if (@('rm', 'del', 'erase', 'rd', 'rmdir', 'ri', 'rp', 'rv', 'kill', 'spps', 'spsv', 'iex', 'icm', 'sc', 'format', 'diskpart', 'taskkill', 'shutdown',
+                'bcdedit', 'takeown', 'icacls', 'cacls', 'cipher', 'vssadmin', 'wbadmin', 'fsutil', 'mountvol', 'bootrec', 'reagentc', 'cmd', 'powershell',
+                'pwsh', 'wmic', 'logoff', 'bcdboot', 'diskmgmt', 'sdelete', 'clear-recyclebin', 'net1') -contains $n) { return $true }
+        if ($n -eq 'manage-bde' -and $a -notmatch ' -status ') { return $true }
+        if ($n -eq 'reg' -and $a -match ' (delete|add|import|restore|load|unload|copy) ') { return $true }
+        if ($n -eq 'net' -and $a -match ' (user|localgroup|group|stop|share|accounts|use) ') { return $true }
+        if ($n -eq 'netsh' -and $a -match ' (set|delete|add|reset|del) ') { return $true }
+        if ($c.Raw -eq 'sc.exe' -and $a -match ' (delete|stop|config|create|failure|sdset|pause) ') { return $true }
+        if ($n -eq 'msiexec' -and $a -match ' /(x|uninstall)') { return $true }
+        if (@('winget', 'choco', 'scoop') -contains $n -and $a -match ' (uninstall|remove|rm) ') { return $true }
+        if ($n -eq 'schtasks' -and $a -match ' /(delete|change|create)') { return $true }
+        if ($n -eq 'wevtutil' -and $a -match ' (cl|clear-log|um|sl) ') { return $true }
+        if ($n -eq 'robocopy' -and $a -match ' /(mir|purge|move|mov)') { return $true }
+        if ($n -eq 'dism' -and $a -match ' /(remove|disable|cleanup-image|set)') { return $true }
+        if ($n -eq 'ipconfig' -and $a -match ' /release') { return $true }
+    }
+    return $false
+}
+
+function Start-PetCommand($id, [string]$cmd, [bool]$agent = $false) {
+    $mode = Get-Mode
+    $who = $(if ($agent) { 'Alice' } else { 'The PET' })
+    if ($mode -eq 'Read' -and -not (Test-ReadOnly $cmd)) {
+        Add-Log "$who asked to run (refused, not read-only in Read mode): $cmd"
+        if ($agent) { Add-ChatCmd $cmd 'not run: Read mode only runs read-only commands (pick Ask or Full to allow it)' }
+        Send-Pet ([ordered]@{ t = 'result'; id = $id; ok = $false; out = 'refused: not a read-only command and the PC is in Read mode'; reason = 'read-only' })
+        if (-not $agent) { Show-Ask 'full' }
         return
     }
-    if ($S.Confirm) {
+    $danger = ($mode -ne 'Read') -and (Test-Destructive $cmd)
+    if ($agent) { Add-ChatCmd $cmd $(if ($danger) { 'destructive: waiting for your Yes/No' } elseif ($mode -eq 'Ask') { 'waiting for your Yes/No' } else { '' }) }
+    if ($mode -eq 'Ask' -or $danger) {
         $S.Busy = $true
+        $runsAs = "$env:USERNAME$(if ($S.Admin) { ' (admin)' })"
+        $warn = $(if ($danger) { "This looks DESTRUCTIVE (it can delete, stop, uninstall or change settings).`r`n`r`n" } else { '' })
         $answer = [System.Windows.Forms.MessageBox]::Show($form,
-            "The PET wants to run this as $env:USERNAME$(if ($S.Admin) { ' (admin)' }):`r`n`r`n$cmd`r`n`r`nRun it?",
-            'Jack In: run a command?', 'YesNo', 'Question', 'Button2')
+            "$warn$who wants to run this (runs as Windows user $runsAs):`r`n`r`n$cmd`r`n`r`nRun it?",
+            'Jack In: run a command?', 'YesNo', $(if ($danger) { 'Warning' } else { 'Question' }), 'Button2')
         $S.Busy = $false
         if ($answer -ne 'Yes') {
             Add-Log "you declined: $cmd"
-            Send-Pet ([ordered]@{ t = 'result'; id = $id; ok = $false; out = 'declined on the PC' })
+            if ($agent) { Add-ChatResult $false 'you said No' }
+            Send-Pet ([ordered]@{ t = 'result'; id = $id; ok = $false; out = 'declined on the PC'; reason = 'declined' })
             return
         }
     }
-    Add-Log "PET > $cmd"
+    Add-Log "$(if ($agent) { 'Alice' } else { 'PET' }) > $cmd   ($mode)"
     $ps = [PowerShell]::Create()
     [void]$ps.AddScript($cmd).AddCommand('Out-String').AddParameter('Width', 120)
-    $S.Jobs += @{ Id = $id; Ps = $ps; Handle = $ps.BeginInvoke(); Started = Get-Date; Cmd = $cmd }
+    $S.Jobs += @{ Id = $id; Ps = $ps; Handle = $ps.BeginInvoke(); Started = Get-Date; Cmd = $cmd; Agent = $agent }
 }
 
 function Step-Jobs {
@@ -1015,6 +1243,7 @@ function Step-Jobs {
         $job.Ps.Dispose()
         if ($out.Length -gt 4000) { $out = $out.Substring(0, 4000) + '...' }
         Add-Log ($(if ($ok) { '  ok' } else { '  failed' }) + $(if ($out) { ': ' + ($out -split "`n")[0] } else { '' }))
+        if ($job.Agent) { Add-ChatResult $ok $out }
         Send-Pet ([ordered]@{ t = 'result'; id = $job.Id; ok = $ok; out = $out })
     }
     $S.Jobs = $left
@@ -1173,7 +1402,7 @@ function Get-Player {
     try {
         $ax = New-Object JackInWmp
         ([System.ComponentModel.ISupportInitialize]$ax).BeginInit()
-        $ax.SetBounds(0, 28, 826, 438)
+        [JackInUi]::B($ax, 0, 28, 826, 438)
         $playPanel.Controls.Add($ax)
         ([System.ComponentModel.ISupportInitialize]$ax).EndInit()
         $Play.Ax = $ax
@@ -1338,6 +1567,7 @@ function Jack-Out([string]$why) {
     $S.Closing = $true
     Stop-Mic $false
     Stop-Play
+    if ($S.Agent) { Send-Pet ([ordered]@{ t = 'abort' }) }
     Send-Pet ([ordered]@{ t = 'bye'; why = $why })
     $S.Full = $false
     Stop-Jobs
@@ -1367,7 +1597,15 @@ function On-Line([string]$line) {
             if ($what -eq 'net' -and $S.Net) { Stop-Sharing; Add-Log 'PET stopped sharing'; Send-State }
             Update-Ui
         }
-        'run' { Start-PetCommand (Get-Field $msg 'id') ([string](Get-Field $msg 'cmd')) }
+        'run' { Start-PetCommand (Get-Field $msg 'id') ([string](Get-Field $msg 'cmd')) ([bool](Get-Field $msg 'agent')) }
+        'pet' {
+            $op = [string](Get-Field $msg 'operator')
+            if ($op) { $S.Operator = $op; Update-Ui }
+        }
+        'agent_stop' {
+            $S.Agent = $false
+            Add-Log "Alice's command loop stopped ($([string](Get-Field $msg 'why')))"
+        }
         'scan' { Invoke-Scan }
         'net_open' { Open-Tunnel (Get-Field $msg 'id') ([string](Get-Field $msg 'host')) ([int](Get-Field $msg 'port')) }
         'jackout' { Add-Log 'PET pressed JACK OUT'; Jack-Out 'PET' }
@@ -1381,9 +1619,11 @@ function On-Line([string]$line) {
             $text = [string](Get-Field $msg 'text')
             $cmd = [string](Get-Field $msg 'cmd')
             if ($heard) { Add-Chat 'you' $heard }
-            Add-Chat 'Alice' $text
-            if (Get-Field $msg 'ok') { Speak-Alice $text }
-            if ($cmd) { Add-Log "Alice suggests: $cmd   (press Enter on the PET to run it; needs Ask or Full)" }
+            if ($text -or -not $cmd) { Add-Chat 'Alice' $text }
+            if ((Get-Field $msg 'ok') -and $text) { Speak-Alice $text }
+            # Her command (if any) arrives next as a 'run' with agent=true; the mode decides.
+            $S.Agent = [bool]$cmd
+            if ($cmd) { Add-Log "Alice step $([string](Get-Field $msg 'step')): $cmd" }
         }
     }
 }
@@ -1409,7 +1649,7 @@ function Step-Link {
         $S.Linked = $true
         $os = (Get-CimInstance Win32_OperatingSystem).Caption -replace '^Microsoft ', ''
         Send-Pet ([ordered]@{ t = 'hello'; host = $env:COMPUTERNAME; os = $os; user = $env:USERNAME
-                admin = $S.Admin; full = $S.Full; input = [bool]$S.Full; app = $AppVersion })
+                admin = $S.Admin; full = $S.Full; input = [bool]$S.Full; mode = (Get-Mode).ToLower(); app = $AppVersion })
         Add-Log "linked to the PET at $Pet ($(if ($S.Full) { 'full access' } else { 'read-only' }))"
         Update-Ui
         Invoke-Scan
@@ -1492,6 +1732,11 @@ $chatBox.Add_KeyDown({
     if ($e.KeyCode -eq 'Return') { $e.Handled = $true; $e.SuppressKeyPress = $true; Send-Chat }
 })
 $btnHome.Add_Click({ Go-Home })
+$btnShowLog.Add_Click({
+    $S.ShowLog = -not $S.ShowLog
+    Set-View $S.View
+    if ($S.ShowLog) { $logBox.ScrollToCaret() } else { $chatLog.ScrollToCaret() }
+})
 $btnMic.Add_MouseDown({ Start-Mic })
 $btnMic.Add_MouseUp({ Stop-Mic })
 # Hold F9 anywhere in the window to talk (key repeat is ignored while recording).
@@ -1517,7 +1762,7 @@ $form.Add_KeyUp({ param($sender, $e) if ($e.KeyCode -eq 'F9') { $e.Handled = $tr
 $btnVoice.Add_Click({
     $S.Speak = -not $S.Speak
     if (-not $S.Speak -and $script:Voice) { $script:Voice.SpeakAsyncCancelAll() }
-    $btnVoice.Text = $(if ($S.Speak) { 'SPK' } else { 'OFF' })
+    $btnVoice.Invalidate()
     $btnVoice.BackColor = $(if ($S.Speak) { RGB 0x40 0x80 0xd0 } else { $cIdle })
     $tips.SetToolTip($btnVoice, $(if ($S.Speak) { 'Alice reads answers aloud (click to mute)' } else { 'Alice is muted (click to hear her)' }))
 })

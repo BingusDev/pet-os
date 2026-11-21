@@ -195,6 +195,7 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
             else if (key == "proxy_port") config.jack_proxy_port = std::atoi(value.c_str());
             else if (key == "gadget_up") config.jack_gadget_up = value;
             else if (key == "gadget_down") config.jack_gadget_down = value;
+            else if ((key == "operator" || key == "owner") && !value.empty()) config.jack_operator = value;
         }
     }
     return config;

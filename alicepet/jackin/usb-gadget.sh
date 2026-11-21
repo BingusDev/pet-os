@@ -9,7 +9,8 @@
 #     PC 10.55.0.2 with no gateway and no DNS, so the PC never routes through
 #     the PET. The PC app dials 10.55.0.1:7341.
 #
-#   usb-gadget.sh up      build the gadget and bind it (makes the image if missing)
+#   usb-gadget.sh up      build the gadget and bind it (makes the image if missing
+#                         or older than the app folder)
 #   usb-gadget.sh down    unbind and remove everything this script created
 #   usb-gadget.sh status
 #   usb-gadget.sh image   (re)build the drive image from the app folder
@@ -100,7 +101,10 @@ up() {
     local udc
     udc=$(udc_name)
     [ -n "$udc" ] || die "no USB device controller (add dtoverlay=dwc2,dr_mode=peripheral to config.txt and reboot)"
-    [ -f "$IMAGE" ] || make_image
+    # A new package puts a newer app in $APP_DIR: rebuild the drive so the PC gets it.
+    if [ ! -f "$IMAGE" ] || [ -n "$(find "$APP_DIR" -newer "$IMAGE" -print -quit 2>/dev/null)" ]; then
+        make_image
+    fi
     modprobe libcomposite 2>/dev/null || true
     mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config
 

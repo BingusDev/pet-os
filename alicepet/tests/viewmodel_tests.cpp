@@ -761,6 +761,9 @@ void test_jack_session() {
     CHECK(jack.view() == JackInChip::View::Waiting);
     jack.on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk"})");
     CHECK(jack.connected() && jack.view() == JackInChip::View::Session);
+    // The PET names its operator (never the Windows user) right after hello.
+    CHECK(!jack.sent.empty() && jack.sent[0] == R"({"t":"pet","operator":"HK"})");
+    jack.sent.clear();
     CHECK(!jack.full() && !jack.admin());
     CHECK(jack.keep_awake());
     jack.on_line(R"({"t":"scan","cpu":78,"ram":91,"disk":"C:","disk_free":8,"startup":14,"defender":"off"})");
@@ -800,14 +803,28 @@ void test_jack_session() {
     jack.on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk"})");
     jack.on_line(R"({"t":"chat","text":"why is this PC slow?"})");
     CHECK(jack.chat_waiting());
-    CHECK(jack.log().back().text == "PC: why is this PC slow?");
+    CHECK(jack.log().back().text == "HK: why is this PC slow?");
+    CHECK(jack.agent_running());
     viewmodel::chips::BridgeReply chat;
     chat.ok = true;
     chat.reply = "Memory is nearly full.\nCMD: Stop-Process -Name OneDrive";
     jack.on_chat_reply(chat);
     CHECK(!jack.chat_waiting());
-    CHECK(jack.sent.back() == R"({"t":"alice","ok":true,"text":"Memory is nearly full.","heard":"","cmd":"Stop-Process -Name OneDrive"})");
-    CHECK(jack.suggestion() == "Stop-Process -Name OneDrive");
+    // The loop sends her command to the PC itself (the PC applies its mode) and
+    // feeds the output back to her as the next turn.
+    CHECK(jack.sent.size() >= 2);
+    CHECK(jack.sent[jack.sent.size() - 2] == R"({"t":"alice","ok":true,"text":"Memory is nearly full.","heard":"","cmd":"Stop-Process -Name OneDrive","step":1})");
+    CHECK(jack.sent.back().find(R"("agent":true,"cmd":"Stop-Process -Name OneDrive")") != std::string::npos);
+    CHECK(jack.suggestion().empty() && jack.agent_steps() == 1);
+    const std::string run_line = jack.sent.back();
+    const std::string run_id = run_line.substr(run_line.find("\"id\":") + 5, run_line.find(',', run_line.find("\"id\":")) - run_line.find("\"id\":") - 5);
+    jack.on_line(R"({"t":"result","id":)" + run_id + R"(,"ok":false,"out":"declined on the PC","reason":"declined"})");
+    CHECK(jack.chat_waiting());
+    chat.reply = "OK, leaving it.";
+    jack.on_chat_reply(chat);
+    CHECK(!jack.agent_running() && jack.sent.back().find(R"("cmd":"","step":0)") != std::string::npos);
+    CHECK(JackInChip::output_prompt("full", "Get-Process", true, "", std::string(5000, 'x')).size() <= viewmodel::chips::kBridgeMaxInput);
+    CHECK(JackInChip::chat_prompt("LAPTOP-FRONT", "read", "hi").find("READ") != std::string::npos);
     jack.on_line(R"({"t":"voice","wav":"not base64!"})");
     CHECK(!jack.chat_waiting());
     CHECK(jack.sent.back().find("didn't come through") != std::string::npos);

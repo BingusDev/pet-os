@@ -16,7 +16,8 @@
 #
 # Needs root (configfs, ip, dnsmasq). The app runs it through sudo -n; see
 # alicepet-jackin.sudoers. The port must be able to act as a device: on the
-# CM0 that is `dtoverlay=dwc2,dr_mode=otg` (or peripheral) in config.txt.
+# CardputerZero that is `dtoverlay=dwc2,dr_mode=peripheral` in config.txt (otg
+# stays in host mode there), the cable in USB-C2, and the USB-SW slider on C2.
 # While the gadget is up, the USB-A ports and Ethernet behind the hub are off.
 set -euo pipefail
 
@@ -98,7 +99,7 @@ up() {
     trap undo_failed_up EXIT
     local udc
     udc=$(udc_name)
-    [ -n "$udc" ] || die "no USB device controller (add dtoverlay=dwc2,dr_mode=otg to config.txt and reboot)"
+    [ -n "$udc" ] || die "no USB device controller (add dtoverlay=dwc2,dr_mode=peripheral to config.txt and reboot)"
     [ -f "$IMAGE" ] || make_image
     modprobe libcomposite 2>/dev/null || true
     mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config
@@ -144,17 +145,18 @@ up() {
     echo 1 >functions/mass_storage.0/lun.0/ro  # the PC can't change the app
     echo "$IMAGE" >functions/mass_storage.0/lun.0/file
 
-    mkdir -p configs/c.1/strings/0x409 configs/c.2/strings/0x409
-    echo "RNDIS + drive" >configs/c.1/strings/0x409/configuration
-    echo "ECM + drive" >configs/c.2/strings/0x409/configuration
+    # One configuration only: Windows loads its composite driver (so the
+    # drive shows up next to the network link) only for single-config
+    # devices. Windows binds RNDIS, macOS/Linux bind ECM, both get the drive.
+    mkdir -p configs/c.1/strings/0x409
+    echo "RNDIS + ECM + drive" >configs/c.1/strings/0x409/configuration
     echo 250 >configs/c.1/MaxPower
-    echo 250 >configs/c.2/MaxPower
     ln -s functions/rndis.usb0 configs/c.1/
+    ln -s functions/ecm.usb1 configs/c.1/
     ln -s functions/mass_storage.0 configs/c.1/
-    ln -s functions/ecm.usb1 configs/c.2/
-    ln -s functions/mass_storage.0 configs/c.2/
     ln -s configs/c.1 os_desc/
 
+    echo 1 >/sys/class/leds/ext_usb_gpio_fun/brightness 2>/dev/null || true  # USB-C mux -> device
     echo "$udc" >UDC
     cd /
 
@@ -195,8 +197,9 @@ down() {
     [ -d "$G" ] || { say "already down"; return 0; }
     cd "$G"
     echo "" >UDC 2>/dev/null || true
+    echo 0 >/sys/class/leds/ext_usb_gpio_fun/brightness 2>/dev/null || true  # USB-C mux -> hub
     rm -f os_desc/c.1
-    rm -f configs/c.1/rndis.usb0 configs/c.1/mass_storage.0 configs/c.2/ecm.usb1 configs/c.2/mass_storage.0
+    rm -f configs/c.1/rndis.usb0 configs/c.1/ecm.usb1 configs/c.1/mass_storage.0 configs/c.2/ecm.usb1 configs/c.2/mass_storage.0
     rmdir configs/c.1/strings/0x409 configs/c.2/strings/0x409 2>/dev/null || true
     rmdir configs/c.1 configs/c.2 2>/dev/null || true
     rmdir functions/rndis.usb0 functions/ecm.usb1 functions/mass_storage.0 2>/dev/null || true

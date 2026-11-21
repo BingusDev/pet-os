@@ -10,7 +10,8 @@
 #   3. installs the JACK IN sudo rule (only usb-gadget.sh up|down|status, as root)
 #   4. builds the JACK IN drive image (/var/lib/alicepet/jackin.img)
 #   5. starts /etc/alicepet.local.conf for your bridge URL and token (you type them)
-#   6. with --usb-otg: adds dtoverlay=dwc2,dr_mode=otg so JACK IN can work (reboot after)
+#   6. with --usb-otg: adds dtoverlay=dwc2,dr_mode=peripheral so JACK IN can work (reboot after;
+#      USB-A and Ethernet stop working, since they need host mode)
 #   7. speaker at 16-bit 48 kHz (WirePlumber rule) and the fn volume keys (volkeys.service)
 # Then run bin/device-day.sh for the checks.
 #
@@ -128,8 +129,11 @@ if [[ -z "$CONFIG" ]]; then
     note "no config.txt found"
 else
     # Only a dwc2 line that applies to every board ([all], or before any [section])
-    # and leaves the port able to act as a device counts. Stock images carry
-    # `dtoverlay=dwc2,dr_mode=host` under [cm4]/[cm5], which is neither.
+    # and forces device mode counts. On the CardputerZero the CM0's USB runs
+    # through the board's USB-SW switch, so the controller never sees an ID pin
+    # change: plain `dtoverlay=dwc2` and `dr_mode=otg` both stay in host mode and
+    # JACK IN never attaches. The stock image's plain line under [all] is
+    # therefore not enough, and `dr_mode=host` under [cm4]/[cm5] doesn't count.
     DWC2_LINES="$(awk '
         /^[[:space:]]*\[/ { sec = $0; gsub(/[[:space:]]/, "", sec); next }
         /^[[:space:]]*dtoverlay=dwc2([,[:space:]]|$)/ {
@@ -142,8 +146,8 @@ else
     HOST_LINE=""
     case "$LAST_LINE" in
     "") ;;
-    *dr_mode=host*) HOST_LINE="$LAST_LINE" ;;
-    *) DEVICE_LINE="$LAST_LINE" ;;
+    *dr_mode=peripheral*) DEVICE_LINE="$LAST_LINE" ;;
+    *) HOST_LINE="$LAST_LINE" ;;
     esac
     OTHER_LINES="$(awk -F'\t' '$1 != "all" && $1 != "" { print $2 " (under " $1 ")" }' <<<"$DWC2_LINES")"
     if [[ -n "$DEVICE_LINE" ]]; then
@@ -151,13 +155,14 @@ else
     elif (( USB_OTG )); then
         [[ -f "$CONFIG.alicepet-bak" ]] || cp "$CONFIG" "$CONFIG.alicepet-bak"  # keep the first, untouched copy
         # [all] first, so the line applies whatever section the file ends in.
-        printf '\n# AlicePET JACK IN: USB-C can act as a device (added by pet-setup.sh)\n[all]\ndtoverlay=dwc2,dr_mode=otg\n' >>"$CONFIG"
-        done_ "added [all] dtoverlay=dwc2,dr_mode=otg to $CONFIG (backup: $CONFIG.alicepet-bak). Reboot to apply."
+        printf '\n# AlicePET JACK IN: USB-C2 acts as a device (added by pet-setup.sh)\n[all]\ndtoverlay=dwc2,dr_mode=peripheral\n' >>"$CONFIG"
+        done_ "added [all] dtoverlay=dwc2,dr_mode=peripheral to $CONFIG (backup: $CONFIG.alicepet-bak). Reboot to apply."
         [[ -z "$HOST_LINE" ]] || note "the new line follows '$HOST_LINE'; if JACK IN finds no USB device controller after the reboot, comment that older line out"
-        note "if USB-A or Ethernet stop working after the reboot, restore the backup"
+        note "USB-A, USB-C1 and Ethernet are host-only and stop working; restore the backup to get them back"
+        note "to JACK IN: cable in USB-C2 (not C1 beside USB-A) and the USB-SW slider set to C2"
     else
-        note "not changed. JACK IN needs dtoverlay=dwc2,dr_mode=otg under [all]; rerun with --usb-otg to add it (config.txt is backed up first)"
-        [[ -z "$HOST_LINE" ]] || note "found for every board, host mode only: $HOST_LINE"
+        note "not changed. JACK IN needs dtoverlay=dwc2,dr_mode=peripheral under [all]; rerun with --usb-otg to add it (config.txt is backed up first)"
+        [[ -z "$HOST_LINE" ]] || note "found for every board, not device-only: $HOST_LINE"
     fi
     if [[ -n "$OTHER_LINES" ]]; then
         while IFS= read -r l; do note "ignored, other boards only: $l"; done <<<"$OTHER_LINES"

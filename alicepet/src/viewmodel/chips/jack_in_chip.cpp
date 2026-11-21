@@ -264,6 +264,18 @@ void JackInChip::on_line(const std::string& line) {
         if (input_ok_ && key_from_name(msg["k"].str(), key) && inputs_.size() < 256) {
             inputs_.push_back({false, key, ""});
         }
+    } else if (t == "pointer") {
+        const std::string b = msg["b"].str();
+        if (input_ok_ && (b == "down" || b == "up") && inputs_.size() < 256) {
+            Input in;
+            in.pointer = true;
+            in.down = b == "down";
+            // A release outside the mirror picture arrives as -1/-1: release only.
+            const long long x = msg["x"].integer(-1), y = msg["y"].integer(-1);
+            in.x = x < 0 || y < 0 ? -1 : static_cast<int>(std::min<long long>(x, 319));
+            in.y = x < 0 || y < 0 ? -1 : static_cast<int>(std::min<long long>(y, 169));
+            inputs_.push_back(in);
+        }
     } else if (t == "char") {
         const std::string c = msg["c"].str();
         if (input_ok_ && !c.empty() && c.size() <= 4 && inputs_.size() < 256) {

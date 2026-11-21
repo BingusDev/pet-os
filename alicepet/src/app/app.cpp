@@ -31,6 +31,7 @@
 #include "view/chips/terminal_view.h"
 #include "viewmodel/chips/jellyfin_chip.h"
 #include "view/chips/voice_view.h"
+#include "view/widgets.h"
 #include "viewmodel/chips/terminal_chip.h"
 #include "viewmodel/chips/voice_chip.h"
 
@@ -215,6 +216,46 @@ std::vector<viewmodel::HostRow> host_rows(const model::PetConfig& config) {
 volatile std::sig_atomic_t g_stop_requested = 0;
 void on_stop_signal(int) { g_stop_requested = 1; }
 
+// The PC mouse (Jack In mirror clicks). An LVGL pointer indev carries the
+// latest state so any clickable LVGL widget reacts; the chips' lists are drawn
+// from view-model state, so a release over a tap_target() row also moves the
+// selection there and presses Enter.
+struct PcPointer {
+    lv_indev_t* indev{nullptr};
+    int x{0};
+    int y{0};
+    bool pressed{false};
+};
+PcPointer g_pc_pointer;
+
+void pc_pointer_read(lv_indev_t*, lv_indev_data_t* data) {
+    data->point.x = g_pc_pointer.x;
+    data->point.y = g_pc_pointer.y;
+    data->state = g_pc_pointer.pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+}
+
+void pc_pointer_event(viewmodel::AliceViewModel& vm, const viewmodel::chips::JackInChip::Input& input) {
+    if (!g_pc_pointer.indev) {
+        g_pc_pointer.indev = lv_indev_create();
+        lv_indev_set_type(g_pc_pointer.indev, LV_INDEV_TYPE_POINTER);
+        lv_indev_set_read_cb(g_pc_pointer.indev, pc_pointer_read);
+    }
+    if (input.x >= 0 && input.y >= 0) {
+        g_pc_pointer.x = input.x;
+        g_pc_pointer.y = input.y;
+    }
+    g_pc_pointer.pressed = input.down;
+    if (input.down || input.x < 0 || input.y < 0) return;
+    int steps = 0;
+    bool horizontal = false;
+    lv_obj_update_layout(lv_screen_active());
+    if (!view::find_tap_target(lv_screen_active(), input.x, input.y, steps, horizontal)) return;
+    const viewmodel::Key forward = horizontal ? viewmodel::Key::Right : viewmodel::Key::Down;
+    const viewmodel::Key back = horizontal ? viewmodel::Key::Left : viewmodel::Key::Up;
+    for (int i = 0; i < std::abs(steps) && i < 64; ++i) vm.handle_key(steps > 0 ? forward : back);
+    vm.handle_key(viewmodel::Key::Enter);
+}
+
 // PC requests from the Jack In link, applied on the UI thread: open one of the
 // PC-capable chips (keeping the link up), then forward keys and characters to it.
 void drain_pc_requests(viewmodel::AliceViewModel& vm) {
@@ -232,7 +273,9 @@ void drain_pc_requests(viewmodel::AliceViewModel& vm) {
     while (jack->take_input(input)) {
         const auto* active = vm.active_chip();
         if (!active || !viewmodel::chips::JackInChip::pc_capable(active->id())) continue;
-        if (input.text) {
+        if (input.pointer) {
+            pc_pointer_event(vm, input);
+        } else if (input.text) {
             vm.handle_char(input.utf8);
         } else {
             vm.handle_key(input.key);

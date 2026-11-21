@@ -136,6 +136,7 @@ void RetroView::render_library(const RetroChip& retro) {
         lv_obj_t* selected = nullptr;
         for (size_t i = first; i < games.size() && i < first + 4; ++i) {
             const int px = kLeft + static_cast<int>(i - first) * 76;
+            tap_target(body_, px, 24, 70, 86, static_cast<int>(i) - static_cast<int>(sel), true);
             lv_obj_t* p = poster(*games[i], px, 24, 70, 86, i == sel);
             if (i == sel) selected = p;
         }

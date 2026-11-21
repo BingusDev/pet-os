@@ -123,6 +123,10 @@ public:
         bool text{false};   // false: key, true: utf8
         Key key{Key::Enter};
         std::string utf8;
+        bool pointer{false};  // a mouse button event at (x, y) in PET pixels
+        bool down{false};
+        int x{0};
+        int y{0};
     };
     bool take_input(Input& input);
     // True when a frame should be captured now (about 10 fps while the PC is mirroring).

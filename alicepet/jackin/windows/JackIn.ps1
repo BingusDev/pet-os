@@ -34,7 +34,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-$AppVersion = '0.5'
+$AppVersion = '0.6'
 $Here = Split-Path -Parent $PSCommandPath
 
 # Draws each PET frame: run-length RGB565 (count, hi, lo) to ARGB pixels.
@@ -774,6 +774,67 @@ function Map-Key($code) {
         default { return '' }
     }
 }
+
+# A mouse point in the mirror panel -> PET pixels, through the same integer
+# scale and letterbox as the paint handler; $null outside the picture.
+function Map-MirrorPoint([int]$px, [int]$py) {
+    if (-not $script:FrameBmp -or $script:FrameW -le 0 -or $script:FrameH -le 0) { return $null }
+    $cw = $mirror.ClientSize.Width
+    $ch = $mirror.ClientSize.Height
+    $sc = [Math]::Max(1, [Math]::Floor([Math]::Min($cw / $script:FrameW, $ch / $script:FrameH)))
+    $ox = [int](($cw - $script:FrameW * $sc) / 2)
+    $oy = [int](($ch - $script:FrameH * $sc) / 2)
+    $fx = [int][Math]::Floor(($px - $ox) / $sc)
+    $fy = [int][Math]::Floor(($py - $oy) / $sc)
+    if ($fx -lt 0 -or $fy -lt 0 -or $fx -ge $script:FrameW -or $fy -ge $script:FrameH) { return $null }
+    return @($fx, $fy)
+}
+
+# Mouse in the mirror: left button = PET pointer, wheel = Up/Down (one per notch),
+# right button = Back (Escape). Same access rule as keys (Ask or Full only).
+$script:MouseDown = $false
+$mirror.Add_MouseDown({
+    param($ctl, $e)
+    $mirror.Focus() | Out-Null
+    if (-not (Input-Allowed)) { return }
+    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
+        $pt = Map-MirrorPoint $e.X $e.Y
+        if ($null -eq $pt) { return }
+        $script:MouseDown = $true
+        Send-Pet ([ordered]@{ t = 'pointer'; x = $pt[0]; y = $pt[1]; b = 'down' })
+    } elseif ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right) {
+        Send-Pet ([ordered]@{ t = 'key'; k = 'Escape' })
+    }
+})
+$mirror.Add_MouseUp({
+    param($ctl, $e)
+    if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Left -or -not $script:MouseDown) { return }
+    $script:MouseDown = $false
+    if (-not (Input-Allowed)) { return }
+    $pt = Map-MirrorPoint $e.X $e.Y
+    if ($null -eq $pt) {
+        # Released outside the picture: still release (x/y -1), so the PET never
+        # keeps a stuck press, but nothing is activated.
+        Send-Pet ([ordered]@{ t = 'pointer'; x = -1; y = -1; b = 'up' })
+        return
+    }
+    Send-Pet ([ordered]@{ t = 'pointer'; x = $pt[0]; y = $pt[1]; b = 'up' })
+})
+$script:WheelAcc = 0
+$mirror.Add_MouseWheel({
+    param($ctl, $e)
+    if (-not (Input-Allowed)) { return }
+    $script:WheelAcc += $e.Delta
+    while ([Math]::Abs($script:WheelAcc) -ge 120) {
+        if ($script:WheelAcc -gt 0) {
+            Send-Pet ([ordered]@{ t = 'key'; k = 'Up' })
+            $script:WheelAcc -= 120
+        } else {
+            Send-Pet ([ordered]@{ t = 'key'; k = 'Down' })
+            $script:WheelAcc += 120
+        }
+    }
+})
 
 # Arrows and Tab reach the PET too, not the focus change.
 $mirror.Add_Click({ $mirror.Focus() | Out-Null })

@@ -316,6 +316,19 @@ void JackInChip::on_line(const std::string& line) {
         }
     } else if (t == "abort") {
         if (agent_running_) agent_stop("stopped on the PC");
+    } else if (t == "agent_more") {
+        // The PC's answer to "Keep going?": Yes allows as many steps again.
+        if (agent_running_ && !agent_held_.empty()) {
+            const std::string held = std::move(agent_held_);
+            agent_held_.clear();
+            if (msg["yes"].boolean(false)) {
+                agent_limit_ += agent_cap(mode_);
+                note("Keep going: yes");
+                agent_run(held);
+            } else {
+                agent_stop("Holden said stop after " + std::to_string(agent_steps_) + " commands");
+            }
+        }
         const std::string id = msg["chip"].str();
         if (pc_capable(id)) {
             opening_.push_back(id);
@@ -385,6 +398,8 @@ void JackInChip::on_line(const std::string& line) {
                 agent_running_ = true;
                 agent_steps_ = 0;
                 agent_id_ = 0;
+                agent_limit_ = agent_cap(mode_);
+                agent_held_.clear();
                 ask_chat(chat_prompt(host_, mode_, text));
             }
         } else {
@@ -394,6 +409,8 @@ void JackInChip::on_line(const std::string& line) {
                 agent_running_ = true;
                 agent_steps_ = 0;
                 agent_id_ = 0;
+                agent_limit_ = agent_cap(mode_);
+                agent_held_.clear();
                 chat_waiting_ = true;
                 alice_waiting_ = true;
                 chat_.run([config = config_, wav = std::move(wav)]() { return bridge_voice(config, wav); });
@@ -434,6 +451,7 @@ void JackInChip::reset_session() {
     agent_steps_ = 0;
     agent_id_ = 0;
     agent_cmd_.clear();
+    agent_held_.clear();
     mode_ = "read";
     input_ok_ = false;
     mirror_on_ = false;
@@ -543,25 +561,21 @@ void JackInChip::on_chat_reply(const BridgeReply& reply) {
     // Her command goes straight to the PC while the loop runs; the PC applies its
     // mode (Read: read-only list, Ask: Yes/No each, Full: Yes/No only if destructive).
     bool run = reply.ok && !command.empty() && agent_running_ && connected_;
-    std::string stopped;
-    if (run && agent_steps_ >= kAgentMaxSteps) {
-        run = false;
-        stopped = "(Stopped after " + std::to_string(kAgentMaxSteps) + " commands. Say 'go on' to continue.)";
-    }
-    std::string text = reply.ok ? words : "Can't reach Alice: " + reply.error;
-    if (!stopped.empty()) text += (text.empty() ? "" : " ") + stopped;
-    if (!command.empty() && !run && reply.ok) suggestion_ = command;
+    // At the cap the command waits and the PC asks Holden "Keep going?" (agent_more).
+    const bool hold = run && agent_steps_ >= agent_limit_;
+    if (hold) run = false;
+    const std::string text = reply.ok ? words : "Can't reach Alice: " + reply.error;
+    if (!command.empty() && !run && !hold && reply.ok) suggestion_ = command;
     send("{\"t\":\"alice\",\"ok\":" + std::string(reply.ok ? "true" : "false") + ",\"text\":\"" +
          json_escape(text) + "\",\"heard\":\"" + json_escape(reply.transcript) + "\",\"cmd\":\"" +
          json_escape(run ? command : "") + "\",\"step\":" + std::to_string(run ? agent_steps_ + 1 : 0) + "}");
     if (run) {
-        ++agent_steps_;
-        agent_id_ = next_id_++;
-        agent_cmd_ = command;
-        send("{\"t\":\"run\",\"id\":" + std::to_string(agent_id_) + ",\"agent\":true,\"cmd\":\"" +
+        agent_run(command);
+    } else if (hold) {
+        agent_held_ = command;
+        note("Alice ran " + std::to_string(agent_steps_) + " commands: asking the PC to keep going");
+        send("{\"t\":\"agent_more\",\"steps\":" + std::to_string(agent_steps_) + ",\"next\":\"" +
              json_escape(command) + "\"}");
-        log_.push_back({LogLine::Kind::Pending, "> " + command, agent_id_});
-        while (log_.size() > kMaxLog) log_.pop_front();
     } else {
         agent_running_ = false;
         agent_id_ = 0;
@@ -575,7 +589,18 @@ void JackInChip::ask_chat(const std::string& prompt) {
     chat_.run([config = config_, prompt = clip_for_bridge(prompt)]() { return bridge_ask(config, prompt); });
 }
 
+void JackInChip::agent_run(const std::string& command) {
+    ++agent_steps_;
+    agent_id_ = next_id_++;
+    agent_cmd_ = command;
+    send("{\"t\":\"run\",\"id\":" + std::to_string(agent_id_) + ",\"agent\":true,\"cmd\":\"" +
+         json_escape(command) + "\"}");
+    log_.push_back({LogLine::Kind::Pending, "> " + command, agent_id_});
+    while (log_.size() > kMaxLog) log_.pop_front();
+}
+
 void JackInChip::agent_stop(const std::string& why) {
+    agent_held_.clear();
     agent_running_ = false;
     agent_id_ = 0;
     note("Alice's command loop stopped (" + why + ")");

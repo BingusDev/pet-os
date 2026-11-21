@@ -823,6 +823,23 @@ void test_jack_session() {
     chat.reply = "OK, leaving it.";
     jack.on_chat_reply(chat);
     CHECK(!jack.agent_running() && jack.sent.back().find(R"("cmd":"","step":0)") != std::string::npos);
+    // FULL: 25 commands, then "Keep going?" on the PC; Yes runs the held one.
+    jack.on_line(R"({"t":"state","full":true,"admin":false,"net":false,"input":true,"mode":"full"})");
+    jack.on_line(R"({"t":"chat","text":"fix it"})");
+    chat.reply = "CMD: Get-Date";
+    for (int i = 0; i < JackInChip::kAgentMaxStepsFull; ++i) {
+        jack.on_chat_reply(chat);
+        const std::string r = jack.sent.back();
+        const size_t at = r.find("\"id\":") + 5;
+        jack.on_line(R"({"t":"result","ok":true,"out":"x","id":)" + r.substr(at, r.find(',', at) - at) + "}");
+    }
+    CHECK(jack.agent_steps() == 25);
+    jack.on_chat_reply(chat);
+    CHECK(jack.agent_holding() && jack.sent.back().rfind(R"({"t":"agent_more","steps":25)", 0) == 0);
+    jack.on_line(R"({"t":"agent_more","yes":true})");
+    CHECK(!jack.agent_holding() && jack.agent_steps() == 26 && jack.sent.back().find(R"("agent":true)") != std::string::npos);
+    jack.on_line(R"({"t":"abort"})");
+    CHECK(!jack.agent_running());
     CHECK(JackInChip::output_prompt("full", "Get-Process", true, "", std::string(5000, 'x')).size() <= viewmodel::chips::kBridgeMaxInput);
     CHECK(JackInChip::chat_prompt("LAPTOP-FRONT", "read", "hi").find("READ") != std::string::npos);
     jack.on_line(R"({"t":"voice","wav":"not base64!"})");

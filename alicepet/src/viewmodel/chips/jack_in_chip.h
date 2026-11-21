@@ -120,7 +120,11 @@ public:
     // to the PC (which decides per mode), their output comes back to her.
     bool agent_running() const { return agent_running_; }
     int agent_steps() const { return agent_steps_; }
+    // Commands per chat message before the PC asks Holden "Keep going?" (Yes: as many again).
     static constexpr int kAgentMaxSteps = 8;
+    static constexpr int kAgentMaxStepsFull = 25;
+    static int agent_cap(const std::string& mode) { return mode == "full" ? kAgentMaxStepsFull : kAgentMaxSteps; }
+    bool agent_holding() const { return !agent_held_.empty(); }
     int relay_active() const { return relay_.active(); }
 
     // One control line from the PC (public for tests and snapshots).
@@ -193,6 +197,7 @@ private:
     void ask_alice();
     void ask_chat(const std::string& prompt);
     void agent_stop(const std::string& why);
+    void agent_run(const std::string& command);
     void jack_out(const std::string& why);
     void reset_session();
     void set_sharing(bool on);
@@ -252,6 +257,8 @@ private:
     int agent_steps_{0};          // commands sent for the current chat message
     int agent_id_{0};             // run id the loop waits on (0 = none)
     std::string agent_cmd_;
+    int agent_limit_{kAgentMaxSteps};  // steps allowed before asking to keep going
+    std::string agent_held_;           // her next command, waiting for "Keep going?"
 
     // net_open requests from relay threads, sent on the UI thread.
     struct Opens {

@@ -30,8 +30,9 @@ can't parse), which still get Yes/No. The app decides; the PET never can.
 
 Alice's command loop: when she answers a `chat`/`voice` with a `CMD:` line, the
 PET sends it as `run` with `agent: true`, and the `result` goes back to her as
-the next turn, until she answers without a command or 8 commands ran for that
-message. Read mode (`state` `mode: "read"`), `abort` or JACK OUT ends it. Every command, from either side, is shown in
+the next turn, until she answers without a command. After 25 commands (Full;
+8 in Read/Ask) for one message the PET holds her next one and sends
+`agent_more`; the PC asks "Keep going?" and answers `agent_more` `yes`. Read mode (`state` `mode: "read"`), `abort` or JACK OUT ends it. Every command, from either side, is shown in
 the app's live log and on the PET. The PC's microphone records only while
 the person holds the app's talk button; the PET can't start it.
 
@@ -50,6 +51,7 @@ the person holds the app's talk button; the PET can't start it.
 | `log` | `text`, `ok` | A command the app ran itself (scan steps) |
 | `result` | `id`, `ok`, `out` (at most ~4 KB), optional `reason` (`"read-only"`: not run in Read mode; `"declined"`: No on the PC) | Result of a PET `run` |
 | `abort` | | Stop Alice's command loop |
+| `agent_more` | `yes` | Answer to the PET's `agent_more`: true runs her held command and allows as many again |
 | `net_fail` | `id` | The PC could not reach the host of `net_open` `id` |
 | `chat` | `text` | Typed to Alice in the app; the PET asks the bridge |
 | `voice` | `wav` (base64, 16 kHz mono 16-bit WAV, at most 15 s) | Spoken to Alice; the PET sends it to the bridge's voice route |
@@ -64,6 +66,7 @@ the person holds the app's talk button; the PET can't start it.
 | `drop` | `what`: `full` / `net` | Turn that off (taking access away needs no click) |
 | `run` | `id`, `cmd`, optional `agent` (true: from Alice's loop, shown in the chat) | Run one PowerShell command, as the access mode allows (above) |
 | `pet` | `operator` | Sent after `hello`: who runs the PET (`[jackin] operator=`, default `Holden`). The app shows it as OPERATOR and on chat lines, never the Windows user |
+| `agent_more` | `steps`, `next` | Alice hit the step cap; ask Holden "Keep going?" and reply `agent_more` |
 | `agent_stop` | `why` | Alice's command loop ended early |
 | `scan` | | Scan again |
 | `net_open` | `id`, `host`, `port` | Sharing: dial `host:port`, then dial PET:7342 and send `tunnel <id>\n`; then pipe bytes both ways |

@@ -18,7 +18,8 @@
 #  - Chat with Alice: type (Enter sends), or hold MIC (or F9) to talk; her answers can be read aloud.
 #    Alice can run PowerShell here to answer you: each command she sends goes through the access
 #    mode (READ: read-only commands only; ASK: Yes/No for each; FULL: Yes/No only for destructive
-#    ones) and its output goes back to her automatically, up to 8 commands per message.
+#    ones) and its output goes back to her automatically; after 25 commands (8 in Read/Ask)
+#    for one message you are asked whether she keeps going.
 #  - Jellyfin video and Retro games picked on the PET's chip play HERE: video in a
 #    NOW PLAYING player in the chip area (Windows Media Player; Esc or STOP comes
 #    back to the chip), games in your browser (RomM's web player). Both come
@@ -1602,6 +1603,20 @@ function On-Line([string]$line) {
             $op = [string](Get-Field $msg 'operator')
             if ($op) { $S.Operator = $op; Update-Ui }
         }
+        'agent_more' {
+            # Alice hit her step cap (25 in Full, 8 otherwise): Holden decides.
+            $steps = [string](Get-Field $msg 'steps')
+            $next = [string](Get-Field $msg 'next')
+            $S.Busy = $true
+            $answer = [System.Windows.Forms.MessageBox]::Show($form,
+                "Alice has run $steps commands for this message.`r`n`r`nNext she wants:`r`n$next`r`n`r`nKeep going?",
+                'Jack In: keep going?', 'YesNo', 'Question', 'Button1')
+            $S.Busy = $false
+            $yes = ($answer -eq 'Yes')
+            Add-Log $(if ($yes) { "you let Alice keep going after $steps commands" } else { "you stopped Alice after $steps commands" })
+            if (-not $yes) { $S.Agent = $false; Add-ChatResult $false "stopped after $steps commands" }
+            Send-Pet ([ordered]@{ t = 'agent_more'; yes = $yes })
+        }
         'agent_stop' {
             $S.Agent = $false
             Add-Log "Alice's command loop stopped ($([string](Get-Field $msg 'why')))"
@@ -1768,6 +1783,8 @@ $btnVoice.Add_Click({
 })
 
 $btnOut.Add_Click({ Add-Log 'you pressed JACK OUT'; Jack-Out 'PC' })
+# JackIn.cmd waits for this file: it means the window really came up.
+$form.Add_Shown({ try { Set-Content -LiteralPath (Join-Path $env:TEMP 'JackIn-ready.txt') -Value $PID -ErrorAction Stop } catch { } })
 $form.Add_FormClosing({ if (-not $S.Closing) { Jack-Out 'window closed' } })
 
 # --- run -------------------------------------------------------------------------

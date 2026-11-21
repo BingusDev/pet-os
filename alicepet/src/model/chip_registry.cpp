@@ -155,12 +155,12 @@ constexpr const char* kTerminalRows[16] = {
     "................"};
 
 constexpr ChipInfo kChips[kChipCount] = {
-    {"jellyfin", "JELLYFIN", "001", "music", 0x7d4fd6, 0x432391, 0xff9ad1, 0xb0247a,
-     {kJellyfinRows, kJellyfinPal, sizeof(kJellyfinPal) / sizeof(kJellyfinPal[0])},
-     {"wifi", "audio", "cores:4"}},
-    {"jack-in", "JACK IN", "002", "elec", 0x2b2b33, 0x111116, 0xffe37a, 0xe0a21a,
+    {"jack-in", "JACK IN", "001", "elec", 0x2b2b33, 0x111116, 0xffe37a, 0xe0a21a,
      {kJackInRows, kJackInPal, sizeof(kJackInPal) / sizeof(kJackInPal[0])},
      {"usb_hub", "wifi", nullptr}},
+    {"jellyfin", "JELLYFIN", "002", "music", 0x7d4fd6, 0x432391, 0xff9ad1, 0xb0247a,
+     {kJellyfinRows, kJellyfinPal, sizeof(kJellyfinPal) / sizeof(kJellyfinPal[0])},
+     {"wifi", "audio", "cores:4"}},
     {"remote", "REMOTE", "003", "target", 0xc0353f, 0x7a1720, 0x8fd8ff, 0x2a74d0,
      {kRemoteRows, kRemotePal, sizeof(kRemotePal) / sizeof(kRemotePal[0])},
      {"ir", "wifi", nullptr}},

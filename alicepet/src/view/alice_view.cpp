@@ -32,8 +32,8 @@ struct SlotCopy {
     const char* ready;  // placeholder status line (shown in green with a check)
 };
 constexpr SlotCopy kSlotCopy[model::kChipCount] = {
-    {"Stream your Jellyfin library to the PET", "Server: JELLYFIN", "library synced"},
     {"Plug PET into a PC, open the app", "Linked: LAPTOP-FRONT", "read-only scan ready"},
+    {"Stream your Jellyfin library to the PET", "Server: JELLYFIN", "library synced"},
     {"Learn + replay IR remotes", "Remotes: 3 learned", "IR blaster ready"},
     {"Test a jack: link, DHCP, DNS, ping", "Link: 1000 Mb/s full", "DHCP lease OK"},
     {"Push-to-talk with Alice", "Mic: hold [SPACE]", "push-to-talk only"},

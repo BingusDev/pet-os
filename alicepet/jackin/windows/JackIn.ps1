@@ -5,13 +5,13 @@
 # nothing is written to the PC (the session log is only saved if you click Log).
 #
 #  - Starts READ-ONLY: a scan (CPU, RAM, disk, startup items, Defender, top RAM users).
-#  - Full Access: lets the PET send PowerShell commands, as you, until you turn it off.
-#  - Request Admin: relaunches this app through the Windows UAC prompt that you click.
+#  - Access toggle: Read (look only), Ask (PET commands run as you after you OK
+#    each one), Full (PET commands run as you without asking).
+#  - Run as admin...: relaunches this app through the Windows UAC prompt that you click.
 #  - Share PC Internet: the PET borrows this PC's internet (outbound connections only).
 #  - Chat with Alice: type, or hold the mic button to talk (the mic records only
 #    while you hold it). The PET carries it to Alice and her answer shows here.
-#  - With Full Access, each PET command still asks you first (untick "Ask before
-#    each command" to stop that). Alice's answers can be read aloud; hold F9 to talk.
+#  - Alice's answers can be read aloud; hold F9 (or the talk button) to talk.
 #  - Every command is shown in the live log. JACK OUT ends everything at once.
 # The app only dials out to the PET (10.55.0.1); it never listens. See PROTOCOL.md.
 
@@ -20,7 +20,8 @@ param(
     [int]$Port = 7341,
     [int]$TunnelPort = 7342,
     [switch]$Elevated,
-    [switch]$StartFull
+    [switch]$StartFull,
+    [ValidateSet('', 'Read', 'Ask', 'Full')][string]$StartMode = ''
 )
 
 Set-StrictMode -Version 2
@@ -29,7 +30,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-$AppVersion = '0.1'
+$AppVersion = '0.2'
 $Here = Split-Path -Parent $PSCommandPath
 
 # --- session state -------------------------------------------------------------
@@ -40,7 +41,7 @@ $S = [ordered]@{
     Writer     = $null
     Buffer     = ''
     Connecting = $null    # Task from ConnectAsync
-    Full       = [bool]$StartFull
+    Full       = [bool]$StartFull -or $StartMode -eq 'Ask' -or $StartMode -eq 'Full'
     Admin      = $false
     Net        = $false
     Jobs       = @()      # running PET commands: @{Id; Ps; Handle; Started; Cmd}
@@ -48,7 +49,7 @@ $S = [ordered]@{
     Log        = New-Object System.Collections.Generic.List[string]
     Closing    = $false
     Busy       = $false    # a scan or a confirm box is up (they pump UI events)
-    Confirm    = $true     # ask before each PET command, even with Full Access
+    Confirm    = ($StartMode -ne 'Full')  # Ask mode: OK each PET command first
     Speak      = $true     # read Alice's answers aloud
     Linked     = $false
 }
@@ -57,134 +58,177 @@ $S.Admin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administ
 
 # --- UI --------------------------------------------------------------------------
 
+function RGB($r, $g, $b) { return [System.Drawing.Color]::FromArgb($r, $g, $b) }
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'Jack In · Alice'
-$form.Size = New-Object System.Drawing.Size(820, 460)
+$form.ClientSize = New-Object System.Drawing.Size(800, 445)
+$form.FormBorderStyle = 'FixedSingle'
+$form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
-$form.BackColor = [System.Drawing.Color]::FromArgb(0xd7, 0xde, 0xeb)
+$form.BackColor = RGB 0xd7 0xde 0xeb
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 10)
 $form.TopMost = $true
+$form.KeyPreview = $true
 
+# Sidebar: portrait, link status, access mode, voice.
 $left = New-Object System.Windows.Forms.Panel
 $left.Dock = 'Left'
 $left.Width = 190
-$left.BackColor = [System.Drawing.Color]::FromArgb(0x0f, 0x3b, 0x7a)
+$left.BackColor = RGB 0x0f 0x3b 0x7a
 $form.Controls.Add($left)
 
 $pic = New-Object System.Windows.Forms.PictureBox
 $pic.SizeMode = 'Zoom'
-$pic.SetBounds(15, 40, 160, 160)
+$pic.SetBounds(20, 14, 150, 150)
 $alicePng = Join-Path $Here 'alice.png'
 if (Test-Path $alicePng) { $pic.Image = [System.Drawing.Image]::FromFile($alicePng) }
 $left.Controls.Add($pic)
 
 $linkLabel = New-Object System.Windows.Forms.Label
-$linkLabel.ForeColor = [System.Drawing.Color]::FromArgb(0x7f, 0xd3, 0xff)
+$linkLabel.ForeColor = RGB 0x7f 0xd3 0xff
 $linkLabel.Font = New-Object System.Drawing.Font('Consolas', 9, [System.Drawing.FontStyle]::Bold)
-$linkLabel.SetBounds(10, 210, 170, 40)
-$linkLabel.TextAlign = 'TopCenter'
+$linkLabel.SetBounds(6, 172, 178, 20)
+$linkLabel.TextAlign = 'MiddleCenter'
 $left.Controls.Add($linkLabel)
 
-$modeLabel = New-Object System.Windows.Forms.Label
-$modeLabel.SetBounds(10, 260, 170, 24)
-$modeLabel.TextAlign = 'MiddleCenter'
-$modeLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-$left.Controls.Add($modeLabel)
+$accessLabel = New-Object System.Windows.Forms.Label
+$accessLabel.Text = 'ACCESS'
+$accessLabel.ForeColor = RGB 0xbb 0xcc 0xdd
+$accessLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8)
+$accessLabel.SetBounds(14, 202, 160, 16)
+$left.Controls.Add($accessLabel)
 
-$extraLabel = New-Object System.Windows.Forms.Label
-$extraLabel.SetBounds(10, 290, 170, 40)
-$extraLabel.TextAlign = 'TopCenter'
-$extraLabel.ForeColor = [System.Drawing.Color]::White
-$extraLabel.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-$left.Controls.Add($extraLabel)
+# One toggle replaces the old Full Access button, mode badge and
+# "ask before each command" box: Read = read-only, Ask = commands run after
+# you say yes to each one, Full = commands run without asking.
+$ModeButtons = [ordered]@{}
+$modeX = 14
+foreach ($m in @('Read', 'Ask', 'Full')) {
+    $b = New-Object System.Windows.Forms.Button
+    $b.Text = $m
+    $b.Tag = $m
+    $b.SetBounds($modeX, 220, 54, 30)
+    $b.FlatStyle = 'Flat'
+    $b.FlatAppearance.BorderSize = 0
+    $b.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+    $left.Controls.Add($b)
+    $ModeButtons[$m] = $b
+    $modeX += 55
+}
 
-$alice = New-Object System.Windows.Forms.Label
-$alice.SetBounds(205, 12, 590, 70)
-$alice.BackColor = [System.Drawing.Color]::White
-$alice.Padding = New-Object System.Windows.Forms.Padding(8)
-$alice.Text = 'Alice: Looking for the PET...'
-$form.Controls.Add($alice)
+$modeNote = New-Object System.Windows.Forms.Label
+$modeNote.ForeColor = RGB 0x9b 0xbb 0xcc
+$modeNote.Font = New-Object System.Drawing.Font('Segoe UI', 8)
+$modeNote.SetBounds(14, 254, 168, 34)
+$left.Controls.Add($modeNote)
 
+# Admin is a separate Windows UAC prompt, so it stays a small link, shown only
+# while this copy isn't elevated.
+$lnkAdmin = New-Object System.Windows.Forms.LinkLabel
+$lnkAdmin.Text = 'Run as admin...'
+$lnkAdmin.LinkColor = RGB 0xff 0xd5 0x4a
+$lnkAdmin.ActiveLinkColor = RGB 0xff 0xff 0xff
+$lnkAdmin.Font = New-Object System.Drawing.Font('Segoe UI', 8)
+$lnkAdmin.SetBounds(14, 290, 160, 18)
+$left.Controls.Add($lnkAdmin)
+
+$netLabel = New-Object System.Windows.Forms.Label
+$netLabel.ForeColor = RGB 0x7f 0xd3 0xff
+$netLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8)
+$netLabel.SetBounds(14, 312, 168, 18)
+$left.Controls.Add($netLabel)
+
+$chkSpeak = New-Object System.Windows.Forms.CheckBox
+$chkSpeak.Text = 'Read answers aloud'
+$chkSpeak.Checked = $true
+$chkSpeak.ForeColor = [System.Drawing.Color]::White
+$chkSpeak.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$chkSpeak.SetBounds(14, 412, 170, 22)
+$left.Controls.Add($chkSpeak)
+
+# Main panel: request banner, chat log, input row, action bar.
 $ask = New-Object System.Windows.Forms.Label
-$ask.SetBounds(205, 120, 590, 26)
-$ask.BackColor = [System.Drawing.Color]::FromArgb(0xff, 0xd5, 0x4a)
-$ask.ForeColor = [System.Drawing.Color]::FromArgb(0x3a, 0x1f, 0x00)
+$ask.SetBounds(200, 10, 590, 26)
+$ask.BackColor = RGB 0xff 0xd5 0x4a
+$ask.ForeColor = RGB 0x3a 0x1f 0x00
 $ask.TextAlign = 'MiddleLeft'
 $ask.Visible = $false
 $form.Controls.Add($ask)
 
-# Chat with Alice: type and press Enter, or hold the mic button and talk.
-$chatBox = New-Object System.Windows.Forms.TextBox
-$chatBox.SetBounds(205, 89, 400, 26)
-$chatBox.Font = New-Object System.Drawing.Font('Segoe UI', 11)
-$form.Controls.Add($chatBox)
-$btnSend = New-Object System.Windows.Forms.Button
-$btnSend.Text = 'Send'
-$btnSend.SetBounds(610, 88, 80, 28)
-$form.Controls.Add($btnSend)
-$form.AcceptButton = $btnSend
-$btnMic = New-Object System.Windows.Forms.Button
-$btnMic.Text = 'Hold to talk'
-$btnMic.SetBounds(695, 88, 100, 28)
-$btnMic.FlatStyle = 'Flat'
-$btnMic.BackColor = [System.Drawing.Color]::FromArgb(0xc0, 0x4a, 0xff)
-$btnMic.ForeColor = [System.Drawing.Color]::White
-$form.Controls.Add($btnMic)
-
-function New-Check($text, $y, $checked) {
-    $c = New-Object System.Windows.Forms.CheckBox
-    $c.Text = $text
-    $c.Checked = $checked
-    $c.ForeColor = [System.Drawing.Color]::White
-    $c.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-    $c.SetBounds(14, $y, 170, 22)
-    $left.Controls.Add($c)
-    return $c
-}
-$chkConfirm = New-Check 'Ask before each command' 334 $true
-$chkSpeak = New-Check 'Alice reads answers aloud' 356 $true
-$hint = New-Object System.Windows.Forms.Label
-$hint.Text = 'Hold F9 to talk'
-$hint.ForeColor = [System.Drawing.Color]::FromArgb(0x7f, 0xd3, 0xff)
-$hint.Font = New-Object System.Drawing.Font('Segoe UI', 8)
-$hint.SetBounds(14, 382, 170, 18)
-$left.Controls.Add($hint)
-$form.KeyPreview = $true
-
-$logBox = New-Object System.Windows.Forms.TextBox
-$logBox.Multiline = $true
+$LogTop = 10
+$LogHeight = 330
+$logBox = New-Object System.Windows.Forms.RichTextBox
 $logBox.ReadOnly = $true
+$logBox.BorderStyle = 'None'
 $logBox.ScrollBars = 'Vertical'
-$logBox.SetBounds(205, 120, 590, 220)
-$logBox.BackColor = [System.Drawing.Color]::FromArgb(0x0b, 0x15, 0x30)
-$logBox.ForeColor = [System.Drawing.Color]::FromArgb(0x9f, 0xd8, 0xff)
-$logBox.Font = New-Object System.Drawing.Font('Consolas', 9)
+$logBox.SetBounds(200, $LogTop, 590, $LogHeight)
+$logBox.BackColor = RGB 0x0b 0x18 0x30
+$logBox.ForeColor = RGB 0xdf 0xe8 0xff
+$logBox.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+$logBox.SelectionIndent = 8
+$logBox.SelectionRightIndent = 8
 $form.Controls.Add($logBox)
 
-function New-Button($text, $x, $w, $r, $g, $b) {
+$chatBox = New-Object System.Windows.Forms.TextBox
+$chatBox.SetBounds(200, 352, 400, 30)
+$chatBox.Font = New-Object System.Drawing.Font('Segoe UI', 11)
+$form.Controls.Add($chatBox)
+
+function New-Button($text, $x, $y, $w, $h, $color) {
     $btn = New-Object System.Windows.Forms.Button
     $btn.Text = $text
-    $btn.SetBounds($x, 360, $w, 40)
+    $btn.SetBounds($x, $y, $w, $h)
     $btn.FlatStyle = 'Flat'
     $btn.FlatAppearance.BorderSize = 0
-    $btn.BackColor = [System.Drawing.Color]::FromArgb($r, $g, $b)
+    $btn.BackColor = $color
     $btn.ForeColor = [System.Drawing.Color]::White
     $btn.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
     $form.Controls.Add($btn)
     return $btn
 }
-$btnFull = New-Button 'Full Access' 205 110 0x2f 0xc0 0x6a
-$btnAdmin = New-Button 'Request Admin' 320 120 0xe8 0xa3 0x1a
-$btnNet = New-Button 'Share PC Internet' 445 140 0x2f 0x7d 0xe0
-$btnLog = New-Button 'Save Log' 590 85 0x5a 0x6b 0x8a
-$btnOut = New-Button 'JACK OUT' 685 110 0xe5 0x38 0x4f
+$MicIdle = 'Hold to talk · F9'
+$btnSend = New-Button 'Send' 606 351 70 30 (RGB 0x2d 0x6b 0xe0)
+$btnMic = New-Button $MicIdle 680 351 110 30 (RGB 0xc0 0x4a 0xff)
+$form.AcceptButton = $btnSend
+$btnNet = New-Button 'Share PC Internet' 200 397 140 36 (RGB 0x2f 0x7f 0xd8)
+$btnLog = New-Button 'Save Log' 346 397 90 36 (RGB 0x5d 0x6b 0x82)
+$btnOut = New-Button 'JACK OUT' 680 397 110 36 (RGB 0xe2 0x3b 0x4e)
 
 # --- helpers ---------------------------------------------------------------------
 
+function Write-Rich([string]$text, $color, [bool]$bold = $false, $back = $null, [float]$size = 10) {
+    $logBox.SelectionStart = $logBox.TextLength
+    $logBox.SelectionLength = 0
+    $logBox.SelectionColor = $color
+    $logBox.SelectionBackColor = $(if ($back) { $back } else { $logBox.BackColor })
+    $style = $(if ($bold) { [System.Drawing.FontStyle]::Bold } else { [System.Drawing.FontStyle]::Regular })
+    $logBox.SelectionFont = New-Object System.Drawing.Font('Segoe UI', $size, $style)
+    $logBox.AppendText($text)
+}
+
+# Everything goes to the saved log; the window shows chat as colored turns and
+# app/PET events as small grey lines.
 function Add-Log([string]$line) {
     $stamp = (Get-Date).ToString('HH:mm:ss')
     $S.Log.Add("$stamp  $line")
-    $logBox.AppendText("$line`r`n")
+    Write-Rich "$line`n" (RGB 0x7f 0x93 0xb5) $false $null 8.5
+    $logBox.ScrollToCaret()
+}
+
+function Add-Chat([string]$who, [string]$text) {
+    $stamp = (Get-Date).ToString('HH:mm:ss')
+    $S.Log.Add("$stamp  ${who}: $text")
+    if ($who -eq 'Alice') {
+        $card = RGB 0x13 0x28 0x4d
+        Write-Rich ' Alice  ' (RGB 0xff 0x9b 0xe3) $true $card
+        Write-Rich "$text `n" (RGB 0xdf 0xe8 0xff) $false $card
+    } else {
+        Write-Rich "$who  " (RGB 0x7f 0xd3 0xff) $true
+        Write-Rich "$text`n" (RGB 0xdf 0xe8 0xff)
+    }
+    Write-Rich "`n" (RGB 0xdf 0xe8 0xff) $false $null 4
+    $logBox.ScrollToCaret()
 }
 
 function Send-Pet($obj) {
@@ -202,44 +246,70 @@ function Send-State([string]$denied = '') {
     Send-Pet $msg
 }
 
+function Get-Mode {
+    if (-not $S.Full) { return 'Read' }
+    if ($S.Confirm) { return 'Ask' }
+    return 'Full'
+}
+
 function Update-Ui {
     if ($S.Linked) {
-        $linkLabel.Text = "ALICE.EXE`r`n● LINKED ($Pet)"
+        $linkLabel.Text = "● LINKED · $Pet"
     } else {
-        $linkLabel.Text = "ALICE.EXE`r`n○ looking for the PET..."
+        $linkLabel.Text = '○ looking for the PET...'
     }
-    if ($S.Full) {
-        $modeLabel.Text = 'FULL ACCESS'
-        $modeLabel.BackColor = [System.Drawing.Color]::FromArgb(0x47, 0xf0, 0x8a)
-        $btnFull.Text = 'Read-only'
-    } else {
-        $modeLabel.Text = 'READ-ONLY'
-        $modeLabel.BackColor = [System.Drawing.Color]::FromArgb(0xff, 0xd5, 0x4a)
-        $btnFull.Text = 'Full Access'
+    $mode = Get-Mode
+    foreach ($m in $ModeButtons.Keys) {
+        $b = $ModeButtons[$m]
+        if ($m -eq $mode) {
+            $b.BackColor = $(switch ($m) { 'Read' { RGB 0xff 0xd5 0x4a } 'Ask' { RGB 0x7f 0xd3 0xff } default { RGB 0x3d 0xdc 0x84 } })
+            $b.ForeColor = RGB 0x05 0x20 0x30
+        } else {
+            $b.BackColor = RGB 0x1b 0x4f 0x97
+            $b.ForeColor = RGB 0xcc 0xee 0xff
+        }
     }
-    $extra = @()
-    if ($S.Admin) { $extra += 'running as admin' }
-    if ($S.Net) { $extra += ('sharing internet (' + @($S.Tunnels).Count + ' open)') }
-    $extraLabel.Text = ($extra -join "`r`n")
-    $btnAdmin.Enabled = -not $S.Admin
+    $who = $(if ($S.Admin) { 'as admin' } else { "as $env:USERNAME" })
+    $modeNote.Text = $(switch ($mode) {
+            'Read' { 'Read = Alice can look, not change' }
+            'Ask' { "Ask = runs $who after you OK each one" }
+            default { "Full = runs $who, no prompts" }
+        })
+    $lnkAdmin.Visible = -not $S.Admin
+    $netLabel.Text = $(if ($S.Net) { 'sharing internet (' + @($S.Tunnels).Count + ' open)' } else { '' })
     $btnNet.Text = $(if ($S.Net) { 'Stop Sharing' } else { 'Share PC Internet' })
     $chatBox.Enabled = $S.Linked
     $btnSend.Enabled = $S.Linked
     $btnMic.Enabled = $S.Linked -or $Mic.On
 }
 
+function Set-Mode([string]$mode) {
+    $before = Get-Mode
+    if ($mode -eq $before) { return }
+    $S.Full = ($mode -ne 'Read')
+    $S.Confirm = ($mode -ne 'Full')
+    Hide-Ask
+    Add-Log $(switch ($mode) {
+            'Read' { 'you set access to Read: the PET can look but not run commands' }
+            'Ask' { 'you set access to Ask: the PET can run commands as you after you OK each one' }
+            default { 'you set access to Full: the PET can run commands as you without asking' }
+        })
+    if (($before -eq 'Read') -ne ($mode -eq 'Read')) { Send-State }
+    Update-Ui
+}
+
 function Hide-Ask {
     $ask.Visible = $false
-    $logBox.SetBounds(205, 120, 590, 220)
+    $logBox.SetBounds(200, $LogTop, 590, $LogHeight)
 }
 
 function Show-Ask([string]$what) {
-    $names = @{ full = 'Full Access'; admin = 'Request Admin'; net = 'Share PC Internet' }
+    $names = @{ full = 'Ask or Full access'; admin = 'admin (Run as admin... in the sidebar)'; net = 'Share PC Internet' }
     if (-not $names.ContainsKey($what)) { return }
-    $ask.Text = "  The PET asks for $($names[$what]). Click that button below to allow it, or ignore this."
+    $ask.Text = "  The PET asks for $($names[$what]). Turn it on to allow it, or ignore this."
     $ask.Visible = $true
     $ask.BringToFront()
-    $logBox.SetBounds(205, 150, 590, 190)
+    $logBox.SetBounds(200, $LogTop + 32, 590, $LogHeight - 32)
     $form.Activate()
 }
 
@@ -283,7 +353,7 @@ function Invoke-Scan {
     if ($scan.Contains('disk_free')) { $summary += "C: $($scan.disk_free)% free" }
     if ($scan.Contains('startup')) { $summary += "$($scan.startup) startup apps" }
     $summary += "Defender $($scan.defender)"
-    $alice.Text = 'Alice: Scan done (read-only): ' + ($summary -join ', ') + '. Look at the PET for what I think.'
+    Add-Log ('scan done (read-only): ' + ($summary -join ', ') + '. Look at the PET for what Alice thinks.')
     Add-Log 'read-only checks complete'
     $form.Cursor = [System.Windows.Forms.Cursors]::Default
     $S.Busy = $false
@@ -294,7 +364,7 @@ function Invoke-Scan {
 function Start-PetCommand($id, [string]$cmd) {
     if (-not $S.Full) {
         Add-Log "PET asked to run (refused, read-only): $cmd"
-        Send-Pet ([ordered]@{ t = 'result'; id = $id; ok = $false; out = 'read-only: turn on Full Access on the PC'; reason = 'read-only' })
+        Send-Pet ([ordered]@{ t = 'result'; id = $id; ok = $false; out = 'read-only: pick Ask or Full on the PC'; reason = 'read-only' })
         Show-Ask 'full'
         return
     }
@@ -423,8 +493,7 @@ function Send-Chat {
     $text = $chatBox.Text.Trim()
     if (-not $text -or -not $S.Linked) { return }
     $chatBox.Text = ''
-    Add-Log "you: $text"
-    $alice.Text = 'Alice: ...'
+    Add-Chat 'you' $text
     Send-Pet ([ordered]@{ t = 'chat'; text = $text })
 }
 
@@ -468,7 +537,7 @@ function Start-Mic {
 function Stop-Mic([bool]$send = $true) {
     if (-not $Mic.On) { return }
     $Mic.On = $false
-    $btnMic.Text = 'Hold to talk'
+    $btnMic.Text = $MicIdle
     $btnMic.BackColor = [System.Drawing.Color]::FromArgb(0xc0, 0x4a, 0xff)
     [void](Invoke-Mci 'stop jackmic')
     $seconds = ((Get-Date) - $Mic.Started).TotalSeconds
@@ -484,8 +553,7 @@ function Stop-Mic([bool]$send = $true) {
     }
     if (-not $send) { return }
     if ($null -eq $bytes) { Add-Log 'mic: too short, hold the button while you talk'; return }
-    Add-Log ('you: (voice, {0:N0} s)' -f $seconds)
-    $alice.Text = 'Alice: listening back...'
+    Add-Chat 'you' ('(voice, {0:N0} s)' -f $seconds)
     Send-Pet ([ordered]@{ t = 'voice'; wav = [Convert]::ToBase64String($bytes) })
 }
 
@@ -502,7 +570,6 @@ function Drop-Link([string]$why) {
         Stop-Jobs
         Stop-Sharing
         Add-Log "link lost: $why (back to read-only)"
-        $alice.Text = 'Alice: Lost the PET. Plug it back in and I''ll reconnect read-only.'
     }
     Update-Ui
 }
@@ -536,7 +603,7 @@ function On-Line([string]$line) {
     switch ([string](Get-Field $msg 't')) {
         'ask' { Show-Ask $what }
         'drop' {
-            if ($what -eq 'full' -and $S.Full) { $S.Full = $false; Add-Log 'PET turned Full Access off'; Send-State }
+            if ($what -eq 'full' -and $S.Full) { $S.Full = $false; Add-Log 'PET set access back to Read'; Send-State }
             if ($what -eq 'net' -and $S.Net) { Stop-Sharing; Add-Log 'PET stopped sharing'; Send-State }
             Update-Ui
         }
@@ -548,11 +615,10 @@ function On-Line([string]$line) {
             $heard = [string](Get-Field $msg 'heard')
             $text = [string](Get-Field $msg 'text')
             $cmd = [string](Get-Field $msg 'cmd')
-            if ($heard) { Add-Log "you (heard): $heard" }
-            $alice.Text = 'Alice: ' + $text
-            Add-Log ('Alice: ' + $text)
+            if ($heard) { Add-Chat 'you' $heard }
+            Add-Chat 'Alice' $text
             if (Get-Field $msg 'ok') { Speak-Alice $text }
-            if ($cmd) { Add-Log "Alice suggests: $cmd   (press Enter on the PET to run it; needs Full Access)" }
+            if ($cmd) { Add-Log "Alice suggests: $cmd   (press Enter on the PET to run it; needs Ask or Full)" }
         }
     }
 }
@@ -611,19 +677,13 @@ function Step-Link {
 
 # --- buttons -----------------------------------------------------------------------
 
-$btnFull.Add_Click({
-    $S.Full = -not $S.Full
-    Hide-Ask
-    Add-Log $(if ($S.Full) { 'you turned Full Access ON: the PET can run commands as you' } else { 'you turned Full Access off' })
-    Send-State
-    Update-Ui
-})
+foreach ($b in $ModeButtons.Values) { $b.Add_Click({ param($sender, $e) Set-Mode ([string]$sender.Tag) }) }
 
-$btnAdmin.Add_Click({
+$lnkAdmin.Add_LinkClicked({
     Hide-Ask
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', "`"$PSCommandPath`"",
         '-Pet', $Pet, '-Port', $Port, '-TunnelPort', $TunnelPort, '-Elevated')
-    if ($S.Full) { $argList += '-StartFull' }
+    $argList += @('-StartMode', (Get-Mode))
     try {
         # Windows shows the UAC prompt; you click Yes or No.
         Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -Verb RunAs | Out-Null
@@ -670,10 +730,6 @@ $btnMic.Add_MouseUp({ Stop-Mic })
 # Hold F9 anywhere in the window to talk (key repeat is ignored while recording).
 $form.Add_KeyDown({ param($sender, $e) if ($e.KeyCode -eq 'F9') { $e.Handled = $true; if (-not $Mic.On) { Start-Mic } } })
 $form.Add_KeyUp({ param($sender, $e) if ($e.KeyCode -eq 'F9') { $e.Handled = $true; Stop-Mic } })
-$chkConfirm.Add_CheckedChanged({
-    $S.Confirm = $chkConfirm.Checked
-    Add-Log $(if ($S.Confirm) { 'you will be asked before each PET command' } else { 'PET commands run without asking while Full Access is on' })
-})
 $chkSpeak.Add_CheckedChanged({
     $S.Speak = $chkSpeak.Checked
     if (-not $S.Speak -and $Voice) { $Voice.SpeakAsyncCancelAll() }
@@ -702,7 +758,7 @@ $timer.Add_Tick({
     }
 })
 
-Add-Log "Jack In $AppVersion$(if ($Elevated) { ' (admin)' }) · $env:COMPUTERNAME · read-only until you click Full Access"
+Add-Log "Jack In $AppVersion$(if ($Elevated) { ' (admin)' }) · $env:COMPUTERNAME · read-only until you pick Ask or Full"
 Update-Ui
 $timer.Start()
 [void]$form.ShowDialog()

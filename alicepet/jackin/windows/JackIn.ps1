@@ -148,7 +148,7 @@ function New-Frame($x, $y, $w, $h, $back) {
     $p.SetBounds($x, $y, $w, $h)
     $p.BackColor = $back
     $p.Tag = 'frame'
-    $p.Add_Paint({ param($s, $e) Paint-Frame $s $e })
+    $p.Add_Paint({ param($ctl, $e) Paint-Frame $ctl $e })
     $form.Controls.Add($p)
     $p.SendToBack()
     return $p
@@ -202,7 +202,7 @@ $folderHdr.TextAlign = 'MiddleCenter'
 $chipList = New-Object System.Windows.Forms.Panel
 $chipList.SetBounds(16, 116, 214, 236)
 $chipList.BackColor = $cPanel
-$chipList.Add_Paint({ param($s, $e) Paint-Frame $s $e })
+$chipList.Add_Paint({ param($ctl, $e) Paint-Frame $ctl $e })
 $form.Controls.Add($chipList)
 $script:ChipRows = @()
 $infoArt = New-Object System.Windows.Forms.PictureBox
@@ -609,9 +609,9 @@ function Map-Key($code) {
 
 # Arrows and Tab reach the PET too, not the focus change.
 $mirror.Add_Click({ $mirror.Focus() | Out-Null })
-$mirror.Add_PreviewKeyDown({ param($s, $e) $e.IsInputKey = $true })
+$mirror.Add_PreviewKeyDown({ param($ctl, $e) $e.IsInputKey = $true })
 $mirror.Add_KeyDown({
-    param($s, $e)
+    param($ctl, $e)
     if (-not (Input-Allowed)) { return }
     $name = Map-Key $e.KeyCode
     if ($name) {
@@ -620,7 +620,7 @@ $mirror.Add_KeyDown({
     }
 })
 $mirror.Add_KeyPress({
-    param($s, $e)
+    param($ctl, $e)
     if (-not (Input-Allowed) -or [char]::IsControl($e.KeyChar)) { return }
     Send-Pet ([ordered]@{ t = 'char'; c = [string]$e.KeyChar })
     $e.Handled = $true

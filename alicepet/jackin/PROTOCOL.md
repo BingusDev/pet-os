@@ -63,7 +63,7 @@ the person holds the app's talk button; the PET can't start it.
 | `ask` | `what`: `full` / `admin` / `net` | Highlights that button on the PC; nothing changes until it is clicked |
 | `drop` | `what`: `full` / `net` | Turn that off (taking access away needs no click) |
 | `run` | `id`, `cmd`, optional `agent` (true: from Alice's loop, shown in the chat) | Run one PowerShell command, as the access mode allows (above) |
-| `pet` | `operator` | Sent after `hello`: who runs the PET (`[jackin] operator=`, default `HK`). The app shows it as OPERATOR and on chat lines, never the Windows user |
+| `pet` | `operator` | Sent after `hello`: who runs the PET (`[jackin] operator=`, default `Holden`). The app shows it as OPERATOR and on chat lines, never the Windows user |
 | `agent_stop` | `why` | Alice's command loop ended early |
 | `scan` | | Scan again |
 | `net_open` | `id`, `host`, `port` | Sharing: dial `host:port`, then dial PET:7342 and send `tunnel <id>\n`; then pipe bytes both ways |

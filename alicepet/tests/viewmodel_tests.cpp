@@ -762,7 +762,7 @@ void test_jack_session() {
     jack.on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk"})");
     CHECK(jack.connected() && jack.view() == JackInChip::View::Session);
     // The PET names its operator (never the Windows user) right after hello.
-    CHECK(!jack.sent.empty() && jack.sent[0] == R"({"t":"pet","operator":"HK"})");
+    CHECK(!jack.sent.empty() && jack.sent[0] == R"({"t":"pet","operator":"Holden"})");
     jack.sent.clear();
     CHECK(!jack.full() && !jack.admin());
     CHECK(jack.keep_awake());
@@ -803,7 +803,7 @@ void test_jack_session() {
     jack.on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk"})");
     jack.on_line(R"({"t":"chat","text":"why is this PC slow?"})");
     CHECK(jack.chat_waiting());
-    CHECK(jack.log().back().text == "HK: why is this PC slow?");
+    CHECK(jack.log().back().text == "Holden: why is this PC slow?");
     CHECK(jack.agent_running());
     viewmodel::chips::BridgeReply chat;
     chat.ok = true;

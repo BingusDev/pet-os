@@ -123,7 +123,7 @@ struct PetConfig {
     std::string jack_gadget_down{"sudo -n /usr/libexec/alicepet/usb-gadget.sh down"};
     // Who runs the PET: the PC app shows "OPERATOR: <name>" and labels chat with it
     // (never the Windows user name). [jackin] operator= (or owner=).
-    std::string jack_operator{"HK"};
+    std::string jack_operator{"Holden"};
 };
 
 // Parses the INI-style /etc/alicepet.conf. Unknown keys are ignored; malformed

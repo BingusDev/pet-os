@@ -136,7 +136,7 @@ $S = [ordered]@{
     ChipId     = ''       # the chip the PC last asked the PET to open
     MirrorSent = $false   # last mirror on/off sent to the PET
     View       = 'home'   # centre shows 'home' or 'chip'
-    Operator   = 'HK'     # who runs the PET (the PET's [jackin] operator=), never the Windows user
+    Operator   = 'Holden' # who runs the PET (the PET's [jackin] operator=), never the Windows user
     ShowLog    = $false   # HOME shows the live log instead of the chat
     Agent      = $false   # Alice's command loop is running for the last chat message
 }
@@ -553,8 +553,8 @@ function Add-Chat([string]$who, [string]$text) {
         $aliceLine.Text = ($text -replace '\s+', ' ')
         $tips.SetToolTip($aliceLine, $text)
     } else {
-        # The operator is whoever runs the PET (HK), never the Windows account.
-        $name = $(if ($who -eq 'you') { $S.Operator.ToUpper() } else { $who })
+        # The operator is whoever runs the PET (Holden), never the Windows account.
+        $name = $(if ($who -eq 'you') { $S.Operator } else { $who })
         Write-Rich $chatLog "${name}: " (RGB 0x20 0x50 0xc0) $true $null 11
         Write-Rich $chatLog "$text`n" (RGB 0x10 0x20 0x40) $false $null 11
     }

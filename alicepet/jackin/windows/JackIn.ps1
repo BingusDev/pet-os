@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+﻿# SPDX-License-Identifier: MIT
 #
 # AlicePET Jack In for Windows. Runs from the PET's USB drive with the
 # PowerShell 5.1 that ships with Windows 10/11; nothing is installed and nothing
@@ -82,19 +82,21 @@ $S.Admin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administ
 $Fonts = New-Object System.Drawing.Text.PrivateFontCollection
 $PixName = 'Consolas'
 $VtName = 'Consolas'
+$PixFam = $null
+$VtFam = $null
 try {
     $pixFile = Join-Path $Here 'fonts\PressStart2P-Regular.ttf'
     $vtFile = Join-Path $Here 'fonts\VT323-Regular.ttf'
     if (Test-Path $pixFile) { $Fonts.AddFontFile($pixFile) }
     if (Test-Path $vtFile) { $Fonts.AddFontFile($vtFile) }
     foreach ($f in $Fonts.Families) {
-        if ($f.Name -eq 'Press Start 2P') { $PixName = $f.Name }
-        if ($f.Name -eq 'VT323') { $VtName = $f.Name }
+        if ($f.Name -eq 'Press Start 2P') { $PixName = $f.Name; $PixFam = $f }
+        if ($f.Name -eq 'VT323') { $VtName = $f.Name; $VtFam = $f }
     }
 } catch { }
 
-function Pix([float]$size) { return New-Object System.Drawing.Font($PixName, $size, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Point) }
-function Vt([float]$size) { return New-Object System.Drawing.Font($VtName, $size, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Point) }
+function Pix([float]$size) { if ($PixFam) { return New-Object System.Drawing.Font($PixFam, $size, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Point) }; return New-Object System.Drawing.Font($PixName, $size, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Point) }
+function Vt([float]$size) { if ($VtFam) { return New-Object System.Drawing.Font($VtFam, $size, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Point) }; return New-Object System.Drawing.Font($VtName, $size, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Point) }
 function RGB($r, $g, $b) { return [System.Drawing.Color]::FromArgb($r, $g, $b) }
 
 # Palette from mockups/jackin-operator.html.
@@ -145,6 +147,7 @@ function New-Frame($x, $y, $w, $h, $back) {
     $p = New-Object System.Windows.Forms.Panel
     $p.SetBounds($x, $y, $w, $h)
     $p.BackColor = $back
+    $p.Tag = 'frame'
     $p.Add_Paint({ param($s, $e) Paint-Frame $s $e })
     $form.Controls.Add($p)
     $p.SendToBack()
@@ -1075,6 +1078,19 @@ $timer.Add_Tick({
         Add-Log ('error: ' + $_.Exception.Message)
     }
 })
+
+# Controls.Add puts each new control at the back, so the frames drawn first
+# would cover everything added after them. Send every frame behind once.
+foreach ($c in @($form.Controls)) { if ($c.Tag -eq 'frame') { $c.SendToBack() } }
+# The bundled pixel fonts are private (GDI+ only): draw text with GDI+ so
+# labels and buttons actually use them instead of a fallback font.
+function Use-GdiPlusText($parent) {
+    foreach ($c in @($parent.Controls)) {
+        if ($c.PSObject.Properties['UseCompatibleTextRendering']) { $c.UseCompatibleTextRendering = $true }
+        Use-GdiPlusText $c
+    }
+}
+Use-GdiPlusText $form
 
 Build-Chips @()
 Add-Log "Jack In $AppVersion$(if ($Elevated) { ' (admin)' }) - $($env:COMPUTERNAME) - read-only until you pick Ask or Full"

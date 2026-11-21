@@ -397,6 +397,10 @@ void AliceViewModel::open_chip(size_t chip_index) {
     selected_chip_ = chip_index;
     chip->enter();
     show(Screen::Chip);
+    // Chip to chip (the PC app switches chips directly): the screen stays Chip,
+    // so show() does not redraw. Without this the old chip's screen could stay up
+    // over the new chip whenever the two chips' own revisions happened to match.
+    ++revision_;
 }
 
 void AliceViewModel::leave_chip(Screen next) {

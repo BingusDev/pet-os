@@ -8,11 +8,14 @@
 #  - Access: READ (look only), ASK (PET commands run as you after you OK each one),
 #    FULL (PET commands run as you without asking). Typing into the PET's screen
 #    works in ASK and FULL only; every mode can watch it.
-#  - FOLDER: open Terminal, Jellyfin, Retro or LAN Tech on the PET. Its screen is
-#    mirrored here while this window is up and not minimized.
+#  - FOLDER: HOME (Alice, chat and PC status) or one chip at a time: Terminal,
+#    Jellyfin, Retro or LAN Tech. The PET closes the open chip (and its player or
+#    game) before it opens the next. The chip's screen is mirrored here while it
+#    is open and this window is up and not minimized. < HOME or Esc comes back.
+#    (Esc goes to the chip while you type into its screen; use Shift+Esc there.)
 #  - Run as admin...: relaunches this app through the Windows UAC prompt that you click.
 #  - NET: the PET borrows this PC's internet (outbound connections only).
-#  - NAVI: chat with Alice. Type, or hold MIC (or F9) to talk; her answers can be read aloud.
+#  - Chat with Alice: type (Enter sends), or hold MIC (or F9) to talk; her answers can be read aloud.
 #  - Every command is shown in the live log. JACK OUT ends everything at once.
 # The app only dials out to the PET (10.55.0.1); it never listens. See PROTOCOL.md.
 
@@ -31,12 +34,16 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-$AppVersion = '0.4'
+$AppVersion = '0.5'
 $Here = Split-Path -Parent $PSCommandPath
 
 # Draws each PET frame: run-length RGB565 (count, hi, lo) to ARGB pixels.
 Add-Type -TypeDefinition @'
 public static class JackInFrame {
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    static extern System.IntPtr SendMessage(System.IntPtr hwnd, int msg, System.IntPtr wp, string lp);
+    // Grey placeholder text in an empty TextBox (EM_SETCUEBANNER).
+    public static void Cue(System.IntPtr hwnd, string text) { SendMessage(hwnd, 0x1501, System.IntPtr.Zero, text); }
     public static void Decode(byte[] rle, int[] dst, int offset, int count) {
         int p = 0, o = offset, end = offset + count;
         while (p + 2 < rle.Length && o < end) {
@@ -73,6 +80,7 @@ $S = [ordered]@{
     Chips      = @()      # chips the PET can open: {id, name, number, code, desc, art}
     ChipId     = ''       # the chip the PC last asked the PET to open
     MirrorSent = $false   # last mirror on/off sent to the PET
+    View       = 'home'   # centre shows 'home' or 'chip'
 }
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $S.Admin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -186,7 +194,7 @@ $statusLabel = New-Label '' 160 20 470 34 (Vt 22) $cGreen $cFrame
 $ModeButtons = [ordered]@{}
 $modeX = 640
 foreach ($m in @('Read', 'Ask', 'Full')) {
-    $b = New-Button $m $modeX 16 80 36 $cIdle $cIdleInk (Pix 8)
+    $b = New-Button $m.ToUpper() $modeX 16 80 36 $cIdle $cIdleInk (Pix 8)
     $b.Tag = $m
     $b.Add_Click({ param($sender, $e) Set-Mode ([string]$sender.Tag) })
     $ModeButtons[$m] = $b
@@ -195,94 +203,196 @@ foreach ($m in @('Read', 'Ask', 'Full')) {
 $btnNet = New-Button 'NET' 904 16 84 36 $cNet (RGB 0xff 0xff 0xff) (Pix 8)
 $btnOut = New-Button 'JACK OUT' 994 16 90 36 $cOut (RGB 0xff 0xff 0xff) (Pix 7)
 
-# Left: FOLDER with the PC-capable chips, the chip's card, admin link.
+# Left: FOLDER with HOME and the PC-capable chips, the chip's card, admin link.
 $leftFrame = New-Frame 8 76 230 556 $cFrame
 $folderHdr = New-Label 'FOLDER' 18 86 110 24 (Pix 7) $cInk $cYellow
 $folderHdr.TextAlign = 'MiddleCenter'
 $chipList = New-Object System.Windows.Forms.Panel
-$chipList.SetBounds(16, 116, 214, 236)
+$chipList.SetBounds(16, 116, 214, 268)
 $chipList.BackColor = $cPanel
 $chipList.Add_Paint({ param($ctl, $e) Paint-Frame $ctl $e })
 $form.Controls.Add($chipList)
 $script:ChipRows = @()
 $infoArt = New-Object System.Windows.Forms.PictureBox
-$infoArt.SetBounds(18, 364, 96, 120)
+$infoArt.SetBounds(18, 394, 96, 120)
 $infoArt.BackColor = $cEdge
 $infoArt.SizeMode = 'CenterImage'
 $form.Controls.Add($infoArt)
-$infoText = New-Label 'waiting for the PET...' 122 364 110 120 (Vt 19) $cText $cFrame
+$infoText = New-Label 'waiting for the PET...' 122 394 110 126 (Vt 19) $cText $cFrame
 $adminLink = New-Object System.Windows.Forms.LinkLabel
 $adminLink.Text = 'Run as admin...'
 $adminLink.LinkColor = RGB 0xff 0xd5 0x4a
 $adminLink.ActiveLinkColor = RGB 0xff 0xff 0xff
 $adminLink.BackColor = $cFrame
 $adminLink.Font = Vt 17
-$adminLink.SetBounds(18, 530, 210, 22)
+$adminLink.SetBounds(18, 534, 210, 22)
 $form.Controls.Add($adminLink)
 $footLabel = New-Label 'Voice, Remote and Camera stay in the PET.' 18 578 210 44 (Vt 15) $cHint $cFrame
 
-# Centre: chip tab, view tag, ask banner, PET screen mirror, live log.
-$centreFrame = New-Frame 246 76 580 556 $cFrame
-$tabLabel = New-Label 'LAUNCHER.CHP' 256 86 260 26 (Pix 8) $cInk $cYellow
+# Alice's art (alice.png on the drive): cropped to fill a box like CSS object-fit: cover.
+$AliceImg = $null
+$alicePng = Join-Path $Here 'alice.png'
+if (Test-Path $alicePng) { $AliceImg = [System.Drawing.Image]::FromFile($alicePng) }
+function Crop-Cover($img, [int]$w, [int]$h, [float]$fx, [float]$fy) {
+    if ($null -eq $img) { return $null }
+    $scale = [Math]::Max($w / $img.Width, $h / $img.Height)
+    $sw = $w / $scale
+    $sh = $h / $scale
+    $sx = ($img.Width - $sw) * $fx
+    $sy = ($img.Height - $sh) * $fy
+    $bmp = New-Object System.Drawing.Bitmap -ArgumentList $w, $h
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::Half
+    $g.DrawImage($img, (New-Object System.Drawing.RectangleF -ArgumentList 0, 0, $w, $h), (New-Object System.Drawing.RectangleF -ArgumentList $sx, $sy, $sw, $sh), [System.Drawing.GraphicsUnit]::Pixel)
+    $g.Dispose()
+    return $bmp
+}
+function New-Picture($x, $y, $w, $h, $img) {
+    $p = New-Object System.Windows.Forms.PictureBox
+    $p.SetBounds($x, $y, $w, $h)
+    $p.BackColor = RGB 0x20 0x30 0x60
+    $p.SizeMode = 'Normal'
+    $p.Image = $img
+    $form.Controls.Add($p)
+    return $p
+}
+
+# Centre: one area with two states (mockups/jackin-operator-home.html and -chip.html).
+#  HOME: Alice big, the chat box, PC STATUS from the read-only scan, the live log.
+#  CHIP: the PET screen mirror across the whole centre and a one-line chat bar.
+$centreFrame = New-Frame 246 76 846 556 $cFrame
+$tabLabel = New-Label 'HOME' 256 86 90 24 (Pix 8) $cInk $cYellow
 $tabLabel.TextAlign = 'MiddleCenter'
-$viewLabel = New-Label '' 520 86 298 26 (Vt 20) $cText $cFrame
-$viewLabel.TextAlign = 'MiddleRight'
-$askBanner = New-Label '' 256 116 560 26 (Vt 18) (RGB 0x3a 0x1f 0x00) $cSel
+$askBanner = New-Label '' 256 116 826 26 (Vt 18) (RGB 0x3a 0x1f 0x00) $cSel
 $askBanner.TextAlign = 'MiddleLeft'
 $askBanner.Visible = $false
-$mirror = New-Object System.Windows.Forms.Panel
-$mirror.SetBounds(256, 146, 560, 318)
-$mirror.BackColor = $cScreen
-$mirror.TabStop = $true
-$form.Controls.Add($mirror)
+
+# HOME state
+$hintLabel = New-Label 'pick a chip, or talk to me' 640 84 442 26 (Vt 20) $cHint $cFrame
+$hintLabel.TextAlign = 'MiddleRight'
+$portrait = New-Picture 256 116 230 342 (Crop-Cover $AliceImg 230 342 0.5 0.2)
+$aliceName = New-Label 'ALICE.EXE' 256 458 124 30 (Pix 8) $cPink $cEdge
+$aliceName.TextAlign = 'MiddleRight'
+$aliceStatus = New-Label '' 380 458 106 30 (New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)) $cGreen $cEdge
+$aliceStatus.TextAlign = 'MiddleLeft'
+$chatLog = New-Object System.Windows.Forms.RichTextBox
+$chatLog.ReadOnly = $true
+$chatLog.BorderStyle = 'None'
+$chatLog.ScrollBars = 'Vertical'
+$chatLog.SetBounds(496, 116, 586, 334)
+$chatLog.BackColor = $cPaper
+$chatLog.ForeColor = RGB 0x10 0x20 0x40
+$chatLog.Font = Vt 18
+$chatLog.SelectionIndent = 8
+$chatLog.SelectionRightIndent = 8
+$form.Controls.Add($chatLog)
+$statusHdr = New-Label 'PC STATUS' 256 496 120 22 (Pix 7) $cInk $cYellow
+$statusHdr.TextAlign = 'MiddleCenter'
+$Stats = [ordered]@{}
+$statX = 256
+foreach ($k in @('CPU', 'RAM', 'C:', 'DEFENDER')) {
+    $box = New-Object System.Windows.Forms.Panel
+    $box.SetBounds($statX, 524, 200, 50)
+    $box.Add_Paint({
+        param($ctl, $e)
+        $r = New-Object System.Drawing.Rectangle -ArgumentList 0, 0, $ctl.Width, $ctl.Height
+        $br = New-Object System.Drawing.Drawing2D.LinearGradientBrush -ArgumentList $r, (RGB 0x90 0xa8 0xb8), (RGB 0x50 0x68 0x78), 90.0
+        $e.Graphics.FillRectangle($br, $r)
+        $br.Dispose()
+        $pen = New-Object System.Drawing.Pen -ArgumentList $cEdge, 3
+        $e.Graphics.DrawRectangle($pen, 1, 1, $ctl.Width - 3, $ctl.Height - 3)
+        $pen.Dispose()
+    })
+    $key = New-Object System.Windows.Forms.Label
+    $key.Text = $k
+    $key.SetBounds(8, 5, 180, 14)
+    $key.Font = Pix 6
+    $key.ForeColor = RGB 0xe8 0xf0 0xf8
+    $key.BackColor = [System.Drawing.Color]::Transparent
+    $val = New-Object System.Windows.Forms.Label
+    $val.Text = '--'
+    $val.SetBounds(6, 18, 190, 30)
+    $val.Font = Vt 26
+    $val.ForeColor = $cGreen
+    $val.BackColor = [System.Drawing.Color]::Transparent
+    $box.Controls.Add($key)
+    $box.Controls.Add($val)
+    $form.Controls.Add($box)
+    $Stats[$k] = @{ Box = $box; Value = $val }
+    $statX += 209
+}
 $logBox = New-Object System.Windows.Forms.RichTextBox
 $logBox.ReadOnly = $true
 $logBox.BorderStyle = 'None'
 $logBox.ScrollBars = 'Vertical'
-$logBox.SetBounds(256, 472, 560, 150)
+$logBox.SetBounds(256, 580, 740, 42)
 $logBox.BackColor = RGB 0x0b 0x18 0x30
 $logBox.ForeColor = RGB 0xdf 0xe8 0xff
 $logBox.Font = New-Object System.Drawing.Font('Consolas', 9)
 $logBox.SelectionIndent = 8
 $logBox.SelectionRightIndent = 8
 $form.Controls.Add($logBox)
+$btnLog = New-Button 'SAVE LOG' 1000 580 82 42 $cIdle $cIdleInk (Pix 6)
 
-# Right: NAVI with Alice, chat, mic, voice toggle, save log.
-$naviFrame = New-Frame 834 76 258 556 $cFrame
-$naviHdr = New-Label 'NAVI' 844 86 90 24 (Pix 7) $cInk $cYellow
-$naviHdr.TextAlign = 'MiddleCenter'
-$aliceBox = New-Object System.Windows.Forms.PictureBox
-$aliceBox.SetBounds(844, 116, 76, 76)
-$aliceBox.BackColor = RGB 0x20 0x30 0x60
-$aliceBox.SizeMode = 'Zoom'
-$alicePng = Join-Path $Here 'alice.png'
-if (Test-Path $alicePng) { $aliceBox.Image = [System.Drawing.Image]::FromFile($alicePng) }
-$form.Controls.Add($aliceBox)
-$aliceName = New-Label 'ALICE.EXE' 930 116 160 22 (Pix 9) $cPink $cFrame
-$aliceStatus = New-Label '' 930 142 160 50 (Vt 20) $cGreen $cFrame
-$chatLog = New-Object System.Windows.Forms.RichTextBox
-$chatLog.ReadOnly = $true
-$chatLog.BorderStyle = 'None'
-$chatLog.ScrollBars = 'Vertical'
-$chatLog.SetBounds(844, 204, 238, 300)
-$chatLog.BackColor = $cPaper
-$chatLog.ForeColor = RGB 0x10 0x20 0x40
-$chatLog.Font = Vt 18
-$chatLog.SelectionIndent = 6
-$chatLog.SelectionRightIndent = 6
-$form.Controls.Add($chatLog)
+# CHIP state
+$btnHome = New-Button '< HOME' 444 84 96 28 (RGB 0x58 0x78 0xa0) (RGB 0xff 0xff 0xff) (Pix 7)
+$viewKey = New-Label 'VIEW:' 900 86 70 24 (Pix 7) $cText $cFrame
+$viewKey.TextAlign = 'MiddleRight'
+$viewMode = New-Label 'FULL' 972 86 54 24 (Pix 7) $cInk $cYellow
+$viewMode.TextAlign = 'MiddleCenter'
+$viewPet = New-Label 'PET' 1028 86 54 24 (Pix 7) $cText $cFrame
+$viewPet.TextAlign = 'MiddleCenter'
+$mirror = New-Object System.Windows.Forms.Panel
+$mirror.SetBounds(256, 116, 826, 466)
+$mirror.BackColor = $cScreen
+$mirror.TabStop = $true
+$form.Controls.Add($mirror)
+$miniFace = New-Picture 256 590 32 32 (Crop-Cover $AliceImg 32 32 0.5 0.12)
+$aliceWho = New-Label 'ALICE:' 292 590 80 32 (Vt 20) (RGB 0xc0 0x28 0x80) $cPaper
+$aliceWho.TextAlign = 'MiddleLeft'
+$aliceWho.Padding = New-Object System.Windows.Forms.Padding(6, 0, 0, 0)
+$aliceLine = New-Label '' 372 590 358 32 (Vt 20) (RGB 0x10 0x20 0x40) $cPaper
+$aliceLine.TextAlign = 'MiddleLeft'
+$aliceLine.AutoEllipsis = $true
+
+# Shared by both states (moved by Set-View): Send mail, MIC, SPK.
 $chatBox = New-Object System.Windows.Forms.TextBox
-$chatBox.SetBounds(844, 512, 238, 28)
-$chatBox.Font = Vt 18
+$chatBox.Font = Vt 20
+$chatBox.BorderStyle = 'FixedSingle'
 $form.Controls.Add($chatBox)
-$btnMic = New-Button 'MIC' 844 548 124 30 (RGB 0xc0 0x50 0xf0) (RGB 0xff 0xff 0xff) (Pix 8)
-$btnVoice = New-Button 'SPK' 972 548 40 30 (RGB 0x40 0x80 0xd0) (RGB 0xff 0xff 0xff) (Pix 6)
-$btnSend = New-Button 'SEND' 1016 548 66 30 $cNet (RGB 0xff 0xff 0xff) (Pix 7)
-$btnLog = New-Button 'SAVE LOG' 844 586 238 30 $cIdle $cIdleInk (Pix 8)
+$btnMic = New-Button 'MIC' 0 0 68 30 (RGB 0xc0 0x50 0xf0) (RGB 0xff 0xff 0xff) (Pix 8)
+$btnVoice = New-Button 'SPK' 0 0 68 30 (RGB 0x40 0x80 0xd0) (RGB 0xff 0xff 0xff) (Pix 8)
 $tips = New-Object System.Windows.Forms.ToolTip
 $tips.SetToolTip($btnVoice, 'Alice reads answers aloud (click to mute)')
 $tips.SetToolTip($btnMic, 'Hold to talk (or hold F9)')
-$form.AcceptButton = $btnSend
+$tips.SetToolTip($btnHome, 'Back to HOME (Esc; Shift+Esc while typing into the PET screen)')
+$tips.SetToolTip($chatBox, 'Send mail to Alice (Enter)')
+[JackInFrame]::Cue($chatBox.Handle, 'Send mail...')
+
+$HomeCtl = @($hintLabel, $portrait, $aliceName, $aliceStatus, $chatLog, $statusHdr, $logBox, $btnLog, $btnVoice) + @($Stats.Values | ForEach-Object { $_.Box })
+$ChipCtl = @($btnHome, $viewKey, $viewMode, $viewPet, $mirror, $miniFace, $aliceWho, $aliceLine)
+
+# Shows HOME or the open chip in the centre.
+function Set-View([string]$view) {
+    $S.View = $view
+    $atHome = ($view -eq 'home')
+    $form.SuspendLayout()
+    foreach ($c in $HomeCtl) { $c.Visible = $atHome }
+    foreach ($c in $ChipCtl) { $c.Visible = -not $atHome }
+    if ($atHome) {
+        $tabLabel.SetBounds(256, 86, 90, 24)
+        $chatBox.SetBounds(496, 458, 440, 30)
+        $btnMic.SetBounds(942, 458, 68, 30)
+        $btnVoice.SetBounds(1014, 458, 68, 30)
+    } else {
+        $tabLabel.SetBounds(256, 86, 180, 24)
+        $chatBox.SetBounds(736, 590, 270, 32)
+        $btnMic.SetBounds(1012, 590, 70, 32)
+    }
+    $form.ResumeLayout()
+    Update-Ui
+}
 
 # --- helpers ---------------------------------------------------------------------
 
@@ -308,11 +418,14 @@ function Add-Chat([string]$who, [string]$text) {
     $stamp = (Get-Date).ToString('HH:mm:ss')
     $S.Log.Add("$stamp  ${who}: $text")
     if ($who -eq 'Alice') {
-        Write-Rich $chatLog 'ALICE  ' (RGB 0xc0 0x28 0x80) $true
-        Write-Rich $chatLog "$text`n" (RGB 0x10 0x20 0x40)
+        Write-Rich $chatLog 'ALICE: ' (RGB 0xc0 0x28 0x80) $true $null 11
+        Write-Rich $chatLog "$text`n" (RGB 0x10 0x20 0x40) $false $null 11
+        $aliceLine.Text = ($text -replace '\s+', ' ')
+        $tips.SetToolTip($aliceLine, $text)
     } else {
-        Write-Rich $chatLog "$who  " (RGB 0x20 0x50 0xc0) $true
-        Write-Rich $chatLog "$text`n" (RGB 0x10 0x20 0x40)
+        $name = $(if ($who -eq 'you') { $env:USERNAME.ToUpper() } else { $who })
+        Write-Rich $chatLog "${name}: " (RGB 0x20 0x50 0xc0) $true $null 11
+        Write-Rich $chatLog "$text`n" (RGB 0x10 0x20 0x40) $false $null 11
     }
     Write-Rich $chatLog "`n" (RGB 0x10 0x20 0x40) $false $null 4
     $chatLog.ScrollToCaret()
@@ -348,11 +461,11 @@ function Update-Ui {
     $mode = Get-Mode
     if ($S.Linked) {
         $statusLabel.Text = "> OPERATOR: $env:USERNAME  -  LINK: $($env:COMPUTERNAME)" + $(if ($S.Net) { '  -  NET ON' } else { '' })
-        $aliceStatus.Text = "* ONLINE`nHP 1000"
+        $aliceStatus.Text = [string][char]0x25CF + ' ONLINE'
         $aliceStatus.ForeColor = $cGreen
     } else {
         $statusLabel.Text = '- looking for the PET...'
-        $aliceStatus.Text = "- NO LINK`n"
+        $aliceStatus.Text = [string][char]0x25CB + ' NO LINK'
         $aliceStatus.ForeColor = $cHint
     }
     foreach ($m in $ModeButtons.Keys) {
@@ -365,15 +478,17 @@ function Update-Ui {
             $b.ForeColor = $cIdleInk
         }
     }
-    $viewLabel.Text = $(if (Input-Allowed) { 'VIEW: FULL PET' } else { 'VIEW: READ ONLY' })
+    $viewMode.Text = $(if (Input-Allowed) { 'FULL' } else { 'READ' })
+    $viewMode.BackColor = $(if (Input-Allowed) { $cYellow } else { $cIdle })
+    $viewMode.ForeColor = $(if (Input-Allowed) { $cInk } else { $cIdleInk })
+    $tips.SetToolTip($viewMode, $(if (Input-Allowed) { 'Click the PET screen, then type: keys go to the PET' } else { 'Read: you can watch the PET screen. Pick Ask or Full to type into it' }))
     $adminLink.Visible = -not $S.Admin
     $btnNet.Text = $(if ($S.Net) { 'STOP' } else { 'NET' })
     $btnNet.BackColor = $(if ($S.Net) { $cYellow } else { $cNet })
     $btnNet.ForeColor = $(if ($S.Net) { $cInk } else { RGB 0xff 0xff 0xff })
     $chatBox.Enabled = $S.Linked
-    $btnSend.Enabled = $S.Linked
     $btnMic.Enabled = $S.Linked -or $Mic.On
-    $tabLabel.Text = $(if ($S.ChipId) { (($S.Chips | Where-Object { $_.id -eq $S.ChipId } | Select-Object -First 1).name).ToUpper() + '.CHP' } else { 'LAUNCHER.CHP' })
+    $tabLabel.Text = $(if ($S.View -eq 'chip' -and $S.ChipId) { (Chip-Name $S.ChipId).ToUpper() + '.CHP' } else { 'HOME' })
     $mirror.Invalidate()
 }
 
@@ -439,35 +554,57 @@ function Select-ChipClick {
     Select-Chip ([string]$sender.Tag)
 }
 
+function Chip-Name([string]$id) {
+    $c = $S.Chips | Where-Object { $_.id -eq $id } | Select-Object -First 1
+    if ($c) { return [string]$c.name }
+    return $id
+}
+
+# HOME is always the first row (Alice's face, code H); the PET's chips follow.
 function Build-Chips([object[]]$list) {
     foreach ($r in $script:ChipRows) { $r.Row.Dispose() }
     $script:ChipRows = @()
     $S.Chips = @()
     $y = 6
+    $rows = @([pscustomobject]@{ id = 'home'; name = 'HOME'; code = 'H'; home = $true })
     foreach ($c in $list) {
         $id = [string](Get-Field $c 'id')
-        if (-not $id) { continue }
-        $chip = [ordered]@{
-            id = $id; name = [string](Get-Field $c 'name'); number = [string](Get-Field $c 'number')
-            code = [string](Get-Field $c 'code'); desc = [string](Get-Field $c 'desc'); art = [string](Get-Field $c 'art')
+        if (-not $id -or $id -eq 'home') { continue }
+        $rows += [pscustomobject]@{ id = $id; name = [string](Get-Field $c 'name'); code = [string](Get-Field $c 'code'); home = $false; src = $c }
+    }
+    foreach ($r in $rows) {
+        $id = $r.id
+        if ($r.home) {
+            $chip = [ordered]@{ id = 'home'; name = 'HOME'; number = ''; code = 'H'; desc = 'Alice, chat and PC status'; art = '' }
+        } else {
+            $c = $r.src
+            $chip = [ordered]@{
+                id = $id; name = [string](Get-Field $c 'name'); number = [string](Get-Field $c 'number')
+                code = [string](Get-Field $c 'code'); desc = [string](Get-Field $c 'desc'); art = [string](Get-Field $c 'art')
+            }
+            $S.Chips += [pscustomobject]$chip
         }
-        $S.Chips += [pscustomobject]$chip
         $row = New-Object System.Windows.Forms.Panel
-        $row.SetBounds(6, $y, 202, 50)
+        $row.SetBounds(6, $y, 202, 46)
         $row.Tag = $id
         $row.Cursor = [System.Windows.Forms.Cursors]::Hand
         $row.Add_Click({ param($sender, $e) Select-ChipClick $sender $e })
         $art = New-Object System.Windows.Forms.PictureBox
-        $art.SetBounds(4, 8, 34, 34)
+        $art.SetBounds(4, 6, 34, 34)
         $art.BackColor = $cEdge
         $art.SizeMode = 'Zoom'
         $art.Tag = $id
         $art.Add_Click({ param($sender, $e) Select-ChipClick $sender $e })
-        $thumb = Decode-Art $chip.art
-        if ($thumb) { $art.Image = $thumb }
+        if ($r.home) {
+            $art.SizeMode = 'Normal'
+            $art.Image = Crop-Cover $AliceImg 34 34 0.5 0.12
+        } else {
+            $thumb = Decode-Art $chip.art
+            if ($thumb) { $art.Image = $thumb }
+        }
         $name = New-Object System.Windows.Forms.Label
         $name.Text = $chip.name
-        $name.SetBounds(46, 10, 124, 30)
+        $name.SetBounds(46, 8, 124, 30)
         $name.Font = Vt 22
         $name.ForeColor = $cPaper
         $name.BackColor = $cPanel
@@ -475,9 +612,9 @@ function Build-Chips([object[]]$list) {
         $name.Add_Click({ param($sender, $e) Select-ChipClick $sender $e })
         $code = New-Object System.Windows.Forms.Label
         $code.Text = $chip.code
-        $code.SetBounds(172, 13, 24, 24)
+        $code.SetBounds(172, 11, 24, 24)
         $code.Font = Pix 8
-        $code.ForeColor = RGB 0xc0 0x18 0x18
+        $code.ForeColor = $(if ($r.home) { RGB 0x20 0x50 0xc0 } else { RGB 0xc0 0x18 0x18 })
         $code.BackColor = $cPaper
         $code.TextAlign = 'MiddleCenter'
         $code.Tag = $id
@@ -487,37 +624,60 @@ function Build-Chips([object[]]$list) {
         $row.Controls.Add($code)
         $chipList.Controls.Add($row)
         $script:ChipRows += @{ Id = $id; Row = $row; Name = $name; Art = $art; Chip = $chip }
-        $y += 56
+        $y += 50
     }
+    Use-GdiPlusText $chipList
     Update-Folder
 }
 
 function Update-Folder {
+    $cur = $(if ($S.View -eq 'chip' -and $S.ChipId) { $S.ChipId } else { 'home' })
     foreach ($r in $script:ChipRows) {
-        $on = ($r.Id -eq $S.ChipId)
+        $on = ($r.Id -eq $cur)
         $r.Row.BackColor = $(if ($on) { $cSel } else { $cPanel })
         $r.Name.BackColor = $r.Row.BackColor
         $r.Name.ForeColor = $(if ($on) { $cSelInk } else { $cPaper })
     }
-    $sel = $script:ChipRows | Where-Object { $_.Id -eq $S.ChipId } | Select-Object -First 1
+    $sel = $script:ChipRows | Where-Object { $_.Id -eq $cur -and $_.Id -ne 'home' } | Select-Object -First 1
     if ($sel) {
         $c = $sel.Chip
         $infoArt.Image = Scale-Art (Decode-Art $c.art) 90 114
         $infoText.Text = "$($c.name.ToUpper())`nCODE $($c.code)`n$($c.desc)"
     } else {
-        $infoArt.Image = $null
-        $infoText.Text = $(if ($S.Linked) { 'Pick a chip to open it on the PET.' } else { 'waiting for the PET...' })
+        $infoArt.Image = Crop-Cover $AliceImg 90 114 0.5 0.15
+        $infoText.Text = $(if ($S.Linked) { "HOME`nCODE H`nAlice and`nPC status" } else { 'waiting for the PET...' })
     }
     Update-Ui
 }
 
+# One chip at a time. The PET leaves the open chip (stopping its player or game)
+# before it enters the next one, or goes back to its Jack In screen for HOME.
 function Select-Chip([string]$id) {
-    if (-not $S.Linked -or -not $id) { return }
-    $S.ChipId = $id
-    Send-Pet ([ordered]@{ t = 'open'; chip = $id })
-    $name = ($S.Chips | Where-Object { $_.id -eq $id } | Select-Object -First 1).name
-    Add-Log "you opened $name on the PET"
+    if (-not $id) { return }
+    if ($id -eq 'home') { Go-Home; return }
+    if (-not $S.Linked) { return }
+    if ($id -ne $S.ChipId -or $S.View -ne 'chip') {
+        $before = $S.ChipId
+        Restart-Mirror
+        $S.ChipId = $id
+        Send-Pet ([ordered]@{ t = 'open'; chip = $id })
+        Add-Log $(if ($before) { "you switched the PET from $(Chip-Name $before) to $(Chip-Name $id)" } else { "you opened $(Chip-Name $id) on the PET" })
+    }
+    Set-View 'chip'
     Update-Folder
+    $mirror.Focus() | Out-Null
+}
+
+function Go-Home {
+    if ($S.ChipId -and $S.Linked) {
+        Send-Pet ([ordered]@{ t = 'home' })
+        Add-Log "you closed $(Chip-Name $S.ChipId); the PET is back on Jack In"
+    }
+    $S.ChipId = ''
+    Restart-Mirror
+    Set-View 'home'
+    Update-Folder
+    $chatBox.Focus() | Out-Null
 }
 
 function Apply-Frame($msg) {
@@ -556,11 +716,19 @@ function Clear-Mirror {
 
 # The PET only sends frames while this window is up and not minimized.
 function Sync-Mirror {
-    $want = [bool]($S.Linked -and $form.Visible -and $form.WindowState -ne 'Minimized')
+    $want = [bool]($S.Linked -and $S.View -eq 'chip' -and $form.Visible -and $form.WindowState -ne 'Minimized')
     if ($want -ne $S.MirrorSent) {
         $S.MirrorSent = $want
         Send-Pet ([ordered]@{ t = 'mirror'; on = $want })
     }
+}
+
+# A new chip: drop the old picture and turn the mirror off, so the PET starts the
+# next chip with a full frame (it only sends changed rows otherwise).
+function Restart-Mirror {
+    if ($S.MirrorSent) { Send-Pet ([ordered]@{ t = 'mirror'; on = $false }) }
+    $S.MirrorSent = $false
+    Clear-Mirror
 }
 
 $script:FrameBmp = $null
@@ -661,6 +829,7 @@ function Invoke-Scan {
     }
     if (-not $scan.Contains('defender')) { $scan.defender = '?' }
     Send-Pet $scan
+    Update-Stats $scan
     $summary = @()
     if ($scan.Contains('ram')) { $summary += "RAM $($scan.ram)%" }
     if ($scan.Contains('disk_free')) { $summary += "C: $($scan.disk_free)% free" }
@@ -670,6 +839,25 @@ function Invoke-Scan {
     Add-Log 'read-only checks complete'
     $form.Cursor = [System.Windows.Forms.Cursors]::Default
     $S.Busy = $false
+}
+
+# PC STATUS boxes on HOME: green is fine, yellow worth a look, red needs a fix.
+function Set-Stat([string]$key, [string]$text, [int]$level) {
+    $v = $Stats[$key].Value
+    $v.Text = $text
+    $v.ForeColor = $(switch ($level) { 0 { $cGreen } 1 { $cYellow } 2 { RGB 0xf8 0x58 0x58 } default { $cIdleInk } })
+}
+
+function Update-Stats($scan) {
+    if ($null -eq $scan) {
+        foreach ($k in @($Stats.Keys)) { Set-Stat $k '--' -1 }
+        return
+    }
+    if ($scan.Contains('cpu')) { Set-Stat 'CPU' "$($scan.cpu)%" $(if ($scan.cpu -ge 90) { 2 } elseif ($scan.cpu -ge 60) { 1 } else { 0 }) }
+    if ($scan.Contains('ram')) { Set-Stat 'RAM' "$($scan.ram)%" $(if ($scan.ram -ge 90) { 2 } elseif ($scan.ram -ge 60) { 1 } else { 0 }) }
+    if ($scan.Contains('disk_free')) { Set-Stat 'C:' "$($scan.disk_free)% free" $(if ($scan.disk_free -lt 10) { 2 } elseif ($scan.disk_free -lt 20) { 1 } else { 0 }) }
+    $d = [string]$scan.defender
+    Set-Stat 'DEFENDER' $d.ToUpper() $(if ($d -eq 'on') { 0 } elseif ($d -eq 'off') { 2 } else { 1 })
 }
 
 # --- commands from the PET -------------------------------------------------------
@@ -887,6 +1075,7 @@ function Drop-Link([string]$why) {
         Stop-Sharing
         Clear-Mirror
         Build-Chips @()
+        Set-View 'home'
         Add-Log "link lost: $why (back to read-only)"
     }
     Update-Ui
@@ -1042,11 +1231,26 @@ $btnLog.Add_Click({
     }
 })
 
-$btnSend.Add_Click({ Send-Chat })
+$chatBox.Add_KeyDown({
+    param($ctl, $e)
+    if ($e.KeyCode -eq 'Return') { $e.Handled = $true; $e.SuppressKeyPress = $true; Send-Chat }
+})
+$btnHome.Add_Click({ Go-Home })
 $btnMic.Add_MouseDown({ Start-Mic })
 $btnMic.Add_MouseUp({ Stop-Mic })
 # Hold F9 anywhere in the window to talk (key repeat is ignored while recording).
-$form.Add_KeyDown({ param($sender, $e) if ($e.KeyCode -eq 'F9') { $e.Handled = $true; if (-not $Mic.On) { Start-Mic } } })
+# Esc goes HOME from a chip. While you type into the PET screen (it has the focus
+# in Ask or Full), plain Esc goes to the chip instead and Shift+Esc goes HOME.
+$form.Add_KeyDown({
+    param($ctl, $e)
+    if ($e.KeyCode -eq 'F9') { $e.Handled = $true; if (-not $Mic.On) { Start-Mic }; return }
+    if ($e.KeyCode -eq 'Escape' -and $S.View -eq 'chip') {
+        if ($mirror.Focused -and (Input-Allowed) -and -not $e.Shift) { return }
+        $e.Handled = $true
+        $e.SuppressKeyPress = $true
+        Go-Home
+    }
+})
 $form.Add_KeyUp({ param($sender, $e) if ($e.KeyCode -eq 'F9') { $e.Handled = $true; Stop-Mic } })
 $btnVoice.Add_Click({
     $S.Speak = -not $S.Speak
@@ -1093,6 +1297,7 @@ function Use-GdiPlusText($parent) {
 Use-GdiPlusText $form
 
 Build-Chips @()
+Set-View 'home'
 Add-Log "Jack In $AppVersion$(if ($Elevated) { ' (admin)' }) - $($env:COMPUTERNAME) - read-only until you pick Ask or Full"
 Update-Ui
 $timer.Start()
@@ -1100,5 +1305,6 @@ $timer.Start()
 $timer.Dispose()
 if ($script:Voice) { $script:Voice.Dispose() }
 Clear-Mirror
+if ($AliceImg) { $AliceImg.Dispose() }
 $Fonts.Dispose()
 $form.Dispose()

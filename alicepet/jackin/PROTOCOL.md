@@ -34,6 +34,7 @@ the person holds the app's talk button; the PET can't start it.
 | `scan` | `cpu`, `ram` (% used), `disk`, `disk_free` (%), `startup`, `defender` (`on`/`off`/`?`), `defender_since`, `top` [`{name, mb}`] | Read-only scan results |
 | `state` | `full`, `admin`, `net`, `input`, optional `denied` (`"admin"` when UAC was cancelled) | Something changed on the PC |
 | `open` | `chip` | Open a PC-capable chip (`terminal`, `jellyfin`, `retro`, `lan-tech`) on the PET. Ignored for any other id |
+| `home` | | Leave the chip the PC opened (its player or game is stopped first) and go back to the PET's Jack In screen. The PC sends `open` or `home` one at a time: the PET always leaves the open chip before entering the next |
 | `mirror` | `on` | Start (`true`) or stop (`false`) the PET screen mirror. The PET stops when no PC is linked |
 | `key` | `k` | One key: `Left`, `Right`, `Up`, `Down`, `Enter`, `Escape`, `Backspace`, `Tab`. Dropped unless `input` is true |
 | `char` | `c` | One UTF-8 character (1 to 4 bytes). Dropped unless `input` is true |

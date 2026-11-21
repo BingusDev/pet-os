@@ -145,7 +145,13 @@ JackInChip::~JackInChip() {
 // --- lifecycle -----------------------------------------------------------------
 
 void JackInChip::enter() {
-    view_ = connected_ ? View::Session : View::Waiting;
+    // Back from a chip the PC opened: the link and USB port never went down.
+    if (connected_) {
+        view_ = View::Session;
+        touch();
+        return;
+    }
+    view_ = View::Waiting;
     status_.clear();
     if (config_.jack_gadget_up.empty()) {
         usb_ok_ = true;
@@ -245,6 +251,10 @@ void JackInChip::on_line(const std::string& line) {
         } else {
             note("PC asked for a chip that stays on the PET", LogLine::Kind::Fail);
         }
+    } else if (t == "home") {
+        // The PC app's HOME: leave the PC-opened chip (stopping its player) and
+        // come back to this Jack In screen.
+        opening_.push_back(id());
     } else if (t == "mirror") {
         const bool on = msg["on"].boolean(false) && connected_;
         if (on && !mirror_on_) last_px_.clear();  // the next frame is a full one

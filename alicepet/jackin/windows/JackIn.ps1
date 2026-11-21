@@ -30,7 +30,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-$AppVersion = '0.2'
+$AppVersion = '0.3'
 $Here = Split-Path -Parent $PSCommandPath
 
 # --- session state -------------------------------------------------------------
@@ -138,13 +138,6 @@ $netLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8)
 $netLabel.SetBounds(14, 312, 168, 18)
 $left.Controls.Add($netLabel)
 
-$chkSpeak = New-Object System.Windows.Forms.CheckBox
-$chkSpeak.Text = 'Read answers aloud'
-$chkSpeak.Checked = $true
-$chkSpeak.ForeColor = [System.Drawing.Color]::White
-$chkSpeak.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-$chkSpeak.SetBounds(14, 412, 170, 22)
-$left.Controls.Add($chkSpeak)
 
 # Main panel: request banner, chat log, input row, action bar.
 $ask = New-Object System.Windows.Forms.Label
@@ -170,7 +163,7 @@ $logBox.SelectionRightIndent = 8
 $form.Controls.Add($logBox)
 
 $chatBox = New-Object System.Windows.Forms.TextBox
-$chatBox.SetBounds(200, 352, 400, 30)
+$chatBox.SetBounds(200, 352, 360, 30)
 $chatBox.Font = New-Object System.Drawing.Font('Segoe UI', 11)
 $form.Controls.Add($chatBox)
 
@@ -187,7 +180,12 @@ function New-Button($text, $x, $y, $w, $h, $color) {
     return $btn
 }
 $MicIdle = 'Hold to talk · F9'
-$btnSend = New-Button 'Send' 606 351 70 30 (RGB 0x2d 0x6b 0xe0)
+$btnSend = New-Button 'Send' 566 351 70 30 (RGB 0x2d 0x6b 0xe0)
+# Alice's voice on/off, next to the talk button.
+$btnVoice = New-Button ([string][char]0xD83D + [char]0xDD0A) 640 351 36 30 (RGB 0x1b 0x4f 0x97)
+$btnVoice.Font = New-Object System.Drawing.Font('Segoe UI Emoji', 10)
+$tips = New-Object System.Windows.Forms.ToolTip
+$tips.SetToolTip($btnVoice, 'Alice reads answers aloud (click to mute)')
 $btnMic = New-Button $MicIdle 680 351 110 30 (RGB 0xc0 0x4a 0xff)
 $form.AcceptButton = $btnSend
 $btnNet = New-Button 'Share PC Internet' 200 397 140 36 (RGB 0x2f 0x7f 0xd8)
@@ -729,9 +727,12 @@ $btnMic.Add_MouseUp({ Stop-Mic })
 # Hold F9 anywhere in the window to talk (key repeat is ignored while recording).
 $form.Add_KeyDown({ param($sender, $e) if ($e.KeyCode -eq 'F9') { $e.Handled = $true; if (-not $Mic.On) { Start-Mic } } })
 $form.Add_KeyUp({ param($sender, $e) if ($e.KeyCode -eq 'F9') { $e.Handled = $true; Stop-Mic } })
-$chkSpeak.Add_CheckedChanged({
-    $S.Speak = $chkSpeak.Checked
+$btnVoice.Add_Click({
+    $S.Speak = -not $S.Speak
     if (-not $S.Speak -and $Voice) { $Voice.SpeakAsyncCancelAll() }
+    $btnVoice.Text = [string][char]0xD83D + $(if ($S.Speak) { [char]0xDD0A } else { [char]0xDD07 })
+    $btnVoice.BackColor = $(if ($S.Speak) { RGB 0x1b 0x4f 0x97 } else { RGB 0x5d 0x6b 0x82 })
+    $tips.SetToolTip($btnVoice, $(if ($S.Speak) { 'Alice reads answers aloud (click to mute)' } else { 'Alice is muted (click to hear her)' }))
 })
 
 $btnOut.Add_Click({ Add-Log 'you pressed JACK OUT'; Jack-Out 'PC' })

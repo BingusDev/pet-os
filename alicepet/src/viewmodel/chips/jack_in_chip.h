@@ -67,7 +67,7 @@ public:
     View view() const { return view_; }
     bool connected() const { return connected_; }
     const std::string& usb_status() const { return usb_status_; }
-    bool usb_ok() const { return usb_ok_; }
+    bool usb_ok() const { return usb_ok_ && !usb_no_pc_; }
     const std::string& listen_address() const { return config_.jack_listen; }
     const std::string& host() const { return host_; }
     const std::string& os() const { return os_; }
@@ -143,6 +143,10 @@ private:
 
     bool usb_ok_{false};
     bool usb_busy_{false};
+    bool usb_no_pc_{false};        // gadget up but no PC on the cable for a while
+    uint32_t udc_check_ms_{0};
+    uint32_t unattached_ms_{0};
+    void check_cable(uint32_t elapsed_ms);
     std::string usb_status_;
     struct GadgetResult {
         bool up{false};

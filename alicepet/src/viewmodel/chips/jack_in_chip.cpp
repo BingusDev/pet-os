@@ -12,6 +12,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 
 namespace viewmodel::chips {
@@ -418,6 +420,7 @@ void JackInChip::tick(uint32_t elapsed_ms) {
             if (server_.listening()) touch();
         }
     }
+    check_cable(elapsed_ms);
     const auto polled = server_.poll();
     if (polled.connected && !connected_) touch();
     for (const auto& line : polled.lines) on_line(line);
@@ -440,6 +443,44 @@ void JackInChip::tick(uint32_t elapsed_ms) {
     BridgeReply chat;
     while (chat_.poll(chat)) {
         if (connected_) on_chat_reply(chat);
+    }
+}
+
+// The CardputerZero only reaches a PC through USB-C2 with the USB-SW slider on
+// C2. If the gadget is up but the controller has seen no host for a few
+// seconds, say so on the PET: the PC can't show anything until this is right.
+void JackInChip::check_cable(uint32_t elapsed_ms) {
+    if (!usb_ok_ || connected_) {
+        unattached_ms_ = 0;
+        if (usb_no_pc_) { usb_no_pc_ = false; usb_status_ = "USB: drive + network ready"; touch(); }
+        return;
+    }
+    udc_check_ms_ += elapsed_ms;
+    if (udc_check_ms_ < 500) return;
+    const uint32_t step = udc_check_ms_;
+    udc_check_ms_ = 0;
+    std::string state;
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator("/sys/class/udc", ec)) {
+        std::ifstream f(e.path() / "state");
+        std::getline(f, state);
+        break;
+    }
+    if (state.empty()) return;  // no controller info: don't guess
+    if (state == "not attached") {
+        unattached_ms_ += step;
+        if (unattached_ms_ >= 5000 && !usb_no_pc_) {
+            usb_no_pc_ = true;
+            usb_status_ = "No PC: cable in C2 (top), USB-SW to C2";
+            touch();
+        }
+    } else if (usb_no_pc_) {
+        unattached_ms_ = 0;
+        usb_no_pc_ = false;
+        usb_status_ = "USB: PC found, start JackIn on it";
+        touch();
+    } else {
+        unattached_ms_ = 0;
     }
 }
 

@@ -43,6 +43,7 @@ the person holds the app's talk button; the PET can't start it.
 | `net_fail` | `id` | The PC could not reach the host of `net_open` `id` |
 | `chat` | `text` | Typed to Alice in the app; the PET asks the bridge |
 | `voice` | `wav` (base64, 16 kHz mono 16-bit WAV, at most 15 s) | Spoken to Alice; the PET sends it to the bridge's voice route |
+| `progress` | `item`, `pos` (seconds of show time), `paused`, `state`: `playing` / `stopped` / `ended` / `error` / `seek`, optional `error` | The PET's video playing in the app: sent every 10 s, and once when it stops. `seek` (only for a non-seekable `play`) asks the PET to restart the stream at `pos` |
 | `bye` | `why` | The app is closing |
 
 ## PET → PC
@@ -57,7 +58,32 @@ the person holds the app's talk button; the PET can't start it.
 | `jackout` | `why` | Drop everything and close the app |
 | `alice` | `ok`, `text`, `heard` (voice transcript), `cmd` (a suggested fix, or empty) | Alice's answer to `chat` / `voice` |
 | `chips` | `list`: [`{id, name, number, code, desc, art}`] | The PC-capable chips, sent once after `hello`. `art` is the small label PNG, base64 |
+| `play` | `kind`: `video` / `game`, `title`, `url`; video: `item`, `start`, `base`, `length`, `seekable`; game: `direct` | Play here instead of on the PET. `url` is on the PET's relay (below). Video: open it in the NOW PLAYING player, seek to `start`; show time = `base` + player position. Game: open `url` in the default browser (`direct` is RomM's own URL, for the log) |
+| `stop_play` | `item` | The PET stopped the video (Esc on the PET, or it left the chip); no `progress` needed |
+| `player` | `cmd`: `seek` / `volume` / `pause`, `by` | The PET's arrows and space while its video plays here |
 | `frame` | `screen`, `w`, `h`, `y`, `n`, `rle` | Changed rows of the PET screen: `n` rows from row `y`. `rle` is base64 of run-length RGB565 (run `1..255` as one byte, then the pixel as two bytes, big-endian), row-major. A new `screen`, size or link starts with a full frame. Sent about 12 times a second while mirroring |
 
 When the control line closes (unplugged, PET left the chip), the app drops
 Full Access, stops sharing and closes.
+
+## Media relay (PET → PC playback)
+
+While a PC is linked, Jellyfin and Retro play in the app, not on the PET. The
+PET serves them on the link only (`[jackin] listen`), adding the server
+credentials itself; the PC never sees the Jellyfin API key or the RomM token.
+
+- `http://10.55.0.1:7344/m/<token>/<name>`: one upstream file (a Jellyfin direct
+  stream for H.264 MP4/MKV with AAC/MP3 audio, else an H.264/AAC MP4 transcode).
+  GET and HEAD, `Range` passed through. Unknown tokens get 404.
+- `http://10.55.0.1:7345/__pet/<token>?go=<path>`: sets an HttpOnly cookie and
+  redirects to `<path>`; every request with that cookie is forwarded to RomM's
+  origin (Bearer token added, `Secure`/`Domain` stripped from cookies, `Location`
+  made relative). WebSockets are not relayed (RomM shows a harmless banner).
+- Tokens are 128-bit random and die with the link. Ports: `[jackin] media_port`
+  (default 7344) and `media_port + 1`.
+
+While the PC operates a chip, the PET's panel shows a Jack In card
+("OPERATING <chip> from <PC>") on LVGL's top layer; the chip itself keeps
+rendering on the screen the mirror captures. The PET's own keys are ignored
+then, except [X] (jack out).
+

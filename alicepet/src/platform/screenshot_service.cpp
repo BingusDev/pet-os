@@ -153,6 +153,17 @@ bool save_active_screen_png(const std::string& path, std::string& error) {
     return ok;
 }
 
+bool save_object_png(lv_obj_t* obj, const std::string& path, std::string& error) {
+    lv_draw_buf_t* snapshot = obj ? lv_snapshot_take(obj, LV_COLOR_FORMAT_ARGB8888) : nullptr;
+    if (!snapshot) {
+        error = "LVGL snapshot failed";
+        return false;
+    }
+    const bool ok = write_png(std::filesystem::path(path), snapshot, error);
+    lv_draw_buf_destroy(snapshot);
+    return ok;
+}
+
 CaptureResult capture_active_screen() {
     CaptureResult result;
     auto* screen = lv_screen_active();

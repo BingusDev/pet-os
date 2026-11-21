@@ -116,6 +116,9 @@ private:
     void load_games();
     void download(const Game& game, bool then_play);
     void play(const Game& game);
+    // Jacked in: opens RomM's web player for the game in the PC's browser
+    // (through the PET's relay, which adds the RomM token) instead of RetroArch.
+    void play_on_pc(const Game& game);
     void stop_game();
     void start(const Game& game);  // pull a newer save if any, then play
     void fetch_saves(const Game& game);

@@ -8,6 +8,7 @@
 #include "platform/mpv_ipc.h"
 #include "platform/net.h"
 #include "platform/process.h"
+#include "viewmodel/chips/jack_in_chip.h"
 #include "viewmodel/alice_viewmodel.h"
 
 #include <algorithm>
@@ -247,6 +248,12 @@ void JellyfinChip::start_playback(long long start_ticks) {
     play_ms_ = poll_ms_ = report_ms_ = 0;
     stream_info_ = "requesting transcode...";
     view_ = View::Playing;
+    play_method_ = "Transcode";
+    if (pc_link::connected()) {
+        start_pc_playback(start_ticks);
+        touch();
+        return;
+    }
 #if USE_DESKTOP
     const std::string url = stream_url(playing_, start_ticks, false);
     const std::string token_header = "X-Emby-Token: " + config_.jellyfin_api_key;
@@ -293,7 +300,7 @@ void JellyfinChip::report(const char* endpoint, long long ticks, bool paused) {
     const std::string body = "{\"ItemId\":\"" + playing_.id + "\",\"MediaSourceId\":\"" + playing_.id +
                              "\",\"PlaySessionId\":\"" + play_session_ + "\",\"PositionTicks\":" + std::to_string(ticks) +
                              ",\"IsPaused\":" + (paused ? "true" : "false") +
-                             ",\"PlayMethod\":\"Transcode\",\"CanSeek\":true}";
+                             ",\"PlayMethod\":\"" + play_method_ + "\",\"CanSeek\":true}";
     const std::string url = base_ + endpoint;
     const std::string auth = auth_header();
     const bool stopped = std::string(endpoint) == "/Sessions/Playing/Stopped";
@@ -307,6 +314,11 @@ void JellyfinChip::report(const char* endpoint, long long ticks, bool paused) {
 
 void JellyfinChip::stop_playback() {
     if (view_ != View::Playing) return;
+    if (pc_playing_) {
+        pc_link::send("{\"t\":\"stop_play\",\"item\":\"" + platform::net::json_escape(playing_.id) + "\"}");
+        finish_pc_playback();
+        return;
+    }
     if (player_ > 0) {
         if (ipc_) mpv(R"({"command":["quit"]})");
         platform::proc::stop(player_, SIGTERM, 1500);
@@ -403,6 +415,19 @@ bool JellyfinChip::handle_key(Key key) {
         return true;
 
     case View::Playing:
+        if (pc_playing_) {
+            // Remote control for the PC app's player.
+            const auto cmd = [&](const char* what, int by) {
+                pc_link::send(std::string("{\"t\":\"player\",\"cmd\":\"") + what + "\",\"by\":" + std::to_string(by) + "}");
+            };
+            if (key == Key::Escape) stop_playback();
+            else if (key == Key::Left) cmd("seek", -10);
+            else if (key == Key::Right) cmd("seek", 10);
+            else if (key == Key::Up) cmd("volume", 5);
+            else if (key == Key::Down) cmd("volume", -5);
+            touch();
+            return true;
+        }
         if (key == Key::Escape) stop_playback();
         else if (key == Key::Left) mpv(R"({"command":["seek",-10]})");
         else if (key == Key::Right) mpv(R"({"command":["seek",10]})");
@@ -425,7 +450,9 @@ void JellyfinChip::handle_char(const std::string& utf8) {
             touch();
         }
     } else if (view_ == View::Playing) {
-        if (utf8 == " ") {
+        if (utf8 == " " && pc_playing_) {
+            pc_link::send(R"({"t":"player","cmd":"pause","by":0})");
+        } else if (utf8 == " ") {
             paused_ = !paused_;
             mpv(R"({"command":["cycle","pause"]})");
             touch();
@@ -481,7 +508,35 @@ void JellyfinChip::tick(uint32_t elapsed_ms) {
         case Result::What::Stream:
             stream_info_ = result.text;
             break;
+        case Result::What::PcStream: {
+            if (!pc_playing_ || view_ != View::Playing) break;
+            const std::string url = pc_link::relay_file(result.text, {auth_header()}, result.name);
+            if (url.empty()) {
+                pc_playing_ = false;
+                view_ = View::Error;
+                status_ = "Couldn't start the media relay for the PC.";
+                break;
+            }
+            pc_direct_ = result.direct;
+            play_method_ = result.direct ? "DirectPlay" : "Transcode";
+            const double start = static_cast<double>(start_ticks_) / kTicksPerSecond;
+            char nums[96];
+            // `start`: where the PC seeks to; `base`: the stream's own 0 in show time.
+            std::snprintf(nums, sizeof(nums), "\"start\":%.1f,\"base\":%.1f", result.direct ? start : 0.0,
+                          result.direct ? 0.0 : start);
+            const double length = static_cast<double>(playing_.runtime_ticks) / kTicksPerSecond;
+            char len[40];
+            std::snprintf(len, sizeof(len), "\"length\":%.1f", length);
+            pc_link::send("{\"t\":\"play\",\"kind\":\"video\",\"title\":\"" + platform::net::json_escape(pc_title()) +
+                          "\",\"url\":\"" + platform::net::json_escape(url) + "\"," + nums + "," + len +
+                          ",\"seekable\":" + (result.direct ? "true" : "false") + ",\"item\":\"" +
+                          platform::net::json_escape(playing_.id) + "\"}");
+            stream_info_ = std::string(result.direct ? "direct play" : "transcoding") + " on " + pc_link::host();
+            report("/Sessions/Playing", start_ticks_, false);
+            break;
+        }
         case Result::What::Error:
+            pc_playing_ = false;
             view_ = View::Error;
             status_ = result.text;
             break;
@@ -492,6 +547,15 @@ void JellyfinChip::tick(uint32_t elapsed_ms) {
         touch();
     }
 
+    if (pc_playing_) {
+        pc_tick();
+        report_ms_ += elapsed_ms;
+        if (pc_playing_ && report_ms_ >= kReportMs) {
+            report_ms_ = 0;
+            report("/Sessions/Playing/Progress", position_ticks_, paused_);
+        }
+        return;
+    }
     if (view_ == View::Playing && player_ > 0) {
         play_ms_ += elapsed_ms;
         poll_ms_ += elapsed_ms;
@@ -521,6 +585,99 @@ void JellyfinChip::tick(uint32_t elapsed_ms) {
             report("/Sessions/Playing/Progress", position_ticks_, paused_);
         }
     }
+}
+
+// --- playing in the PC app (jacked in) ---------------------------------------------
+
+std::string JellyfinChip::pc_title() const {
+    if (playing_.type != "Episode") return playing_.name;
+    std::string title = series() ? series()->name + " " : std::string();
+    title += "S" + std::to_string(playing_.season) + "E" + std::to_string(playing_.index) + " " + playing_.name;
+    return title;
+}
+
+void JellyfinChip::start_pc_playback(long long start_ticks) {
+    pc_playing_ = true;
+    stream_info_ = "asking Jellyfin for a PC stream...";
+    report_ms_ = 0;
+    results_.run([base = base_, auth = auth_header(), uid = user_id_, item = playing_.id, device = device_id_,
+                  session = play_session_, start_ticks, gen = generation_]() {
+        Result result{Result::What::Error, {}, {}, "", 0, gen};
+        const auto response = platform::net::http_get(base + "/Users/" + uid + "/Items/" + item, {auth}, kTimeoutMs);
+        platform::json::Value json;
+        if (!response.ok || response.status != 200 || !platform::json::parse(response.body, json)) {
+            result.text = response.ok ? "Jellyfin said HTTP " + std::to_string(response.status) + " for the item."
+                                      : "Can't reach Jellyfin (" + response.error + ").";
+            return result;
+        }
+        const auto& source = json["MediaSources"][0];
+        const std::string source_id = source["Id"].str(item);
+        const std::string container = lower(source["Container"].str());
+        std::string video, audio;
+        for (const auto& stream : source["MediaStreams"].items()) {
+            if (stream["Type"].str() == "Video" && video.empty()) video = lower(stream["Codec"].str());
+            if (stream["Type"].str() == "Audio" && audio.empty()) audio = lower(stream["Codec"].str());
+        }
+        // Windows Media Player (Media Foundation) plays these files as they are,
+        // with seeking; everything else gets an H.264/AAC MP4 transcode.
+        std::string ext;
+        for (const char* c : {"mp4", "m4v", "mov", "mkv"}) {
+            if (container.find(c) != std::string::npos) ext = c == std::string("mkv") ? "mkv" : "mp4";
+        }
+        const bool direct = video == "h264" && !ext.empty() && (audio.empty() || audio == "aac" || audio == "mp3");
+        const std::string ids = "MediaSourceId=" + source_id + "&DeviceId=" + device + "&PlaySessionId=" + session;
+        result.what = Result::What::PcStream;
+        result.direct = direct;
+        if (direct) {
+            result.text = base + "/Videos/" + item + "/stream." + ext + "?Static=true&" + ids;
+            result.name = "video." + ext;
+        } else {
+            result.text = base + "/Videos/" + item + "/stream.mp4?" + ids +
+                          "&VideoCodec=h264&AudioCodec=aac&VideoBitrate=8000000&AudioBitrate=192000"
+                          "&MaxAudioChannels=2&TranscodingMaxAudioChannels=2&MaxWidth=1920&StartTimeTicks=" +
+                          std::to_string(start_ticks);
+            result.name = "video.mp4";
+        }
+        return result;
+    });
+}
+
+void JellyfinChip::pc_tick() {
+    pc_link::Progress p;
+    while (pc_link::take_progress(p)) {
+        if (!pc_playing_ || p.item != playing_.id) continue;
+        if (p.state == "seek" && !pc_direct_) {
+            // A transcode can't seek: start a new one at the wanted time.
+            report("/Sessions/Playing/Stopped", position_ticks_, false);
+            start_playback(static_cast<long long>(std::max(0.0, p.pos) * kTicksPerSecond));
+            return;
+        }
+        if (p.state != "seek") {
+            position_ticks_ = static_cast<long long>(std::max(0.0, p.pos) * kTicksPerSecond);
+            paused_ = p.paused;
+        }
+        if (p.state == "stopped" || p.state == "ended" || p.state == "error") {
+            if (p.state == "error") status_ = "The PC couldn't play it: " + p.error;
+            finish_pc_playback();
+            return;
+        }
+        touch();
+    }
+    if (pc_playing_ && !pc_link::connected()) finish_pc_playback();  // the PC went away
+}
+
+void JellyfinChip::finish_pc_playback() {
+    pc_playing_ = false;
+    report("/Sessions/Playing/Stopped", position_ticks_, false);
+    playing_.position_ticks = position_ticks_;
+    for (auto& e : episodes_) {
+        if (e.id == playing_.id) e.position_ticks = position_ticks_;
+    }
+    for (auto& e : library_) {
+        if (e.id == playing_.id) e.position_ticks = position_ticks_;
+    }
+    view_ = return_view_;
+    touch();
 }
 
 } // namespace viewmodel::chips

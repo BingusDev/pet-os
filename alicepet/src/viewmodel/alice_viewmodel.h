@@ -108,6 +108,8 @@ public:
     static std::vector<std::string> wrap(const std::string& text, size_t cols);
     // Maps typography the pixel font lacks to ASCII and drops emoji.
     static std::string screen_text(const std::string& text);
+    // Counts as activity now (no dim or nap), e.g. while a PC operates a chip through JACK IN.
+    void hold_awake() { idle_ms_ = 0; }
 
 private:
     void show(Screen next);

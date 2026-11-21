@@ -110,6 +110,11 @@ bool key_to_utf8(uint32_t key, std::string& out) {
     return !out.empty();
 }
 
+// True while a PC operates a chip through JACK IN (the PET panel shows the
+// session view and the PET's own keys are kept off the PC's chip).
+bool g_pc_operating = false;
+viewmodel::chips::JackInChip* g_jack_keys = nullptr;
+
 // Routes global key presses into the view model.
 class KeyRouter {
 public:
@@ -135,6 +140,11 @@ private:
         auto* self = static_cast<KeyRouter*>(user_data);
         if (!self) {
             return false;
+        }
+        if (g_pc_operating) {
+            // The PC has the controls; [X] on the PET still jacks out.
+            if (!long_pressed && (key == 'x' || key == 'X') && g_jack_keys) g_jack_keys->handle_char("x");
+            return true;
         }
         if (long_pressed) {
             // Holding SPACE on Home = push-to-talk (VOICE takes a plain press itself).
@@ -268,6 +278,8 @@ void drain_pc_requests(viewmodel::AliceViewModel& vm) {
         jack->set_switching(true);
         vm.open_chip(index);
         jack->set_switching(false);
+        // HOME brings the PC back to the Jack In screen; any other chip runs for the PC.
+        jack->set_pc_chip(id == jack->id() ? std::string() : id);
     }
     viewmodel::chips::JackInChip::Input input;
     while (jack->take_input(input)) {
@@ -294,6 +306,81 @@ void mirror_frame(viewmodel::AliceViewModel& vm, uint32_t now_ms) {
                       static_cast<int>(snapshot->header.w), static_cast<int>(snapshot->header.h),
                       chip ? chip->id() : "launcher");
     lv_draw_buf_destroy(snapshot);
+}
+
+// The PET panel while the PC operates a chip: the chip still renders on the LVGL
+// screen (that is what the PC's mirror captures with lv_snapshot_take), but a
+// full-panel Jack In card sits on lv_layer_top(), which snapshots of the screen
+// never include. So the PC sees the chip and the PET shows who is driving it.
+struct PcOverlay {
+    lv_obj_t* root{nullptr};
+    lv_obj_t* name{nullptr};
+    lv_obj_t* host{nullptr};
+    lv_obj_t* art_obj{nullptr};
+    view::ImageAsset art;
+    std::string chip;
+    bool visible{false};
+};
+PcOverlay g_overlay;
+
+void no_clicks(lv_obj_t* obj) {
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+    for (uint32_t i = 0; i < lv_obj_get_child_count(obj); ++i) no_clicks(lv_obj_get_child(obj, static_cast<int32_t>(i)));
+}
+
+void update_pc_overlay(viewmodel::AliceViewModel& vm, const view::AliceFonts& fonts,
+                       const std::filesystem::path& art_dir) {
+    using viewmodel::chips::JackInChip;
+    auto* jack = static_cast<JackInChip*>(vm.chip_module(model::chip_index("jack-in")));
+    const auto* active = vm.active_chip();
+    const bool show = jack && jack->connected() && !jack->pc_chip().empty() && active &&
+                      jack->pc_chip() == active->id();
+    g_pc_operating = show;
+    if (!show) {
+        if (g_overlay.visible) {
+            view::set_visible(g_overlay.root, false);
+            g_overlay.visible = false;
+            // The PC went away mid-chip: the PET goes back to its Jack In screen.
+            if (jack && !jack->connected() && active && JackInChip::pc_capable(active->id())) {
+                vm.open_chip(model::chip_index("jack-in"));
+            }
+        }
+        return;
+    }
+    if (!g_overlay.root) {
+        g_overlay.root = view::box(lv_layer_top(), 0, 0, 320, 170, view::kDeepBlue);
+        view::add_grid(g_overlay.root);
+        lv_obj_t* bar = view::box(g_overlay.root, 0, 0, 320, 16, view::kPanelBlue);
+        view::text(bar, "JACK IN", fonts.tiny, view::kGold, 6, 2);
+        view::text(bar, "PC SESSION", fonts.tiny, view::kCyan, 244, 2);
+        view::text(g_overlay.root, "OPERATING", fonts.tiny, view::kSubtitle, 112, 36);
+        g_overlay.name = view::text(g_overlay.root, "", fonts.body, view::kWhite, 112, 50);
+        view::text(g_overlay.root, "from", fonts.tiny, view::kSubtitle, 112, 82);
+        g_overlay.host = view::text(g_overlay.root, "", fonts.small, view::kCyan, 112, 96);
+        lv_obj_t* foot = view::box(g_overlay.root, 0, 156, 320, 14, view::kPanelBlue);
+        view::text(foot, "The PC has the controls  [X] jack out", fonts.tiny, view::kHintBlue, 6, 1);
+    }
+    if (g_overlay.chip != active->id()) {
+        g_overlay.chip = active->id();
+        if (g_overlay.art_obj) lv_obj_delete(g_overlay.art_obj);
+        g_overlay.art_obj = nullptr;
+        g_overlay.art = view::ImageAsset{};
+        if (view::load_png(art_dir / (g_overlay.chip + "-big.png"), g_overlay.art)) {
+            g_overlay.art_obj = view::image(g_overlay.root, g_overlay.art, 14, 26);
+        }
+        const size_t index = model::chip_index(g_overlay.chip.c_str());
+        const std::string name = index < model::kChipCount ? model::chip_at(index).name : g_overlay.chip;
+        lv_label_set_text(g_overlay.name, name.c_str());
+    }
+    const std::string host = jack->host().empty() ? "the PC" : jack->host();
+    if (std::string(lv_label_get_text(g_overlay.host)) != host) lv_label_set_text(g_overlay.host, host.c_str());
+    no_clicks(g_overlay.root);
+    if (!g_overlay.visible) {
+        view::set_visible(g_overlay.root, true);
+        lv_obj_move_foreground(g_overlay.root);
+        g_overlay.visible = true;
+    }
+    vm.hold_awake();  // napping would slow the PC's mirror to one frame a second
 }
 
 void install_chips(viewmodel::AliceViewModel& vm, view::AliceView& view, const model::PetConfig& config,
@@ -358,7 +445,8 @@ lv_display_t* init_device_display() {
 // Each screenshot is taken immediately after a forced refresh, so the output
 // does not depend on real time.
 void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::AliceView& view,
-                  lv_display_t* display, ChatClient& chat, NetScanner& scanner) {
+                  lv_display_t* display, ChatClient& chat, NetScanner& scanner, const view::AliceFonts& fonts,
+                  const std::filesystem::path& art_dir) {
     constexpr uint32_t kStepMs = 16;
     uint32_t virtual_now = 0;
 
@@ -751,6 +839,23 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         advance(virtual_now + kStepMs);
         capture("jack-log.png");
         vm.handle_char("l");
+        // The PC opens JELLYFIN: it renders for the PC's mirror (jack-pc-jellyfin)
+        // while the PET panel shows the Jack In card on the top layer (jack-pet-operating).
+        jack->on_line(R"({"t":"open","chip":"jellyfin"})");
+        drain_pc_requests(vm);
+        update_pc_overlay(vm, fonts, art_dir);
+        advance(virtual_now + kStepMs);
+        capture("jack-pc-jellyfin.png");
+        {
+            std::string error;
+            if (!platform::screenshot::save_object_png(g_overlay.root, dir + "/jack-pet-operating.png", error)) {
+                LOG_WARN("overlay snapshot failed: {}", error);
+            }
+        }
+        jack->on_line(R"({"t":"home"})");
+        drain_pc_requests(vm);
+        update_pc_overlay(vm, fonts, art_dir);
+        advance(virtual_now + kStepMs);
         vm.handle_char("x");
         advance(virtual_now + kStepMs);
         capture("jack-out.png");
@@ -856,6 +961,7 @@ int Application::run() {
     install_chips(view_model, view, pet_config, root, alice_fonts, art_dir);
     if (auto* jack = static_cast<viewmodel::chips::JackInChip*>(view_model.chip_module(model::chip_index("jack-in")))) {
         jack->set_art_dir(art_dir);
+        g_jack_keys = jack;
     }
     KeyRouter keys(view_model);
 
@@ -865,7 +971,7 @@ int Application::run() {
 #if USE_DESKTOP
     if (const char* snapshot_dir = std::getenv("ALICEPET_SNAPSHOT")) {
         std::filesystem::create_directories(snapshot_dir);
-        run_snapshot(snapshot_dir, view_model, view, display, chat, scanner);
+        run_snapshot(snapshot_dir, view_model, view, display, chat, scanner, alice_fonts, art_dir);
         return 0;
     }
 #endif
@@ -895,6 +1001,7 @@ int Application::run() {
         last_ms = now_ms;
         pump_services(view_model, chat, scanner);
         drain_pc_requests(view_model);
+        update_pc_overlay(view_model, alice_fonts, art_dir);
 
         // Idle: dim the backlight first, then nap with it off (the overlay covers
         // the desktop). The backlight is the biggest single draw on the pet.

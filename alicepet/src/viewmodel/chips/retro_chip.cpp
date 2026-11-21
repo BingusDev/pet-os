@@ -7,6 +7,7 @@
 #include "platform/json.h"
 #include "platform/net.h"
 #include "platform/process.h"
+#include "viewmodel/chips/jack_in_chip.h"
 
 #include <signal.h>
 #include <sys/stat.h>
@@ -547,6 +548,32 @@ void RetroChip::play(const Game& game) {
     touch();
 }
 
+void RetroChip::play_on_pc(const Game& game) {
+    if (base_.empty()) return;
+    // RomM 5 web players: Ruffle for Flash, js-dos for DOS, EmulatorJS for the rest.
+    std::string file = game.file;
+    for (char& c : file) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    const bool swf = file.size() > 4 && file.compare(file.size() - 4, 4, ".swf") == 0;
+    const std::string route = swf ? "ruffle" : game.platform == "dos" ? "jsdos" : "ejs";
+    const std::string path = "/rom/" + std::to_string(game.id) + "/" + route;
+    // The relay serves RomM's whole site on the link; base_ may carry a path prefix.
+    const auto scheme = base_.find("://");
+    const auto slash = scheme == std::string::npos ? std::string::npos : base_.find('/', scheme + 3);
+    const std::string origin = slash == std::string::npos ? base_ : base_.substr(0, slash);
+    const std::string prefix = slash == std::string::npos ? "" : base_.substr(slash);
+    const std::string url = pc_link::relay_site(origin, headers(), prefix + path);
+    if (url.empty()) {
+        status_ = "couldn't start the web relay for the PC";
+        touch();
+        return;
+    }
+    pc_link::send("{\"t\":\"play\",\"kind\":\"game\",\"title\":\"" + platform::net::json_escape(game.name) +
+                  "\",\"url\":\"" + platform::net::json_escape(url) + "\",\"direct\":\"" +
+                  platform::net::json_escape(base_ + path) + "\"}");
+    status_ = "playing in the browser on " + pc_link::host();
+    touch();
+}
+
 void RetroChip::stop_game() {
     if (player_ > 0) {
         platform::proc::stop(player_, SIGTERM, 2000);  // RetroArch writes SRAM on SIGTERM
@@ -728,7 +755,9 @@ bool RetroChip::handle_key(Key key) {
         if (key == Key::Escape) view_ = View::Library;
         if ((key == Key::Left || key == Key::Right) && game() && !downloaded(*game())) details_play_ = !details_play_;
         if (key == Key::Enter) {
-            if (const Game* g = game()) {
+            if (const Game* g = game(); g && details_play_ && pc_link::connected()) {
+                play_on_pc(*g);
+            } else if (const Game* g = game()) {
                 if (!details_play_) {
                     if (!downloaded(*g)) download(*g, false);
                 } else if (downloaded(*g)) {

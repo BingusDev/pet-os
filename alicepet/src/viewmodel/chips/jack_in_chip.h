@@ -6,6 +6,7 @@
 
 #include "model/pet_config.h"
 #include "platform/jack_link.h"
+#include "platform/media_relay.h"
 #include "viewmodel/chip_module.h"
 #include "viewmodel/chips/bridge_client.h"
 
@@ -19,6 +20,31 @@
 #include <vector>
 
 namespace viewmodel::chips {
+
+// The live Jack In link as other chips see it (Jellyfin and Retro play on the PC
+// while a PC is linked). All calls are for the UI thread; with no Jack In chip
+// or no PC everything is a no-op and connected() is false.
+namespace pc_link {
+bool connected();
+const std::string& host();
+void send(const std::string& json);
+// Puts an upstream file (a Jellyfin stream) behind the PET's media relay on the
+// link; returns the full http://10.55.0.1:<port>/m/<token>/<name> URL, or "".
+std::string relay_file(const std::string& upstream_url, const std::vector<std::string>& headers,
+                       const std::string& name);
+// Puts a whole site (RomM) behind the relay; returns the URL that logs the PC's
+// browser into the relay and lands on `path`, or "".
+std::string relay_site(const std::string& origin, const std::vector<std::string>& headers, const std::string& path);
+// Playback reports from the PC ({"t":"progress"}), oldest first.
+struct Progress {
+    std::string item;
+    double pos{0};
+    bool paused{false};
+    std::string state;  // "playing", "stopped", "ended", "error"
+    std::string error;
+};
+bool take_progress(Progress& progress);
+}  // namespace pc_link
 
 // JACK IN (chip 002), mockups/comms.html screen 6 and pet.html screens 5-6.
 // Slotting the chip switches the USB-C port to device mode ([jackin] gadget_up:
@@ -134,6 +160,17 @@ public:
     // One LVGL frame (ARGB8888, `stride` bytes per row). `screen` names the PET screen.
     void offer_frame(const uint8_t* argb, uint32_t stride, int w, int h, const std::string& screen);
     bool mirroring() const { return mirror_on_ && connected_; }
+    // The chip the PC is operating (it runs offscreen; the PET panel keeps the
+    // Jack In view): its id, or "" when the PC is HOME or not linked.
+    const std::string& pc_chip() const { return pc_chip_; }
+    void set_pc_chip(const std::string& chip_id) { pc_chip_ = chip_id; touch(); }
+
+    // pc_link backing (see above).
+    std::string relay_file(const std::string& upstream_url, const std::vector<std::string>& headers,
+                           const std::string& name);
+    std::string relay_site(const std::string& origin, const std::vector<std::string>& headers, const std::string& path);
+    bool take_progress(pc_link::Progress& progress);
+    void send_line(const std::string& json) { send(json); }
 
 private:
     void send(const std::string& json);
@@ -213,6 +250,12 @@ private:
     uint32_t last_frame_ms_{0};
     std::vector<uint16_t> last_px_;  // RGB565 of the last frame sent
     std::string last_screen_;
+    std::string pc_chip_;
+
+    // Media relay for PC playback (files: jack_media_port, site: jack_media_port + 1).
+    platform::jack::MediaRelay media_;
+    platform::jack::MediaRelay site_;
+    std::deque<pc_link::Progress> progress_;
 };
 
 } // namespace viewmodel::chips

@@ -116,6 +116,8 @@ struct PetConfig {
     std::string jack_listen{"10.55.0.1"};
     int jack_port{7341};
     int jack_tunnel_port{7342};
+    // PC playback relay on listen: media_port (video files), media_port + 1 (RomM web).
+    int jack_media_port{7344};
     int jack_proxy_port{3128};
     std::string jack_gadget_up{"sudo -n /usr/libexec/alicepet/usb-gadget.sh up"};
     std::string jack_gadget_down{"sudo -n /usr/libexec/alicepet/usb-gadget.sh down"};

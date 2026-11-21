@@ -52,7 +52,7 @@ struct PcChip {
 constexpr PcChip kPcChips[] = {
     {"terminal", "T", "Shell to any host"},
     {"jellyfin", "J", "Your media library"},
-    {"retro", "R", "Retro games on the PET"},
+    {"retro", "R", "Retro games (play on this PC)"},
     {"lan-tech", "L", "Check the LAN"},
 };
 
@@ -130,14 +130,77 @@ bool key_from_name(const std::string& name, Key& key) {
 
 } // namespace
 
+// The one Jack In chip, for pc_link (set by its constructor).
+JackInChip* g_jack = nullptr;
+
+namespace pc_link {
+bool connected() { return g_jack && g_jack->connected(); }
+const std::string& host() {
+    static const std::string none;
+    return g_jack ? g_jack->host() : none;
+}
+void send(const std::string& json) {
+    if (connected()) g_jack->send_line(json);
+}
+std::string relay_file(const std::string& upstream_url, const std::vector<std::string>& headers,
+                       const std::string& name) {
+    return connected() ? g_jack->relay_file(upstream_url, headers, name) : "";
+}
+std::string relay_site(const std::string& origin, const std::vector<std::string>& headers, const std::string& path) {
+    return connected() ? g_jack->relay_site(origin, headers, path) : "";
+}
+bool take_progress(Progress& progress) { return g_jack && g_jack->take_progress(progress); }
+}  // namespace pc_link
+
+std::string JackInChip::relay_file(const std::string& upstream_url, const std::vector<std::string>& headers,
+                                   const std::string& name) {
+    if (!media_.running()) {
+        const std::string error = media_.start(config_.jack_listen, config_.jack_media_port);
+        if (!error.empty()) {
+            note("media relay: " + error, LogLine::Kind::Fail);
+            return "";
+        }
+    }
+    const std::string path = media_.add_file(upstream_url, headers, name);
+    if (path.empty()) return "";
+    return "http://" + config_.jack_listen + ":" + std::to_string(config_.jack_media_port) + path;
+}
+
+std::string JackInChip::relay_site(const std::string& origin, const std::vector<std::string>& headers,
+                                   const std::string& path) {
+    const int port = config_.jack_media_port + 1;
+    if (!site_.running()) {
+        const std::string error = site_.start(config_.jack_listen, port);
+        if (!error.empty()) {
+            note("web relay: " + error, LogLine::Kind::Fail);
+            return "";
+        }
+    }
+    const std::string gate = site_.set_site(origin, headers, path);
+    if (gate.empty()) return "";
+    return "http://" + config_.jack_listen + ":" + std::to_string(port) + gate;
+}
+
+bool JackInChip::take_progress(pc_link::Progress& progress) {
+    if (progress_.empty()) return false;
+    progress = std::move(progress_.front());
+    progress_.pop_front();
+    return true;
+}
+
 bool JackInChip::pc_capable(const std::string& chip_id) {
     return find_pc_chip(chip_id) != nullptr;
 }
 
 JackInChip::JackInChip(model::PetConfig config)
-    : config_(std::move(config)), opens_(std::make_shared<Opens>()) {}
+    : config_(std::move(config)), opens_(std::make_shared<Opens>()) {
+    g_jack = this;
+}
 
 JackInChip::~JackInChip() {
+    if (g_jack == this) g_jack = nullptr;
+    media_.stop();
+    site_.stop();
     relay_.stop();
     if (sharing_) platform::jack::set_proxy_env("");
 }
@@ -320,6 +383,15 @@ void JackInChip::on_line(const std::string& line) {
                 send(R"({"t":"alice","ok":false,"text":"That recording didn't come through. Try again?","heard":"","cmd":""})");
             }
         }
+    } else if (t == "progress") {
+        // Video playing in the PC app (Jellyfin chip): where it is, and when it stops.
+        pc_link::Progress p;
+        p.item = msg["item"].str();
+        p.pos = msg["pos"].num(0);
+        p.paused = msg["paused"].boolean(false);
+        p.state = msg["state"].str("playing");
+        p.error = msg["error"].str();
+        if (progress_.size() < 64) progress_.push_back(std::move(p));
     } else if (t == "net_fail") {
         relay_.fail(static_cast<int>(msg["id"].integer()));
     } else if (t == "bye") {
@@ -342,6 +414,10 @@ void JackInChip::reset_session() {
     chat_waiting_ = false;
     input_ok_ = false;
     mirror_on_ = false;
+    pc_chip_.clear();
+    media_.stop();
+    site_.stop();
+    progress_.clear();
     opening_.clear();
     inputs_.clear();
     last_px_.clear();

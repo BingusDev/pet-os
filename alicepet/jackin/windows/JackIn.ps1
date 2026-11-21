@@ -16,6 +16,10 @@
 #  - Run as admin...: relaunches this app through the Windows UAC prompt that you click.
 #  - NET: the PET borrows this PC's internet (outbound connections only).
 #  - Chat with Alice: type (Enter sends), or hold MIC (or F9) to talk; her answers can be read aloud.
+#  - Jellyfin video and Retro games picked on the PET's chip play HERE: video in a
+#    NOW PLAYING player in the chip area (Windows Media Player; Esc or STOP comes
+#    back to the chip), games in your browser (RomM's web player). Both come
+#    through the PET's relay on 10.55.0.1, so no server passwords reach this PC.
 #  - Every command is shown in the live log. JACK OUT ends everything at once.
 # The app only dials out to the PET (10.55.0.1); it never listens. See PROTOCOL.md.
 
@@ -34,7 +38,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
-$AppVersion = '0.6'
+$AppVersion = '0.7'
 $Here = Split-Path -Parent $PSCommandPath
 
 # Draws each PET frame: run-length RGB565 (count, hi, lo) to ARGB pixels.
@@ -55,6 +59,14 @@ public static class JackInFrame {
             for (int i = 0; i < run && o < end; i++) dst[o++] = argb;
         }
     }
+}
+'@
+
+# Windows Media Player as a WinForms control (no interop DLLs needed).
+Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @'
+public class JackInWmp : System.Windows.Forms.AxHost {
+    public JackInWmp() : base("6bf52a52-394a-11d3-b153-00c04f79faa6") { }
+    public object Player { get { return this.GetOcx(); } }
 }
 '@
 
@@ -81,6 +93,19 @@ $S = [ordered]@{
     ChipId     = ''       # the chip the PC last asked the PET to open
     MirrorSent = $false   # last mirror on/off sent to the PET
     View       = 'home'   # centre shows 'home' or 'chip'
+}
+# Video from the PET (Jellyfin chip) playing in this window.
+$Play = [ordered]@{
+    On       = $false
+    Item     = ''
+    Title    = ''
+    Base     = 0.0     # show time of the stream's 0 (a transcode started mid-show)
+    StartAt  = 0.0     # where to seek once it opens (a file stream)
+    Seekable = $true
+    Started  = $false
+    Opened   = [datetime]::MinValue
+    Reported = [datetime]::MinValue
+    Ax       = $null
 }
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $S.Admin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -348,6 +373,20 @@ $mirror.SetBounds(256, 116, 826, 466)
 $mirror.BackColor = $cScreen
 $mirror.TabStop = $true
 $form.Controls.Add($mirror)
+# NOW PLAYING: the PET's video, in the chip area instead of the mirror.
+$playPanel = New-Object System.Windows.Forms.Panel
+$playPanel.SetBounds(256, 116, 826, 466)
+$playPanel.BackColor = [System.Drawing.Color]::Black
+$playPanel.Visible = $false
+$form.Controls.Add($playPanel)
+$nowLabel = New-Label 'NOW PLAYING' 0 0 826 28 (Vt 20) $cText $cEdge
+$nowLabel.TextAlign = 'MiddleLeft'
+$nowLabel.AutoEllipsis = $true
+$playPanel.Controls.Add($nowLabel)
+$btnBack10 = New-Button '-10s' 560 84 70 28 $cIdle (RGB 0xff 0xff 0xff) (Pix 7)
+$btnFwd10 = New-Button '+10s' 634 84 70 28 $cIdle (RGB 0xff 0xff 0xff) (Pix 7)
+$btnStop = New-Button 'STOP' 708 84 90 28 (RGB 0xd0 0x40 0x40) (RGB 0xff 0xff 0xff) (Pix 7)
+foreach ($b in @($btnBack10, $btnFwd10, $btnStop)) { $b.Visible = $false }
 $miniFace = New-Picture 256 590 32 32 (Crop-Cover $AliceImg 32 32 0.5 0.12)
 $aliceWho = New-Label 'ALICE:' 292 590 80 32 (Vt 20) (RGB 0xc0 0x28 0x80) $cPaper
 $aliceWho.TextAlign = 'MiddleLeft'
@@ -489,6 +528,11 @@ function Update-Ui {
     $chatBox.Enabled = $S.Linked
     $btnMic.Enabled = $S.Linked -or $Mic.On
     $tabLabel.Text = $(if ($S.View -eq 'chip' -and $S.ChipId) { (Chip-Name $S.ChipId).ToUpper() + '.CHP' } else { 'HOME' })
+    $playing = [bool]($Play.On -and $S.View -eq 'chip')
+    $playPanel.Visible = $playing
+    $mirror.Visible = ($S.View -eq 'chip') -and -not $playing
+    foreach ($b in @($btnBack10, $btnFwd10, $btnStop)) { $b.Visible = $playing }
+    if ($playing) { $playPanel.BringToFront() }
     $mirror.Invalidate()
 }
 
@@ -657,6 +701,7 @@ function Select-Chip([string]$id) {
     if ($id -eq 'home') { Go-Home; return }
     if (-not $S.Linked) { return }
     if ($id -ne $S.ChipId -or $S.View -ne 'chip') {
+        if ($id -ne $S.ChipId) { Stop-Play }
         $before = $S.ChipId
         Restart-Mirror
         $S.ChipId = $id
@@ -669,6 +714,7 @@ function Select-Chip([string]$id) {
 }
 
 function Go-Home {
+    Stop-Play
     if ($S.ChipId -and $S.Linked) {
         Send-Pet ([ordered]@{ t = 'home' })
         Add-Log "you closed $(Chip-Name $S.ChipId); the PET is back on Jack In"
@@ -716,7 +762,7 @@ function Clear-Mirror {
 
 # The PET only sends frames while this window is up and not minimized.
 function Sync-Mirror {
-    $want = [bool]($S.Linked -and $S.View -eq 'chip' -and $form.Visible -and $form.WindowState -ne 'Minimized')
+    $want = [bool]($S.Linked -and $S.View -eq 'chip' -and -not $Play.On -and $form.Visible -and $form.WindowState -ne 'Minimized')
     if ($want -ne $S.MirrorSent) {
         $S.MirrorSent = $want
         Send-Pet ([ordered]@{ t = 'mirror'; on = $want })
@@ -1119,6 +1165,150 @@ function Stop-Mic([bool]$send = $true) {
     Send-Pet ([ordered]@{ t = 'voice'; wav = [Convert]::ToBase64String($bytes) })
 }
 
+# --- playing the PET's video and games here ------------------------------------------
+
+# The player control, made the first time a video comes (null if WMP is missing).
+function Get-Player {
+    if ($Play.Ax) { return $Play.Ax.Player }
+    try {
+        $ax = New-Object JackInWmp
+        ([System.ComponentModel.ISupportInitialize]$ax).BeginInit()
+        $ax.SetBounds(0, 28, 826, 438)
+        $playPanel.Controls.Add($ax)
+        ([System.ComponentModel.ISupportInitialize]$ax).EndInit()
+        $Play.Ax = $ax
+        $p = $ax.Player
+        $p.uiMode = 'full'
+        $p.stretchToFit = $true
+        $p.enableContextMenu = $false
+        $p.settings.autoStart = $true
+        return $p
+    } catch {
+        Add-Log "no Windows Media Player here ($($_.Exception.Message)); using the default player"
+        $Play.Ax = $null
+        return $null
+    }
+}
+
+# Show time now (the stream's position plus where it started), in seconds.
+function Get-PlayPos {
+    $pos = 0.0
+    try { if ($Play.Ax) { $pos = [double]$Play.Ax.Player.controls.currentPosition } } catch { }
+    return [Math]::Round($Play.Base + $pos, 1)
+}
+
+function Send-Progress([string]$state, [string]$err = '') {
+    $paused = $false
+    try { if ($Play.Ax) { $paused = ([int]$Play.Ax.Player.playState -eq 2) } } catch { }
+    $msg = [ordered]@{ t = 'progress'; item = $Play.Item; pos = (Get-PlayPos); paused = $paused; state = $state }
+    if ($err) { $msg.error = $err }
+    Send-Pet $msg
+    $Play.Reported = Get-Date
+}
+
+function Start-Play($msg) {
+    $kind = [string](Get-Field $msg 'kind')
+    $title = [string](Get-Field $msg 'title')
+    $url = [string](Get-Field $msg 'url')
+    if (-not $url) { return }
+    if ($kind -eq 'game') {
+        # RomM's web player in the default browser, logged in through the PET's relay.
+        Start-Process $url | Out-Null
+        Add-Log "opened $title in your browser (RomM web player via the PET)"
+        $direct = [string](Get-Field $msg 'direct')
+        if ($direct) { Add-Log "if it doesn't load, RomM itself: $direct" }
+        return
+    }
+    $item = [string](Get-Field $msg 'item')
+    $same = $Play.On -and $Play.Item -eq $item
+    $Play.Item = $item
+    $Play.Title = $title
+    $Play.Base = [double](Get-Field $msg 'base')
+    $Play.StartAt = [double](Get-Field $msg 'start')
+    $seek = Get-Field $msg 'seekable'
+    $Play.Seekable = ($null -eq $seek) -or [bool]$seek
+    $Play.Started = $false
+    $Play.Opened = Get-Date
+    $Play.Reported = Get-Date
+    $p = Get-Player
+    if ($null -eq $p) {
+        # No player control: hand the stream to whatever plays video here.
+        Start-Process $url | Out-Null
+        Add-Log "playing $title in your default player"
+        $Play.On = $true
+        Send-Progress 'stopped'  # nothing reports back from there; the PET goes back to its list
+        $Play.On = $false
+        return
+    }
+    $Play.On = $true
+    $nowLabel.Text = '  NOW PLAYING: ' + $title + $(if ($Play.Seekable) { '' } else { '   (converted on the server: use -10s/+10s to jump)' })
+    $p.URL = $url
+    $p.controls.play()
+    if (-not $same) { Add-Log "playing $title here (from the PET's Jellyfin)" }
+    if ($S.View -ne 'chip') { Set-View 'chip' } else { Update-Ui }
+}
+
+# Ends the video; tells the PET where it stopped unless the PET asked for the stop.
+function Stop-Play([string]$state = 'stopped', [bool]$tell = $true, [string]$err = '') {
+    if (-not $Play.On) { return }
+    if ($tell) { Send-Progress $state $err }
+    $Play.On = $false
+    try { $Play.Ax.Player.controls.stop(); $Play.Ax.Player.URL = '' } catch { }
+    Add-Log $(switch ($state) { 'ended' { "$($Play.Title) finished" } 'error' { "couldn't play $($Play.Title): $err" } default { "stopped $($Play.Title)" } })
+    Update-Ui
+    $mirror.Focus() | Out-Null
+}
+
+function Seek-Play([double]$by) {
+    if (-not $Play.On) { return }
+    if ($Play.Seekable) {
+        try {
+            $c = $Play.Ax.Player.controls
+            $c.currentPosition = [Math]::Max(0, [double]$c.currentPosition + $by)
+        } catch { }
+        return
+    }
+    # A transcode can't jump: the PET restarts it at the new time.
+    Send-Pet ([ordered]@{ t = 'progress'; item = $Play.Item; pos = [Math]::Max(0, (Get-PlayPos) + $by); paused = $false; state = 'seek' })
+}
+
+# Commands from the PET's keys while its video plays here.
+function On-PlayerCommand($msg) {
+    if (-not $Play.On -or -not $Play.Ax) { return }
+    $p = $Play.Ax.Player
+    $by = [double](Get-Field $msg 'by')
+    switch ([string](Get-Field $msg 'cmd')) {
+        'seek' { Seek-Play $by }
+        'volume' { $p.settings.volume = [int][Math]::Max(0, [Math]::Min(100, $p.settings.volume + $by)) }
+        'pause' { if ([int]$p.playState -eq 3) { $p.controls.pause() } else { $p.controls.play() } }
+    }
+}
+
+# Called by the UI timer: seek once open, notice the end or an error, report every 10 s.
+function Step-Play {
+    if (-not $Play.On -or -not $Play.Ax) { return }
+    $p = $Play.Ax.Player
+    $ps = [int]$p.playState
+    if ($ps -eq 3 -and -not $Play.Started) {
+        $Play.Started = $true
+        if ($Play.StartAt -gt 1) { $p.controls.currentPosition = $Play.StartAt }
+    }
+    if ($ps -eq 8) { Stop-Play 'ended'; return }  # MediaEnded
+    if (-not $Play.Started) {
+        $err = ''
+        try { if ($p.error.errorCount -gt 0) { $err = [string]$p.error.item(0).errorDescription } } catch { }
+        if ($err -or ($ps -eq 10 -and ((Get-Date) - $Play.Opened).TotalSeconds -gt 5) -or ((Get-Date) - $Play.Opened).TotalSeconds -gt 60) {
+            Stop-Play 'error' $true $(if ($err) { $err } else { 'the stream never started' })
+            return
+        }
+    }
+    if ($Play.Started -and ((Get-Date) - $Play.Reported).TotalSeconds -ge 10) { Send-Progress 'playing' }
+}
+
+$btnStop.Add_Click({ Stop-Play })
+$btnBack10.Add_Click({ Seek-Play -10 })
+$btnFwd10.Add_Click({ Seek-Play 10 })
+
 # --- link ------------------------------------------------------------------------
 
 function Drop-Link([string]$why) {
@@ -1131,6 +1321,7 @@ function Drop-Link([string]$why) {
         $S.Full = $false
         $S.Chips = @()
         $S.ChipId = ''
+        Stop-Play 'stopped' $false
         Stop-Mic $false
         Stop-Jobs
         Stop-Sharing
@@ -1146,6 +1337,7 @@ function Jack-Out([string]$why) {
     if ($S.Closing) { return }
     $S.Closing = $true
     Stop-Mic $false
+    Stop-Play
     Send-Pet ([ordered]@{ t = 'bye'; why = $why })
     $S.Full = $false
     Stop-Jobs
@@ -1181,6 +1373,9 @@ function On-Line([string]$line) {
         'jackout' { Add-Log 'PET pressed JACK OUT'; Jack-Out 'PET' }
         'chips' { Build-Chips @(Get-Field $msg 'list') }
         'frame' { Apply-Frame $msg }
+        'play' { Start-Play $msg }
+        'stop_play' { if ([string](Get-Field $msg 'item') -eq $Play.Item) { Stop-Play 'stopped' $false } }
+        'player' { On-PlayerCommand $msg }
         'alice' {
             $heard = [string](Get-Field $msg 'heard')
             $text = [string](Get-Field $msg 'text')
@@ -1305,6 +1500,12 @@ $btnMic.Add_MouseUp({ Stop-Mic })
 $form.Add_KeyDown({
     param($ctl, $e)
     if ($e.KeyCode -eq 'F9') { $e.Handled = $true; if (-not $Mic.On) { Start-Mic }; return }
+    if ($e.KeyCode -eq 'Escape' -and $Play.On) {
+        $e.Handled = $true
+        $e.SuppressKeyPress = $true
+        Stop-Play
+        return
+    }
     if ($e.KeyCode -eq 'Escape' -and $S.View -eq 'chip') {
         if ($mirror.Focused -and (Input-Allowed) -and -not $e.Shift) { return }
         $e.Handled = $true
@@ -1337,6 +1538,7 @@ $timer.Add_Tick({
         if ($S.Client -or $S.Connecting -or ($script:tick % 20) -eq 1) { Step-Link }
         Step-Jobs
         Step-Tunnels
+        Step-Play
         Sync-Mirror
         if ($Mic.On -and ((Get-Date) - $Mic.Started).TotalSeconds -ge 15) { Stop-Mic }
     } catch {

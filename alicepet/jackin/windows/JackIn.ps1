@@ -68,7 +68,6 @@ $form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
 $form.BackColor = RGB 0xd7 0xde 0xeb
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 10)
-$form.TopMost = $true
 $form.KeyPreview = $true
 
 # Sidebar: portrait, link status, access mode, voice.

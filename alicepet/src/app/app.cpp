@@ -113,6 +113,12 @@ bool key_to_utf8(uint32_t key, std::string& out) {
 // True while a PC operates a chip through JACK IN (the PET panel shows the
 // session view and the PET's own keys are kept off the PC's chip).
 bool g_pc_operating = false;
+// While a PC is jacked in, the PET panel turns off after a few seconds without a
+// PET key press (the app keeps running at full speed for the link). Any PET key
+// turns it back on; that key is swallowed.
+constexpr uint32_t kJackBlankAfterMs = 10000;
+uint32_t g_last_local_key_ms = 0;
+bool g_jack_blanked = false;
 viewmodel::chips::JackInChip* g_jack_keys = nullptr;
 
 // Routes global key presses into the view model.
@@ -138,6 +144,11 @@ private:
 
     static bool listener(uint32_t key, const char*, bool long_pressed, void* user_data) {
         auto* self = static_cast<KeyRouter*>(user_data);
+        g_last_local_key_ms = lv_tick_get();
+        if (g_jack_blanked) {
+            g_jack_blanked = false;
+            return true;
+        }
         if (!self) {
             return false;
         }
@@ -985,6 +996,7 @@ int Application::run() {
     // A run that was killed or crashed while dimmed or napping leaves the panel
     // dark: start from a lit screen whatever the last run left behind.
     platform::set_screen_level(platform::ScreenLevel::On, pet_config.backlight, pet_config.dim_percent);
+    bool jack_was_linked = false;
     bool screen_on = true;
     auto screen_level = platform::ScreenLevel::On;
     // Per-chip power profiles ([power] profiles=on): cores, CPU clock, Wi-Fi power save.
@@ -1005,12 +1017,21 @@ int Application::run() {
 
         // Idle: dim the backlight first, then nap with it off (the overlay covers
         // the desktop). The backlight is the biggest single draw on the pet.
-        const auto want_level = view_model.sleeping() ? platform::ScreenLevel::Off
-                                : view_model.dimmed()  ? platform::ScreenLevel::Dim
-                                                       : platform::ScreenLevel::On;
+        {
+            const auto* jack_chip = static_cast<const viewmodel::chips::JackInChip*>(
+                view_model.chip_module(model::chip_index("jack-in")));
+            const bool linked = jack_chip && jack_chip->connected();
+            if (linked && !jack_was_linked) g_last_local_key_ms = now_ms;  // countdown starts at link
+            jack_was_linked = linked;
+            g_jack_blanked = linked && now_ms - g_last_local_key_ms >= kJackBlankAfterMs;
+        }
+        const auto want_level = (view_model.sleeping() || g_jack_blanked) ? platform::ScreenLevel::Off
+                                : view_model.dimmed()                      ? platform::ScreenLevel::Dim
+                                                                           : platform::ScreenLevel::On;
         if (want_level != screen_level) {
             screen_level = want_level;
-            screen_on = screen_level != platform::ScreenLevel::Off;
+            // Blanked for a jack-in link: the panel is off but the loop keeps full speed.
+            screen_on = screen_level != platform::ScreenLevel::Off || g_jack_blanked;
             const bool switched =
                 platform::set_screen_level(screen_level, pet_config.backlight, pet_config.dim_percent);
             LOG_INFO("screen {} (backlight {})",

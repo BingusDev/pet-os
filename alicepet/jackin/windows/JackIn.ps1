@@ -1789,6 +1789,37 @@ $form.Add_FormClosing({ if (-not $S.Closing) { Jack-Out 'window closed' } })
 
 # --- run -------------------------------------------------------------------------
 
+# Live PC STATUS: CPU/RAM/disk every 3 s, Defender every 30 s, without CIM
+# (fast enough to run on the UI timer). Any piece that fails is just skipped.
+$script:CpuCounter = $null
+try {
+    $script:CpuCounter = New-Object System.Diagnostics.PerformanceCounter('Processor', '% Processor Time', '_Total')
+    [void]$script:CpuCounter.NextValue()
+} catch { $script:CpuCounter = $null }
+try { Add-Type -AssemblyName Microsoft.VisualBasic } catch { }
+$script:LiveTicks = 0
+function Refresh-LiveStats {
+    $live = [ordered]@{}
+    try { if ($script:CpuCounter) { $live.cpu = [int][Math]::Round($script:CpuCounter.NextValue()) } } catch { }
+    try {
+        $info = New-Object Microsoft.VisualBasic.Devices.ComputerInfo
+        $live.ram = [int][Math]::Round(100 - 100.0 * $info.AvailablePhysicalMemory / $info.TotalPhysicalMemory)
+    } catch { }
+    try {
+        $drive = New-Object System.IO.DriveInfo('C')
+        $live.disk_free = [int](100.0 * $drive.AvailableFreeSpace / $drive.TotalSize)
+    } catch { }
+    $script:LiveTicks++
+    if (($script:LiveTicks % 10) -eq 1) {
+        try { $live.defender = $(if ((Get-MpComputerStatus -ErrorAction Stop).RealTimeProtectionEnabled) { 'on' } else { 'off' }) } catch { }
+    }
+    if (-not $live.Contains('defender')) {
+        $cur = [string]$Stats['DEFENDER'].Value.Text
+        if ($cur -and $cur -ne '--') { $live.defender = $cur.ToLower() } else { $live.defender = '?' }
+    }
+    Update-Stats $live
+}
+
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 100
 $script:tick = 0
@@ -1802,6 +1833,7 @@ $timer.Add_Tick({
         Step-Tunnels
         Step-Play
         Sync-Mirror
+        if (($script:tick % 30) -eq 0) { Refresh-LiveStats }
         if ($Mic.On -and ((Get-Date) - $Mic.Started).TotalSeconds -ge 15) { Stop-Mic }
     } catch {
         Add-Log ('error: ' + $_.Exception.Message)

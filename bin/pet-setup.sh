@@ -183,6 +183,15 @@ monitor.alsa.rules = [
 WPEOF
 chown "$APP_USER:$APP_USER" "$WP_DIR/60-es8389-s16.conf"
 done_ "$WP_DIR/60-es8389-s16.conf (speaker at 16-bit 48 kHz)"
+# Suspend the idle speaker after 5 s: with 0 (never) PipeWire drove the graph at ~3 % CPU idle.
+cat > "$WP_DIR/70-es8389-suspend.conf" <<'WPEOF'
+monitor.alsa.rules = [
+  { matches = [ { node.name = "~alsa_output.platform-sound.*" } ]
+    actions = { update-props = { session.suspend-timeout-seconds = 5 } } }
+]
+WPEOF
+chown "$APP_USER:$APP_USER" "$WP_DIR/70-es8389-suspend.conf"
+done_ "$WP_DIR/70-es8389-suspend.conf (idle speaker suspends)"
 # fn+D / fn+S / fn+A -> PipeWire volume, and the state file AlicePET's volume bar reads.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "$HERE/volkeys.py" ]]; then

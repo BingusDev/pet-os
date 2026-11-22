@@ -208,7 +208,8 @@ $S = [ordered]@{
     Full       = [bool]$StartFull -or $StartMode -eq 'Ask' -or $StartMode -eq 'Full'
     Admin      = $false
     Net        = $false
-    Jobs       = @()      # running PET commands: @{Id; Ps; Handle; Started; Cmd}
+    Jobs       = @()      # running PET commands: @{Id; Ps; Handle; Output; Started; Cmd}
+    Stopping   = @()      # pipelines being stopped without blocking the UI: @{Ps; Ar}
     Tunnels    = @()      # @{Id; Target; Pet; Phase; Tasks}
     Log        = New-Object System.Collections.Generic.List[string]
     Closing    = $false
@@ -1355,12 +1356,49 @@ function Start-PetCommand($id, [string]$cmd, [bool]$agent = $false) {
     Add-Log "$(if ($agent) { 'Alice' } else { 'PET' }) > $cmd   ($mode)"
     $ps = [PowerShell]::Create()
     [void]$ps.AddScript($cmd).AddCommand('Out-String').AddParameter('Width', 120)
-    $S.Jobs += @{ Id = $id; Ps = $ps; Handle = $ps.BeginInvoke(); Started = Get-Date; Cmd = $cmd; Agent = $agent }
+    # Output goes into our own collection, so what a command printed is still readable if it times out.
+    $output = New-Object System.Management.Automation.PSDataCollection[psobject]
+    $feed = New-Object System.Management.Automation.PSDataCollection[psobject]
+    $feed.Complete()
+    $handle = $ps.BeginInvoke($feed, $output)
+    $S.Jobs += @{ Id = $id; Ps = $ps; Handle = $handle; Output = $output; Started = Get-Date; Cmd = $cmd; Agent = $agent }
+}
+
+# Text a job has printed so far.
+function Get-JobText($job) {
+    return ((@($job.Output) | ForEach-Object { [string]$_ }) -join '').Trim()
+}
+
+# Stop a pipeline without blocking the UI thread. Reap-Stopping disposes it once the stop has finished.
+function Stop-PsAsync($ps) {
+    try {
+        $ar = $ps.BeginStop($null, $null)
+        $S.Stopping += ,@{ Ps = $ps; Ar = $ar }
+    } catch {
+        try { $ps.Dispose() } catch { }
+    }
+}
+
+function Reap-Stopping {
+    $left = @()
+    foreach ($st in @($S.Stopping)) {
+        if ($st.Ar.IsCompleted) {
+            try { $st.Ps.EndStop($st.Ar) } catch { }
+            try { $st.Ps.Dispose() } catch { }
+        } else {
+            $left += $st
+        }
+    }
+    $S.Stopping = $left
 }
 
 function Step-Jobs {
+    Reap-Stopping
     $finished = @()   # Ids of the jobs handled in this pass
     foreach ($job in @($S.Jobs)) {
+        # Stop-Jobs (from a dropped link inside this loop) may have taken this job already.
+        $stillOpen = @($S.Jobs | Where-Object { [object]::ReferenceEquals($_, $job) }).Count -gt 0
+        if (-not $stillOpen) { continue }
         # A job that finished on the same tick as the timeout is a result, not a timeout.
         $done = $job.Handle.IsCompleted
         $timedOut = -not $done -and ((Get-Date) - $job.Started).TotalSeconds -gt 120
@@ -1368,18 +1406,28 @@ function Step-Jobs {
         $finished += $job.Id
         $out = ''
         $ok = $true
+        $stopped = $false
         try {
-            if ($timedOut) { $job.Ps.Stop(); throw 'stopped after 2 minutes' }
-            $out = ($job.Ps.EndInvoke($job.Handle) | Out-String).Trim()
-            if ($job.Ps.HadErrors) {
+            if ($timedOut) {
+                # Keep what it printed before the stop; the PET still gets it.
+                $stopped = $true
                 $ok = $false
-                $out = (($job.Ps.Streams.Error | ForEach-Object { $_.ToString() }) -join '; ') + ' ' + $out
+                $out = Get-JobText $job
+                Stop-PsAsync $job.Ps
+                $out = (($out + "`r`n" + 'stopped after 2 minutes').Trim())
+            } else {
+                $job.Ps.EndInvoke($job.Handle) | Out-Null
+                $out = Get-JobText $job
+                if ($job.Ps.HadErrors) {
+                    $ok = $false
+                    $out = (($job.Ps.Streams.Error | ForEach-Object { $_.ToString() }) -join '; ') + ' ' + $out
+                }
             }
         } catch {
             $ok = $false
             $out = $_.Exception.Message
         }
-        $job.Ps.Dispose()
+        if (-not $stopped) { $job.Ps.Dispose() }
         if ($out.Length -gt 4000) { $out = $out.Substring(0, 4000) + '...' }
         Add-Log ($(if ($ok) { '  ok' } else { '  failed' }) + $(if ($out) { ': ' + ($out -split "`n")[0] } else { '' }))
         if ($job.Agent) { Add-ChatResult $ok $out }
@@ -1391,7 +1439,7 @@ function Step-Jobs {
 }
 
 function Stop-Jobs {
-    foreach ($job in $S.Jobs) { try { $job.Ps.Stop(); $job.Ps.Dispose() } catch { } }
+    foreach ($job in @($S.Jobs)) { Stop-PsAsync $job.Ps }
     $S.Jobs = @()
 }
 
@@ -1455,7 +1503,11 @@ function Step-Tunnels {
 }
 
 function Stop-Sharing {
-    foreach ($t in $S.Tunnels) { Close-Tunnel $t }
+    foreach ($t in $S.Tunnels) {
+        # A tunnel still connecting never reached the PET, which is waiting on it: say the host could not be reached.
+        if ($t.Phase -eq 'connect') { Send-Pet ([ordered]@{ t = 'net_fail'; id = $t.Id }) }
+        Close-Tunnel $t
+    }
     $S.Tunnels = @()
     $S.Net = $false
 }
@@ -1931,8 +1983,10 @@ $adminLink.Add_LinkClicked({
         return
     }
     Add-Log 'admin: handing over to the elevated copy'
-    # The elevated copy dials the PET itself; this one leaves quietly.
+    # The elevated copy dials the PET itself; this one leaves quietly, and tells the PET so.
     $S.Closing = $true
+    if ($S.Agent) { Send-Pet ([ordered]@{ t = 'abort' }) }
+    Send-Pet ([ordered]@{ t = 'bye'; why = 'admin handover' })
     Stop-Jobs
     Stop-Sharing
     $timer.Stop()
@@ -2052,7 +2106,7 @@ $timer.Add_Tick({
         $nowMs = $Clock.ElapsedMilliseconds
         # Dial the PET about every 2 s until it answers.
         if ($S.Client -or $S.Connecting -or $nowMs -ge $script:NextDialMs) { $script:NextDialMs = $nowMs + 2000; Step-Link }
-        if ($S.Jobs.Count) { Step-Jobs }
+        if ($S.Jobs.Count -or $S.Stopping.Count) { Step-Jobs }
         if ($S.Tunnels.Count) { Step-Tunnels }
         if ($EscFilter.Pressed) { $EscFilter.Pressed = $false; Stop-Play }
         if ($Play.On) { Step-Play }

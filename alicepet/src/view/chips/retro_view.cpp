@@ -88,10 +88,15 @@ lv_obj_t* RetroView::poster(const RetroChip::Game& game, int x, int y, int w, in
     set_border(p, selected ? 2 : 1, selected ? kRetroTheme.text : 0x55555f);
     lv_obj_set_style_clip_corner(p, true, 0);
     // Title at the bottom, white on a dark shadow line, like the mockup posters.
-    lv_obj_t* title = text(p, game.name, fonts_.small, kWhite, 0, 0);
-    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(title, w - 8);
-    lv_obj_set_height(title, 3 * 12);
+    // Wrapped here at spaces (LVGL would break inside a word), "..." only at the end.
+    const int text_w = w - 6;
+    const int lines = h >= 100 ? 4 : 3;
+    lv_point_t glyph{};
+    lv_text_get_size(&glyph, "MMMMMMMMMM", fonts_.small, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    const size_t cols = glyph.x > 0 ? static_cast<size_t>(text_w * 10 / glyph.x) : 10;
+    lv_obj_t* title = text(p, RetroChip::wrap_title(game.name, cols, static_cast<size_t>(lines)), fonts_.small, kWhite, 0, 0);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(title, text_w);
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_line_space(title, 0, 0);
     lv_obj_align(title, LV_ALIGN_BOTTOM_MID, 0, -3);
@@ -111,7 +116,7 @@ void RetroView::render_library(const RetroChip& retro) {
     if (retro.search().empty() && retro.has_more()) count += "/" + std::to_string(retro.total_games());
     lv_label_set_text(frame_.tag, (tab + " · " + count).c_str());
     lv_label_set_text(frame_.footer, retro.searching() ? "type to search [↵]done [ESC]clear"
-                                                       : "[←→]game [TAB]system [/]search [↵]details");
+                                                       : "[←→]game [TAB]system [/]find [↵]open");
 
     // Tabs: scroll so the current one is always visible.
     int x = 6;
@@ -135,13 +140,18 @@ void RetroView::render_library(const RetroChip& retro) {
         wrapped(retro.search().empty() ? "No games on this system in RomM." : "Nothing matches \"" + retro.search() + "\".",
                 kRetroTheme.text, kLeft, 40, 304);
     } else {
+        // Three cards, the selected one in the middle once the list has moved on.
+        constexpr size_t kCards = 3;
+        constexpr int kCardW = 96;
+        constexpr int kCardGap = 8;
         const size_t sel = retro.selected();
-        const size_t first = sel >= 3 ? std::min(sel - 2, games.size() >= 4 ? games.size() - 4 : 0) : 0;
+        const size_t last_first = games.size() > kCards ? games.size() - kCards : 0;
+        const size_t first = sel >= 1 ? std::min(sel - 1, last_first) : 0;
         lv_obj_t* selected = nullptr;
-        for (size_t i = first; i < games.size() && i < first + 4; ++i) {
-            const int px = kLeft + static_cast<int>(i - first) * 76;
-            tap_target(body_, px, 24, 70, 86, static_cast<int>(i) - static_cast<int>(sel), true);
-            lv_obj_t* p = poster(*games[i], px, 24, 70, 86, i == sel);
+        for (size_t i = first; i < games.size() && i < first + kCards; ++i) {
+            const int px = kLeft + static_cast<int>(i - first) * (kCardW + kCardGap);
+            tap_target(body_, px, 24, kCardW, 86, static_cast<int>(i) - static_cast<int>(sel), true);
+            lv_obj_t* p = poster(*games[i], px, 24, kCardW, 86, i == sel);
             if (i == sel) selected = p;
         }
         if (selected) lv_obj_move_foreground(selected);

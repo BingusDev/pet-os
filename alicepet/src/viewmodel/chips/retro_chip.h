@@ -111,6 +111,13 @@ public:
     };
     void on_result(Result result);
     static std::vector<Platform> parse_platforms(const std::string& json);
+    // Keeps only the [retro] systems= platforms, in that order (all of them when empty).
+    static std::vector<Platform> filter_platforms(std::vector<Platform> platforms,
+                                                  const std::vector<std::string>& allowed);
+    static bool slug_matches(const std::string& slug, const std::string& wanted);
+    // A game title for a card: wrapped at spaces into at most `lines` lines of `cols`
+    // characters ('\n' between), "..." only at the very end when it doesn't fit.
+    static std::string wrap_title(const std::string& title, size_t cols, size_t lines);
     static std::vector<Game> parse_games(const std::string& json);
     // One page of GET /api/roms in server order (order_by=name); `total` gets RomM's count.
     static std::vector<Game> parse_games_page(const std::string& json, int& total);
@@ -127,6 +134,8 @@ public:
     int total_games() const { return total_; }
     bool loading_more() const { return loading_more_; }
     bool has_more() const { return next_offset_ < total_; }
+    // Games one Up/Down (or PC mouse-wheel notch) moves by.
+    static constexpr size_t kPageStep = 3;
 
 private:
     void load_platforms();

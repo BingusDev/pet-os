@@ -81,6 +81,10 @@ struct PetConfig {
     std::string retro_player{"retroarch --fullscreen -L {core} -s {savedir} {rom}"};
     bool retro_sync_saves{true};
     std::string retro_dir{"~/.local/share/alicepet/roms"};
+    // [retro] systems=: the only RomM platforms shown, as tabs in this order (slugs,
+    // matched ignoring case and punctuation: "wonderswancolor" = "wonderswan-color").
+    // Empty = every platform RomM has, after an ALL tab.
+    std::vector<std::string> retro_systems;
     std::map<std::string, std::string> retro_cores{
         {"gb", "/usr/lib/libretro/gambatte_libretro.so"},
         {"gbc", "/usr/lib/libretro/gambatte_libretro.so"},

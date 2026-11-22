@@ -77,6 +77,11 @@ RetroChip::~RetroChip() {
 
 std::string RetroChip::short_label(const std::string& slug, const std::string& fallback) {
     if (slug == "genesis-slash-megadrive" || slug == "genesis") return "GEN";
+    if (slug == "gamegear" || slug == "game-gear") return "GG";
+    if (slug == "wonderswan") return "WS";
+    if (slug == "wonderswan-color" || slug == "wonderswancolor") return "WSC";
+    if (slug == "browser") return "FLASH";
+    if (slug == "nds") return "NDS";
     if (slug == "gb" || slug == "gbc" || slug == "gba" || slug == "nes" || slug == "snes" || slug == "n64" || slug == "psx") {
         std::string up = slug;
         for (auto& c : up) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
@@ -209,7 +214,10 @@ std::vector<RetroChip::Game> RetroChip::parse_games_page(const std::string& text
     for (const auto& r : list.items()) {
         Game game;
         game.id = static_cast<int>(r["id"].integer());
-        game.name = r["name"].str(r["fs_name_no_ext"].str(r["fs_name"].str()));
+        // RomM's matched name; unmatched games have none, so their file name stands in.
+        for (const char* field : {"name", "fs_name_no_tags", "fs_name_no_ext", "fs_name"}) {
+            if (game.name.empty()) game.name = r[field].str();
+        }
         game.file = r["fs_name"].str(r["file_name"].str());
         game.platform = r["platform_slug"].str();
         game.size = r["fs_size_bytes"].integer(r["file_size_bytes"].integer());
@@ -219,6 +227,94 @@ std::vector<RetroChip::Game> RetroChip::parse_games_page(const std::string& text
     }
     total = root.is_array() ? static_cast<int>(out.size()) : static_cast<int>(root["total"].integer(-1));
     return out;
+}
+
+bool RetroChip::slug_matches(const std::string& slug, const std::string& wanted) {
+    auto squash = [](const std::string& value) {
+        std::string out;
+        for (const char c : value) {
+            if (std::isalnum(static_cast<unsigned char>(c))) out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        return out;
+    };
+    return !slug.empty() && squash(slug) == squash(wanted);
+}
+
+std::vector<RetroChip::Platform> RetroChip::filter_platforms(std::vector<Platform> platforms,
+                                                             const std::vector<std::string>& allowed) {
+    if (allowed.empty()) return platforms;
+    std::vector<Platform> out;
+    for (const auto& wanted : allowed) {
+        for (auto& p : platforms) {
+            if (p.id > 0 && slug_matches(p.slug, wanted)) {
+                out.push_back(std::move(p));
+                p.id = 0;  // taken
+            }
+        }
+    }
+    return out;
+}
+
+std::string RetroChip::wrap_title(const std::string& title, size_t cols, size_t lines) {
+    if (cols == 0 || lines == 0) return "";
+    std::vector<std::string> words;
+    std::string word;
+    for (const char c : title + " ") {
+        if (c == ' ' || c == '\t' || c == '\n') {
+            if (!word.empty()) words.push_back(word);
+            word.clear();
+        } else {
+            word += c;
+        }
+    }
+    // Counts UTF-8 characters, not bytes.
+    auto width = [](const std::string& s) {
+        size_t n = 0;
+        for (const char c : s) n += (static_cast<unsigned char>(c) & 0xC0) != 0x80;
+        return n;
+    };
+    auto cut = [](const std::string& s, size_t chars) {
+        size_t n = 0, i = 0;
+        for (; i < s.size(); ++i) {
+            if ((static_cast<unsigned char>(s[i]) & 0xC0) != 0x80 && n++ == chars) break;
+        }
+        return s.substr(0, i);
+    };
+    std::vector<std::string> out;
+    std::string line;
+    size_t i = 0;
+    for (; i < words.size(); ++i) {
+        std::string w = words[i];
+        const std::string candidate = line.empty() ? w : line + " " + w;
+        if (width(candidate) <= cols) {
+            line = candidate;
+            continue;
+        }
+        if (!line.empty()) {
+            out.push_back(line);
+            line.clear();
+            if (out.size() == lines) break;
+        }
+        // A single word wider than a line is split, as no space can be found for it.
+        while (width(w) > cols && out.size() + 1 < lines) {
+            out.push_back(cut(w, cols));
+            w = w.substr(cut(w, cols).size());
+        }
+        line = w;
+    }
+    const bool more = i < words.size() || width(line) > cols;
+    if (!line.empty() && out.size() < lines) out.push_back(line);
+    if (more && !out.empty()) {
+        std::string& last = out.back();
+        // Room for "..." by dropping whole words; only a lone word is cut.
+        while (width(last) + 3 > cols && last.find(' ') != std::string::npos) last.erase(last.rfind(' '));
+        if (width(last) + 3 > cols) last = cut(last, cols >= 3 ? cols - 3 : 0);
+        while (!last.empty() && (last.back() == ' ' || last.back() == ':' || last.back() == ',' || last.back() == '-')) last.pop_back();
+        last += "...";
+    }
+    std::string text;
+    for (size_t k = 0; k < out.size(); ++k) text += (k ? "\n" : "") + out[k];
+    return text;
 }
 
 std::vector<RetroChip::Game> RetroChip::parse_games(const std::string& text) {
@@ -240,7 +336,12 @@ std::string RetroChip::games_url(const std::string& base, int platform_id, int o
 void RetroChip::merge_page(std::vector<Game>& games, int offset, std::vector<Game> page) {
     const size_t at = std::min(games.size(), static_cast<size_t>(std::max(0, offset)));
     std::vector<int> ids;
-    for (const auto& g : page) ids.push_back(g.id);
+    // A game is listed once, even if RomM repeats it within a page.
+    page.erase(std::remove_if(page.begin(), page.end(), [&](const Game& g) {
+                   if (std::find(ids.begin(), ids.end(), g.id) != ids.end()) return true;
+                   ids.push_back(g.id);
+                   return false;
+               }), page.end());
     auto in_page = [&](const Game& g) { return std::find(ids.begin(), ids.end(), g.id) != ids.end(); };
     std::vector<Game> out;
     out.reserve(std::max(games.size(), at + page.size()));
@@ -871,11 +972,23 @@ void RetroChip::on_result(Result result) {
         if (!from_cache && !result.platforms.empty()) {
             write_file_atomic(cache_path("platforms"), platforms_cache_json(result.platforms));
         }
+        // Only the [retro] systems= tabs (in that order); without the list, ALL then everything.
+        auto shown = filter_platforms(std::move(result.platforms), config_.retro_systems);
+        if (shown.empty() && !config_.retro_systems.empty()) {
+            if (from_cache) break;  // RomM's own answer decides
+            platforms_.clear();
+            games_.clear();
+            view_ = View::Error;
+            status_ = "None of [retro] systems= is on RomM. Check the slugs in alicepet.local.conf.";
+            break;
+        }
         platforms_.clear();
-        int total = 0;
-        for (const auto& p : result.platforms) total += p.rom_count;
-        platforms_.push_back({0, "", "ALL", total});
-        for (auto& p : result.platforms) platforms_.push_back(std::move(p));
+        if (config_.retro_systems.empty()) {
+            int total = 0;
+            for (const auto& p : shown) total += p.rom_count;
+            platforms_.push_back({0, "", "ALL", total});
+        }
+        for (auto& p : shown) platforms_.push_back(std::move(p));
         platform_ = 0;
         for (size_t i = 0; i < platforms_.size(); ++i) {
             if (platforms_[i].id == current_id) platform_ = i;
@@ -953,15 +1066,14 @@ bool RetroChip::handle_key(Key key) {
             }
             return false;
         }
+        // Left/Right step one game; Up/Down (and the PC's mouse wheel) a screenful.
         if (key == Key::Left && selected_ > 0) --selected_;
         if (key == Key::Right && selected_ + 1 < count) ++selected_;
-        if (key == Key::Right) maybe_load_more();
-        if ((key == Key::Tab || key == Key::Down) && !platforms_.empty()) {
+        if (key == Key::Up) selected_ = selected_ > kPageStep ? selected_ - kPageStep : 0;
+        if (key == Key::Down && count > 0) selected_ = std::min(selected_ + kPageStep, count - 1);
+        if (key == Key::Right || key == Key::Down) maybe_load_more();
+        if (key == Key::Tab && !platforms_.empty()) {
             platform_ = (platform_ + 1) % platforms_.size();
-            search_.clear();
-            load_games();
-        } else if (key == Key::Up && !platforms_.empty()) {
-            platform_ = (platform_ + platforms_.size() - 1) % platforms_.size();
             search_.clear();
             load_games();
         }
@@ -1017,6 +1129,15 @@ void RetroChip::handle_char(const std::string& utf8) {
         return;
     }
     const char c = utf8.size() == 1 ? static_cast<char>(std::tolower(static_cast<unsigned char>(utf8[0]))) : 0;
+    // The keyboard's arrows are Fn+F/Z/X/C; the plain letters navigate too, as on every
+    // other screen (this chip takes text, so the app doesn't map them for it).
+    if (view_ == View::Library || view_ == View::Details) {
+        const Key nav = c == 'z' ? Key::Left : c == 'c' ? Key::Right : c == 'f' ? Key::Up : c == 'x' ? Key::Down : Key::Digit1;
+        if (nav != Key::Digit1) {
+            handle_key(nav);
+            return;
+        }
+    }
     if (view_ == View::Library && c == '/') {
         searching_ = true;
         touch();

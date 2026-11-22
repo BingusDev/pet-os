@@ -1088,6 +1088,93 @@ void test_retro_pagination_and_cache() {
     CHECK(RetroChip::parse_platforms(RetroChip::platforms_cache_json(plats)).size() == 1);
 }
 
+void test_retro_scrolling_systems_and_names() {
+    using viewmodel::chips::RetroChip;
+    using Game = RetroChip::Game;
+    namespace fs = std::filesystem;
+    // [retro] systems= parses to slugs; tabs follow it, matched loosely, no ALL.
+    const auto conf_path = fs::temp_directory_path() / ("alicepet-retro-conf-" + std::to_string(::getpid()) + ".conf");
+    std::ofstream(conf_path) << "[retro]\nsystems = gba,gb, GBC,nes,snes,gamegear,wonderswan,wonderswancolor\n";
+    model::PetConfig config;
+    CHECK(model::load_pet_config(conf_path.string(), config));
+    fs::remove(conf_path);
+    CHECK(config.retro_systems.size() == 8 && config.retro_systems[2] == "gbc" && config.retro_systems[7] == "wonderswancolor");
+    const auto server = RetroChip::parse_platforms(R"([
+        {"id":4,"slug":"gb","name":"Game Boy","rom_count":22},{"id":1,"slug":"gba","rom_count":87},
+        {"id":2,"slug":"browser","rom_count":111},{"id":3,"slug":"gamegear","rom_count":11},
+        {"id":11,"slug":"wonderswan-color","rom_count":4},{"id":5,"slug":"gbc","rom_count":34},
+        {"id":12,"slug":"nes","rom_count":13},{"id":9,"slug":"snes","rom_count":22}])");
+    const auto shown = RetroChip::filter_platforms(server, config.retro_systems);
+    CHECK(shown.size() == 7 && shown[0].slug == "gba" && shown[1].slug == "gb" && shown[5].slug == "gamegear");
+    CHECK(shown[6].slug == "wonderswan-color" && shown[6].label == "WSC" && shown[5].label == "GG");
+    CHECK(RetroChip::filter_platforms(server, {}).size() == server.size());
+
+    // Card titles: whole words per line, "..." only at the end.
+    CHECK(RetroChip::wrap_title("Achievement Unlocked", 13, 3) == "Achievement\nUnlocked");
+    CHECK(RetroChip::wrap_title("Advance Wars 2: Black Hole Rising", 13, 3) == "Advance Wars\n2: Black Hole\nRising");
+    CHECK(RetroChip::wrap_title("The Legend of Zelda: A Link to the Past & Four Swords", 13, 3) ==
+          "The Legend of\nZelda: A Link\nto the...");
+    CHECK(RetroChip::wrap_title("Supercalifragilistic", 8, 2) == "Supercal\nifrag...");
+    CHECK(RetroChip::wrap_title("Tetris", 13, 3) == "Tetris");
+    // Unmatched games (no RomM name) show their tag-free file name.
+    int total = 0;
+    const auto named = RetroChip::parse_games_page(R"({"items":[
+        {"id":1,"name":null,"fs_name_no_tags":"Altered","fs_name_no_ext":"Altered (USA) [!]","fs_name":"Altered (USA) [!].gba"},
+        {"id":2,"name":"","fs_name":"x.gba"}],"total":2})", total);
+    CHECK(named.size() == 2 && named[0].name == "Altered" && named[1].name == "x.gba");
+
+    // The library: first allowed system, arrows (and Z/C letters) move, the next page loads near the end.
+    config.romm_url = "http://127.0.0.1:1";
+    RetroChip retro(config);
+    retro.set_cache_dir((fs::temp_directory_path() / ("alicepet-retro-cache-" + std::to_string(::getpid()))).string());
+    RetroChip::Result plats;
+    plats.what = RetroChip::Result::What::Platforms;
+    plats.platforms = server;
+    retro.on_result(plats);
+    CHECK(retro.platforms().size() == 7 && retro.platforms()[0].slug == "gba" && retro.platform() == 0);
+    auto mk = [](int id) { Game g; g.id = id; g.name = "Game " + std::to_string(id); g.file = "f.gba"; g.platform = "gba"; return g; };
+    RetroChip::Result page;
+    page.what = RetroChip::Result::What::Games;
+    page.generation = 1;  // the first tab's list
+    page.total = 87;
+    for (int i = 1; i <= 25; ++i) page.games.push_back(mk(i));
+    page.games.push_back(mk(3));  // RomM repeating a game: shown once
+    retro.on_result(page);
+    CHECK(retro.view() == RetroChip::View::Library && retro.games().size() == 25 && retro.selected() == 0);
+    CHECK(!retro.loading_more() && retro.has_more());
+    retro.handle_key(Key::Right);
+    CHECK(retro.selected() == 1);
+    retro.handle_char("c");  // plain C (Fn+C is the arrow)
+    CHECK(retro.selected() == 2);
+    retro.handle_char("z");
+    CHECK(retro.selected() == 1);
+    retro.handle_key(Key::Down);  // PC wheel notch / Fn+X: a screenful
+    CHECK(retro.selected() == 1 + RetroChip::kPageStep);
+    retro.handle_key(Key::Up);
+    CHECK(retro.selected() == 1);
+    while (retro.selected() < 16) retro.handle_key(Key::Right);
+    CHECK(!retro.loading_more());
+    retro.handle_key(Key::Right);  // 8 from the end of what's loaded
+    CHECK(retro.selected() == 17 && retro.loading_more());
+    for (int i = 0; i < 20; ++i) retro.handle_key(Key::Right);
+    CHECK(retro.selected() == 24);  // the end of the loaded list until the page lands
+    RetroChip::Result next = page;
+    next.offset = 25;
+    next.games.clear();
+    for (int i = 26; i <= 50; ++i) next.games.push_back(mk(i));
+    next.games.push_back(mk(26));
+    retro.on_result(next);
+    CHECK(retro.games().size() == 50);
+    retro.handle_key(Key::Right);
+    CHECK(retro.selected() == 25 && retro.game()->id == 26);
+    retro.handle_char("/");  // search still opens; letters then type
+    retro.handle_char("c");
+    CHECK(retro.searching() && retro.search() == "c");
+    retro.handle_key(Key::Escape);
+    retro.handle_key(Key::Tab);  // next system
+    CHECK(retro.platform() == 1 && retro.selected() == 0);
+}
+
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"wrap", test_wrap},
@@ -1114,6 +1201,7 @@ int main() {
         {"ir_codec", test_ir_codec},
         {"remote_chip_files_and_pad", test_remote_chip_files_and_pad},
         {"retro_parsing", test_retro_parsing},
+        {"retro_scrolling_systems_and_names", test_retro_scrolling_systems_and_names},
         {"retro_pagination_and_cache", test_retro_pagination_and_cache},
         {"retro_needs_server", test_retro_needs_server},
         {"retro_save_sync_helpers", test_retro_save_sync_helpers},

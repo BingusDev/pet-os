@@ -83,7 +83,7 @@ if ($env:JACKIN_SCALE) { $K = [double]$env:JACKIN_SCALE }
 $K = [Math]::Max(0.7, $K)
 [JackInUi]::K = $K
 
-$AppVersion = '0.9'
+$AppVersion = '0.9.1'
 $Here = Split-Path -Parent $PSCommandPath
 
 # Draws each PET frame: run-length RGB565 (count, hi, lo) to ARGB pixels.
@@ -1519,6 +1519,10 @@ function Get-Player {
         $ax = New-Object JackInWmp
         ([System.ComponentModel.ISupportInitialize]$ax).BeginInit()
         [JackInUi]::B($ax, 0, 28, 826, 438)
+        # WMP only makes its video window if it starts up in a visible panel;
+        # made inside the hidden one it plays sound over a black area.
+        $playPanel.Visible = $true
+        $playPanel.BringToFront()
         $playPanel.Controls.Add($ax)
         ([System.ComponentModel.ISupportInitialize]$ax).EndInit()
         $Play.Ax = $ax

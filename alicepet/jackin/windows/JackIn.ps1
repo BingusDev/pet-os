@@ -203,6 +203,7 @@ $S = [ordered]@{
     Stream     = $null
     Writer     = $null
     Buffer     = ''
+    Decoder    = $null    # UTF-8 decoder kept across reads, so a character split between reads survives
     Connecting = $null    # Task from ConnectAsync
     Full       = [bool]$StartFull -or $StartMode -eq 'Ask' -or $StartMode -eq 'Full'
     Admin      = $false
@@ -1358,10 +1359,13 @@ function Start-PetCommand($id, [string]$cmd, [bool]$agent = $false) {
 }
 
 function Step-Jobs {
-    $left = @()
-    foreach ($job in $S.Jobs) {
-        $timedOut = ((Get-Date) - $job.Started).TotalSeconds -gt 120
-        if (-not $job.Handle.IsCompleted -and -not $timedOut) { $left += $job; continue }
+    $finished = @()   # Ids of the jobs handled in this pass
+    foreach ($job in @($S.Jobs)) {
+        # A job that finished on the same tick as the timeout is a result, not a timeout.
+        $done = $job.Handle.IsCompleted
+        $timedOut = -not $done -and ((Get-Date) - $job.Started).TotalSeconds -gt 120
+        if (-not $done -and -not $timedOut) { continue }
+        $finished += $job.Id
         $out = ''
         $ok = $true
         try {
@@ -1381,7 +1385,9 @@ function Step-Jobs {
         if ($job.Agent) { Add-ChatResult $ok $out }
         Send-Pet ([ordered]@{ t = 'result'; id = $job.Id; ok = $ok; out = $out })
     }
-    $S.Jobs = $left
+    # Re-read $S.Jobs: Send-Pet can drop the link, and Stop-Jobs then empties the list.
+    # Writing back a list built before the loop would bring those disposed jobs back.
+    $S.Jobs = @($S.Jobs | Where-Object { $finished -notcontains $_.Id })
 }
 
 function Stop-Jobs {
@@ -1425,11 +1431,18 @@ function Step-Tunnels {
                 continue
             }
             if (@($t.Tasks | Where-Object { -not $_.IsCompleted }).Count -gt 0) { $left += $t; continue }
-            $hello = [System.Text.Encoding]::ASCII.GetBytes("tunnel $($t.Id)`n")
-            $ps = $t.Pet.GetStream()
-            $ps.Write($hello, 0, $hello.Length)
-            $ts = $t.Target.GetStream()
-            $t.Tasks = @($ps.CopyToAsync($ts), $ts.CopyToAsync($ps))
+            try {
+                $hello = [System.Text.Encoding]::ASCII.GetBytes("tunnel $($t.Id)`n")
+                $ps = $t.Pet.GetStream()
+                $ps.Write($hello, 0, $hello.Length)
+                $ts = $t.Target.GetStream()
+                $t.Tasks = @($ps.CopyToAsync($ts), $ts.CopyToAsync($ps))
+            } catch {
+                # The PET side died before the hello went out: this tunnel is over, the rest go on.
+                Close-Tunnel $t
+                Send-Pet ([ordered]@{ t = 'net_fail'; id = $t.Id })
+                continue
+            }
             $t.Phase = 'open'
             $left += $t
         } elseif (@($t.Tasks | Where-Object { $_.IsCompleted }).Count -gt 0) {
@@ -1668,8 +1681,9 @@ function Start-Play($msg) {
 # Ends the video; tells the PET where it stopped unless the PET asked for the stop.
 function Stop-Play([string]$state = 'stopped', [bool]$tell = $true, [string]$err = '') {
     if (-not $Play.On) { return }
-    if ($tell) { Send-Progress $state $err }
+    # Off first: Send-Progress can re-enter (a dropped link runs Stop-Play again).
     $Play.On = $false
+    if ($tell) { Send-Progress $state $err }
     $EscFilter.Armed = $false
     $EscFilter.Pressed = $false
     try { $Play.Ax.Player.controls.stop(); $Play.Ax.Player.URL = '' } catch { }
@@ -1713,7 +1727,7 @@ function On-PlayerCommand($msg) {
 function Step-Play {
     if (-not $Play.On -or -not $Play.Ax) { return }
     $p = $Play.Ax.Player
-    $ps = [int]$p.playState
+    try { $ps = [int]$p.playState } catch { Stop-Play 'error' $true 'the player stopped answering'; return }
     if ($ps -eq 3 -and -not $Play.Started) {
         $Play.Started = $true
         if ($Play.StartAt -gt 1) { $p.controls.currentPosition = $Play.StartAt }
@@ -1740,7 +1754,8 @@ $btnFwd10.Add_Click({ Seek-Play 10 })
 
 function Drop-Link([string]$why) {
     if ($S.Client) { try { $S.Client.Close() } catch { } }
-    $S.Client = $null; $S.Stream = $null; $S.Writer = $null; $S.Buffer = ''
+    $S.Client = $null; $S.Stream = $null; $S.Writer = $null; $S.Buffer = ''; $S.Decoder = $null
+    $S.Agent = $false
     $S.MirrorSent = $false
     if ($S.Linked) {
         $S.Linked = $false
@@ -1879,10 +1894,13 @@ function Step-Link {
             return
         }
         $bytes = New-Object byte[] 8192
+        $chars = New-Object char[] 8192
+        if (-not $S.Decoder) { $S.Decoder = [System.Text.Encoding]::UTF8.GetDecoder() }
         while ($S.Stream -and $S.Stream.DataAvailable) {
             $n = $S.Stream.Read($bytes, 0, $bytes.Length)
             if ($n -le 0) { break }
-            $S.Buffer += [System.Text.Encoding]::UTF8.GetString($bytes, 0, $n)
+            $count = $S.Decoder.GetChars($bytes, 0, $n, $chars, 0)
+            $S.Buffer += New-Object System.String($chars, 0, $count)
         }
         while ($S.Stream -and ($i = $S.Buffer.IndexOf("`n")) -ge 0) {
             $line = $S.Buffer.Substring(0, $i).Trim()

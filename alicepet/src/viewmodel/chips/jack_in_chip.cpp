@@ -329,6 +329,7 @@ void JackInChip::on_line(const std::string& line) {
                 agent_stop("Holden said stop after " + std::to_string(agent_steps_) + " commands");
             }
         }
+    } else if (t == "open") {
         const std::string id = msg["chip"].str();
         if (pc_capable(id)) {
             opening_.push_back(id);

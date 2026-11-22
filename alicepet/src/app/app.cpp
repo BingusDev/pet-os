@@ -937,6 +937,9 @@ int Application::run() {
     auto* display = simulator_frame.display();
 #else
     auto* display = init_device_display();
+    // The fbdev/DRM drivers give LVGL a clock but no delay, so lv_delay_ms()
+    // busy-spun the main loop at 100% of a core. Sleep in the kernel instead.
+    lv_delay_set_cb([](uint32_t ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); });
 #endif
     if (!display) {
         LOG_ERROR("failed to initialize display");
@@ -1088,7 +1091,12 @@ int Application::run() {
         if (screen_on) {
             // Sleep until LVGL's next timer is due (indev read, redraw, animation),
             // between 5 ms and one 30 fps frame, instead of spinning every 5 ms.
-            lv_delay_ms(std::clamp<uint32_t>(next_timer_ms, 5, 33));
+            // Sleep in the kernel directly: on the device LVGL's delay hook ended up
+            // unset at runtime, so lv_delay_ms() busy-spun a whole core (rev15 fix).
+            // A blanked jack-in panel needs no 30 fps: a slower loop still serves
+            // the PC link, the mirror (12 fps cap) and input.
+            const uint32_t floor_ms = g_jack_blanked ? 20 : 5;
+            std::this_thread::sleep_for(std::chrono::milliseconds(std::clamp<uint32_t>(next_timer_ms, floor_ms, 33)));
         } else {
             // Napping: wait in the kernel for a key, waking once a second for workers.
             platform::wait_for_key_input(1000);

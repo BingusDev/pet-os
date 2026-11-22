@@ -50,7 +50,7 @@ scp "${latest_package}" "${remote}:${remote_pkg}"
 
 if [[ "${INSTALL}" == "1" ]]; then
   log "Install: sudo dpkg -i ${remote_pkg} && restart APPLaunch"
-  ssh -t "${remote}" "sudo dpkg -i '${remote_pkg}' && sudo systemctl restart APPLaunch.service"
+  ssh -t "${remote}" "sudo dpkg -i '${remote_pkg}' && { systemctl --user restart APPLaunch.service 2>/dev/null || sudo systemctl restart APPLaunch.service; }"
 fi
 
 log "Done: ${latest_package} -> ${remote}:${remote_pkg}"

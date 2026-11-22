@@ -251,12 +251,13 @@ HttpResponse https_via_curl(const std::string& method, const std::string& url, c
         response.error = "reply too large";
         return response;
     }
-    const size_t marker = out.rfind("\n@@HTTP@@");
+    static constexpr char kMarker[] = "\n@@HTTP@@";
+    const size_t marker = out.rfind(kMarker);
     if (rc != 0 || marker == std::string::npos) {
         response.error = rc == -1 ? "curl missing" : rc == -2 ? "timeout" : "curl exit " + std::to_string(rc);
         return response;
     }
-    response.status = std::atoi(out.c_str() + marker + 10);
+    response.status = std::atoi(out.c_str() + marker + sizeof(kMarker) - 1);  // was +10: "200" read as 0
     out.resize(marker);
     response.body = std::move(out);  // no second copy of a large download
     if (response.body.size() > max_reply) {

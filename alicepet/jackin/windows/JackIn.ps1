@@ -21,7 +21,7 @@
 #    ones) and its output goes back to her automatically; after 25 commands (8 in Read/Ask)
 #    for one message you are asked whether she keeps going.
 #  - Jellyfin video and Retro games picked on the PET's chip play HERE: video in a
-#    NOW PLAYING player in the chip area (Windows Media Player; Esc or STOP VIDEO
+#    NOW PLAYING player in the chip area (Windows Media Player; Esc or STOP
 #    comes back to the chip and tells Jellyfin where you stopped), games in your
 #    browser (RomM's web player, on http://127.0.0.1 so the browser treats it as secure). Both come
 #    through the PET's relay on 10.55.0.1, so no server passwords reach this PC.
@@ -83,7 +83,7 @@ if ($env:JACKIN_SCALE) { $K = [double]$env:JACKIN_SCALE }
 $K = [Math]::Max(0.7, $K)
 [JackInUi]::K = $K
 
-$AppVersion = '0.9.1'
+$AppVersion = '0.9.2'
 $Here = Split-Path -Parent $PSCommandPath
 
 # Draws each PET frame: run-length RGB565 (count, hi, lo) to ARGB pixels.
@@ -532,12 +532,12 @@ $playPanel = New-Object System.Windows.Forms.Panel
 $playPanel.BackColor = [System.Drawing.Color]::Black
 $playPanel.Visible = $false
 $form.Controls.Add($playPanel)
-$nowLabel = New-Label 'NOW PLAYING' 0 0 650 28 (Vt 20) $cText $cEdge
+$nowLabel = New-Label 'NOW PLAYING' 0 0 716 28 (Vt 20) $cText $cEdge
 $nowLabel.TextAlign = 'MiddleLeft'
 $nowLabel.AutoEllipsis = $true
 $playPanel.Controls.Add($nowLabel)
 # The big one: always in the player's own bar, right of the title.
-$btnStopVideo = New-Button ([string][char]0x25A0 + ' STOP VIDEO (Esc)') 650 0 176 28 (RGB 0xd0 0x40 0x40) (RGB 0xff 0xff 0xff) (Pix 7)
+$btnStopVideo = New-Button ([string][char]0x25A0 + ' STOP') 716 0 110 28 (RGB 0xd0 0x40 0x40) (RGB 0xff 0xff 0xff) (Pix 7)
 $form.Controls.Remove($btnStopVideo)
 $playPanel.Controls.Add($btnStopVideo)
 $btnBack10 = New-Button '-10s' 560 84 70 28 $cIdle (RGB 0xff 0xff 0xff) (Pix 7)
@@ -586,6 +586,7 @@ $btnVoice.Add_Paint({
     $pen.Dispose()
 })
 $tips = New-Object System.Windows.Forms.ToolTip
+$tips.SetToolTip($btnStopVideo, 'Stop the video (Esc)')
 $tips.SetToolTip($btnVoice, 'Alice is muted (click to hear her)')
 $tips.SetToolTip($btnMic, 'Hold to talk (or hold F9)')
 $tips.SetToolTip($btnHome, 'Back to HOME (Esc; Shift+Esc while typing into the PET screen)')
@@ -983,12 +984,16 @@ function Apply-Frame($msg) {
     $count = [Math]::Min($n * $w, $script:Pixels.Length - $start)
     if ($count -le 0) { return }
     [JackInFrame]::Decode([Convert]::FromBase64String($rle), $script:Pixels, $start, $count)
-    $bmp = New-Object System.Drawing.Bitmap -ArgumentList $w, $h, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    # One bitmap per frame size, refilled in place (no new 2 MB bitmap per frame).
+    $bmp = $script:FrameBmp
+    if ($null -eq $bmp -or $bmp.Width -ne $w -or $bmp.Height -ne $h) {
+        if ($bmp) { $bmp.Dispose() }
+        $bmp = New-Object System.Drawing.Bitmap -ArgumentList $w, $h, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        $script:FrameBmp = $bmp
+    }
     $data = $bmp.LockBits((New-Object System.Drawing.Rectangle -ArgumentList 0, 0, $w, $h), [System.Drawing.Imaging.ImageLockMode]::WriteOnly, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     [Runtime.InteropServices.Marshal]::Copy($script:Pixels, 0, $data.Scan0, $script:Pixels.Length)
     $bmp.UnlockBits($data)
-    if ($script:FrameBmp) { $script:FrameBmp.Dispose() }
-    $script:FrameBmp = $bmp
     $mirror.Invalidate()
 }
 
@@ -1255,10 +1260,18 @@ function Test-ReadOnly([string]$cmd) {
     if ($null -eq $ast) { return $false }
     if (@($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FileRedirectionAst] }, $true)).Count -gt 0) { return $false }
     foreach ($m in (Get-CmdMethods $ast)) { if ($ReadMethods -notcontains $m) { return $false } }
+    # Setting a property changes things too: (Get-Item x).Attributes = 'Hidden'.
+    if (@($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                    $n.Left -isnot [System.Management.Automation.Language.VariableExpressionAst] }, $true)).Count -gt 0) { return $false }
     foreach ($c in (Get-CmdCalls $ast)) {
         $n = $c.Name
         $a = ' ' + ($c.Args -join ' ') + ' '
         if (-not $n) { return $false }   # & $something: can't tell what it runs
+        # ForEach-Object's member form runs a method: gps notepad | % Kill
+        if (@('foreach-object', '%', 'foreach') -contains $n) {
+            foreach ($x in $c.Args) { if ($x -notmatch '^[-{]' -and $ReadMethods -notcontains $x) { return $false } }
+        }
+        if ($a -match ' -repair') { return $false }   # Test-ComputerSecureChannel -Repair
         if ($n -like 'get-credential') { return $false }
         if ($n -eq 'ipconfig' -and $a -match ' /(release|renew|flushdns|registerdns|setclassid)') { return $false }
         if ($n -eq 'route' -and $a -notmatch '^\s*print\s') { return $false }
@@ -1374,6 +1387,13 @@ function Stop-Jobs {
 
 function Open-Tunnel($id, [string]$targetHost, [int]$targetPort) {
     if (-not $S.Net) { Send-Pet ([ordered]@{ t = 'net_fail'; id = $id }); return }
+    # Sharing the internet never opens this PC's own local services to the PET.
+    $ip = $null
+    if ($targetHost -eq 'localhost' -or $targetHost -like '*.localhost' -or
+        ([System.Net.IPAddress]::TryParse($targetHost.Trim('[', ']'), [ref]$ip) -and ([System.Net.IPAddress]::IsLoopback($ip) -or $ip.ToString() -eq '0.0.0.0' -or $ip.ToString() -eq '::'))) {
+        Add-Log "PET asked to reach $targetHost on this PC; refused"
+        Send-Pet ([ordered]@{ t = 'net_fail'; id = $id }); return
+    }
     $target = New-Object System.Net.Sockets.TcpClient
     $back = New-Object System.Net.Sockets.TcpClient   # back to the PET's tunnel port
     $S.Tunnels += @{
@@ -1566,6 +1586,12 @@ function Start-Play($msg) {
         $open = $url
         try {
             $u = [Uri]$url
+            $petHosts = @($Pet)
+            try { $petHosts += $S.Client.Client.RemoteEndPoint.Address.ToString() } catch { }
+            if ($petHosts -notcontains $u.Host) {
+                Add-Log "game link isn't on the PET ($($u.Host)); not opening it"
+                return
+            }
             if (-not $u.IsLoopback) {
                 $lp = $Loop.Start(7345, $u.Host, $u.Port)
                 if ($lp -gt 0) { $open = 'http://127.0.0.1:' + $lp + $u.PathAndQuery }
@@ -1616,6 +1642,12 @@ function Stop-Play([string]$state = 'stopped', [bool]$tell = $true, [string]$err
     $EscFilter.Armed = $false
     $EscFilter.Pressed = $false
     try { $Play.Ax.Player.controls.stop(); $Play.Ax.Player.URL = '' } catch { }
+    # Let WMP go (tens of MB); the next video makes a fresh one in the visible panel.
+    if ($Play.Ax) {
+        $ax = $Play.Ax
+        $Play.Ax = $null
+        try { $playPanel.Controls.Remove($ax); $ax.Dispose() } catch { }
+    }
     Add-Log $(switch ($state) { 'ended' { "$($Play.Title) finished" } 'error' { "couldn't play $($Play.Title): $err" } default { "stopped $($Play.Title)" } })
     Update-Ui
     $mirror.Focus() | Out-Null
@@ -1689,6 +1721,7 @@ function Drop-Link([string]$why) {
         Stop-Mic $false
         Stop-Jobs
         Stop-Sharing
+        $Loop.Stop()
         Clear-Mirror
         Build-Chips @()
         Set-View 'home'
@@ -1945,7 +1978,8 @@ function Refresh-LiveStats {
         $live.disk_free = [int](100.0 * $drive.AvailableFreeSpace / $drive.TotalSize)
     } catch { }
     $script:LiveTicks++
-    if (($script:LiveTicks % 10) -eq 1) {
+    # Defender's state (a CIM query, the slow part) only every ~5 minutes.
+    if (($script:LiveTicks % 100) -eq 1) {
         try { $live.defender = $(if ((Get-MpComputerStatus -ErrorAction Stop).RealTimeProtectionEnabled) { 'on' } else { 'off' }) } catch { }
     }
     if (-not $live.Contains('defender')) {
@@ -1957,21 +1991,30 @@ function Refresh-LiveStats {
 
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 100
-$script:tick = 0
+$Clock = [System.Diagnostics.Stopwatch]::StartNew()
+$script:NextDialMs = 0
+$script:NextStatsMs = 3000
 $timer.Add_Tick({
     if ($S.Busy) { return }
     try {
+        $nowMs = $Clock.ElapsedMilliseconds
         # Dial the PET about every 2 s until it answers.
-        $script:tick++
-        if ($S.Client -or $S.Connecting -or ($script:tick % 20) -eq 1) { Step-Link }
-        Step-Jobs
-        Step-Tunnels
+        if ($S.Client -or $S.Connecting -or $nowMs -ge $script:NextDialMs) { $script:NextDialMs = $nowMs + 2000; Step-Link }
+        if ($S.Jobs.Count) { Step-Jobs }
+        if ($S.Tunnels.Count) { Step-Tunnels }
         if ($EscFilter.Pressed) { $EscFilter.Pressed = $false; Stop-Play }
-        Step-Play
+        if ($Play.On) { Step-Play }
         if ($readHint.Visible -and (Get-Date) -gt $script:ReadHintUntil) { $readHint.Visible = $false }
         Sync-Mirror
-        if (($script:tick % 30) -eq 0) { Refresh-LiveStats }
+        # PC STATUS every 3 s, only while someone can see it.
+        if ($nowMs -ge $script:NextStatsMs) {
+            $script:NextStatsMs = $nowMs + 3000
+            if ($form.Visible -and $form.WindowState -ne 'Minimized') { Refresh-LiveStats }
+        }
         if ($Mic.On -and ((Get-Date) - $Mic.Started).TotalSeconds -ge 15) { Stop-Mic }
+        # Nothing going on (no PET yet): tick 4x a second instead of 10x.
+        $idle = -not ($S.Linked -or $Play.On -or $Mic.On -or $S.Jobs.Count -or $S.Tunnels.Count)
+        $timer.Interval = $(if ($idle) { 250 } else { 100 })
     } catch {
         Add-Log ('error: ' + $_.Exception.Message)
     }

@@ -1,4 +1,4 @@
-# Parses JackIn.ps1 and checks its command policy (Test-ReadOnly / Test-Destructive)
+﻿# Parses JackIn.ps1 and checks its command policy (Test-ReadOnly / Test-Destructive)
 # without opening any window. Works in Windows PowerShell 5.1 and pwsh 7.
 #   powershell -NoProfile -File TestPolicy.ps1 [path\to\JackIn.ps1]
 param([string]$App = (Join-Path (Split-Path -Parent $PSCommandPath) '..\windows\JackIn.ps1'))
@@ -30,10 +30,13 @@ function Check([string]$what, [bool]$got, [bool]$want) {
 $readOk = @('Get-Process | Sort-Object WS -Descending | Select-Object -First 5', 'whoami', 'ipconfig /all', 'systeminfo', 'tasklist /v',
     'Get-Service | Where-Object { $_.Status -eq "Running" } | Measure-Object', 'Test-NetConnection 8.8.8.8 -Port 443',
     'Get-ChildItem C:\Users | Format-Table Name', 'gps | sort cpu -desc | select -f 3', 'route print', 'sc.exe query wuauserv',
-    'Get-CimInstance Win32_OperatingSystem | Select-Object Caption, LastBootUpTime', '(Get-Date).ToString()')
+    'Get-CimInstance Win32_OperatingSystem | Select-Object Caption, LastBootUpTime', '(Get-Date).ToString()',
+    '$p = Get-Process; $p | % { $_.Name }', 'Test-ComputerSecureChannel')
 $readNo = @('Remove-Item C:\temp\x', 'Stop-Process -Name OneDrive', 'ipconfig /release', 'Set-Content x.txt hi', 'sc stop x', 'sc.exe stop wuauserv',
     'Get-Process > procs.txt', 'Get-Process | ForEach-Object { $_.Kill() }', '& $cmd', 'iex "whoami"', 'New-Item x -ItemType File',
-    '[IO.File]::Delete("x")', 'Restart-Service spooler', 'Get-Process | Stop-Process', 'cmd /c dir', 'this is ( not valid')
+    '[IO.File]::Delete("x")', 'Restart-Service spooler', 'Get-Process | Stop-Process', 'cmd /c dir', 'this is ( not valid',
+    'gps notepad | % Kill', 'Get-Process notepad | ForEach-Object -MemberName Kill', '(Get-Item C:\x).Attributes = "Hidden"',
+    'Test-ComputerSecureChannel -Repair', '$m = "Kill"; gps notepad | % $m', 'gps | % Name')
 $destructive = @('Remove-Item C:\temp -Recurse', 'del x', 'rd /s /q x', 'Stop-Process -Id 4', 'taskkill /im x.exe /f', 'Uninstall-Package x',
     'msiexec /x {GUID}', 'winget uninstall foo', 'Set-MpPreference -DisableRealtimeMonitoring $true', 'Disable-NetAdapter Wi-Fi',
     'reg delete HKCU\Software\X /f', 'bcdedit /set safeboot minimal', 'shutdown /r /t 0', 'Restart-Computer', 'net user bob /add',

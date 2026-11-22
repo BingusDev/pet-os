@@ -759,6 +759,7 @@ void RetroChip::download(const Game& game, bool then_play) {
         {
             std::ofstream out(tmp, std::ios::binary);
             out.write(response.body.data(), static_cast<std::streamsize>(response.body.size()));
+            out.flush();
             if (!out) {
                 result.text = "can't write " + tmp;
                 return result;
@@ -1066,7 +1067,10 @@ bool RetroChip::handle_key(Key key) {
             } else if (key == Key::Enter) {
                 searching_ = false;
             } else if (key == Key::Backspace && !search_.empty()) {
-                search_.pop_back();
+                // Drop the whole last UTF-8 character, not one continuation byte.
+                do {
+                    search_.pop_back();
+                } while (!search_.empty() && (static_cast<unsigned char>(search_.back()) & 0xC0) == 0x80);
                 selected_ = 0;
             } else if (key == Key::Left && selected_ > 0) {
                 --selected_;

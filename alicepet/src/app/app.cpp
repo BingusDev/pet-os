@@ -1051,10 +1051,11 @@ int Application::run() {
         const auto want_level = (view_model.sleeping() || g_jack_blanked) ? platform::ScreenLevel::Off
                                 : view_model.dimmed()                      ? platform::ScreenLevel::Dim
                                                                            : platform::ScreenLevel::On;
+        // Recomputed every pass: g_jack_blanked can change while the level stays the same.
+        // Blanked for a jack-in link: the panel is off but the loop keeps full speed.
+        screen_on = want_level != platform::ScreenLevel::Off || g_jack_blanked;
         if (want_level != screen_level) {
             screen_level = want_level;
-            // Blanked for a jack-in link: the panel is off but the loop keeps full speed.
-            screen_on = screen_level != platform::ScreenLevel::Off || g_jack_blanked;
             const bool switched =
                 platform::set_screen_level(screen_level, pet_config.backlight, pet_config.dim_percent);
             LOG_INFO("screen {} (backlight {})",

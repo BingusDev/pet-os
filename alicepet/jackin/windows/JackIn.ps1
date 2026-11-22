@@ -1157,6 +1157,7 @@ $mirror.Add_KeyPress({
 function Invoke-Scan {
     $S.Busy = $true
     $form.Cursor = [System.Windows.Forms.Cursors]::WaitCursor
+    try {
     $scan = [ordered]@{ t = 'scan' }
     $steps = @(
         @{ Text = 'Get-CimInstance Win32_Processor (load)'; Do = {
@@ -1195,8 +1196,10 @@ function Invoke-Scan {
     $summary += "Defender $($scan.defender)"
     Add-Log ('scan done (read-only): ' + ($summary -join ', ') + '. Look at the PET for what Alice thinks.')
     Add-Log 'read-only checks complete'
-    $form.Cursor = [System.Windows.Forms.Cursors]::Default
-    $S.Busy = $false
+    } finally {
+        $form.Cursor = [System.Windows.Forms.Cursors]::Default
+        $S.Busy = $false
+    }
 }
 
 # PC STATUS boxes on HOME: green is fine, yellow worth a look, red needs a fix.
@@ -1334,10 +1337,13 @@ function Start-PetCommand($id, [string]$cmd, [bool]$agent = $false) {
         $S.Busy = $true
         $runsAs = "$env:USERNAME$(if ($S.Admin) { ' (admin)' })"
         $warn = $(if ($danger) { "This looks DESTRUCTIVE (it can delete, stop, uninstall or change settings).`r`n`r`n" } else { '' })
-        $answer = [System.Windows.Forms.MessageBox]::Show($form,
-            "$warn$who wants to run this (runs as Windows user $runsAs):`r`n`r`n$cmd`r`n`r`nRun it?",
-            'Jack In: run a command?', 'YesNo', $(if ($danger) { 'Warning' } else { 'Question' }), 'Button2')
-        $S.Busy = $false
+        try {
+            $answer = [System.Windows.Forms.MessageBox]::Show($form,
+                "$warn$who wants to run this (runs as Windows user $runsAs):`r`n`r`n$cmd`r`n`r`nRun it?",
+                'Jack In: run a command?', 'YesNo', $(if ($danger) { 'Warning' } else { 'Question' }), 'Button2')
+        } finally {
+            $S.Busy = $false
+        }
         if ($answer -ne 'Yes') {
             Add-Log "you declined: $cmd"
             if ($agent) { Add-ChatResult $false 'you said No' }
@@ -1801,10 +1807,13 @@ function On-Line([string]$line) {
             $steps = [string](Get-Field $msg 'steps')
             $next = [string](Get-Field $msg 'next')
             $S.Busy = $true
-            $answer = [System.Windows.Forms.MessageBox]::Show($form,
-                "Alice has run $steps commands for this message.`r`n`r`nNext she wants:`r`n$next`r`n`r`nKeep going?",
-                'Jack In: keep going?', 'YesNo', 'Question', 'Button1')
-            $S.Busy = $false
+            try {
+                $answer = [System.Windows.Forms.MessageBox]::Show($form,
+                    "Alice has run $steps commands for this message.`r`n`r`nNext she wants:`r`n$next`r`n`r`nKeep going?",
+                    'Jack In: keep going?', 'YesNo', 'Question', 'Button1')
+            } finally {
+                $S.Busy = $false
+            }
             $yes = ($answer -eq 'Yes')
             Add-Log $(if ($yes) { "you let Alice keep going after $steps commands" } else { "you stopped Alice after $steps commands" })
             if (-not $yes) { $S.Agent = $false; Add-ChatResult $false "stopped after $steps commands" }

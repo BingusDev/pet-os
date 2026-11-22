@@ -1030,6 +1030,64 @@ void test_pc_input_reaches_open_chip() {
     }
 }
 
+void test_retro_pagination_and_cache() {
+    using viewmodel::chips::RetroChip;
+    using Game = RetroChip::Game;
+    // Page parse keeps server order and RomM's total.
+    int total = 0;
+    auto page = RetroChip::parse_games_page(R"({"items":[
+        {"id":5,"name":"Zelda","fs_name":"z.gba","platform_slug":"gba"},
+        {"id":4,"name":"Advance Wars","fs_name":"aw.gba","platform_slug":"gba"}],"total":87,"limit":25,"offset":0})", total);
+    CHECK(total == 87 && page.size() == 2 && page[0].id == 5);
+    RetroChip::parse_games_page("[]", total);
+    CHECK(total == 0);
+    RetroChip::parse_games_page("not json", total);
+    CHECK(total == -1);
+
+    const auto url = RetroChip::games_url("https://r", 3, 50, 25);
+    CHECK(url.find("limit=25") != std::string::npos && url.find("offset=50") != std::string::npos);
+    CHECK(url.find("platform_ids=3") != std::string::npos && url.find("with_char_index=false") != std::string::npos);
+    CHECK(RetroChip::games_url("https://r", 0, 0, 25).find("platform_ids") == std::string::npos);
+
+    auto mk = [](int id) { Game g; g.id = id; g.name = "g" + std::to_string(id); g.file = "f"; return g; };
+    // Appending pages.
+    std::vector<Game> games;
+    RetroChip::merge_page(games, 0, {mk(1), mk(2)});
+    RetroChip::merge_page(games, 2, {mk(3), mk(4)});
+    CHECK(games.size() == 4 && games[2].id == 3);
+    // Refresh over a cached list: page 0 replaces the head, the cached tail stays,
+    // and an id that moved into the page is not shown twice.
+    std::vector<Game> cached{mk(1), mk(2), mk(3), mk(4), mk(5)};
+    RetroChip::merge_page(cached, 0, {mk(9), mk(1), mk(4)});
+    CHECK(cached.size() == 4);  // 2 and 3 sat in the refreshed range; their own page brings them back
+    CHECK(cached[0].id == 9 && cached[1].id == 1 && cached[2].id == 4 && cached[3].id == 5);
+    int seen4 = 0;
+    for (const auto& g : cached) seen4 += g.id == 4;
+    CHECK(seen4 == 1);
+    // Offset past the end just appends.
+    std::vector<Game> few{mk(1)};
+    RetroChip::merge_page(few, 10, {mk(2)});
+    CHECK(few.size() == 2 && few[1].id == 2);
+
+    // Lean cache round trip, bounded.
+    Game g = mk(7);
+    g.name = "Quote \"and\" slash \\";
+    g.platform = "gba";
+    g.size = 4194304;
+    g.year = 2001;
+    std::vector<Game> list{g, mk(8), mk(9)};
+    const auto text = RetroChip::cache_json(342, list, 2);
+    int ctotal = 0;
+    const auto back = RetroChip::parse_cache(text, ctotal);
+    CHECK(back.size() == 2 && ctotal == 342);
+    CHECK(back[0].name == g.name && back[0].platform == "gba" && back[0].size == 4194304 && back[0].year == 2001);
+    CHECK(RetroChip::parse_cache("garbage", ctotal).empty() && ctotal == 0);
+    CHECK(text.size() < 1024);
+
+    std::vector<RetroChip::Platform> plats{{0, "", "ALL", 9}, {1, "gba", "GBA", 9}};
+    CHECK(RetroChip::parse_platforms(RetroChip::platforms_cache_json(plats)).size() == 1);
+}
+
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"wrap", test_wrap},
@@ -1056,6 +1114,7 @@ int main() {
         {"ir_codec", test_ir_codec},
         {"remote_chip_files_and_pad", test_remote_chip_files_and_pad},
         {"retro_parsing", test_retro_parsing},
+        {"retro_pagination_and_cache", test_retro_pagination_and_cache},
         {"retro_needs_server", test_retro_needs_server},
         {"retro_save_sync_helpers", test_retro_save_sync_helpers},
         {"retro_failed_pull_keeps_both_saves", test_retro_failed_pull_keeps_both_saves},

@@ -107,7 +107,9 @@ void RetroView::render_library(const RetroChip& retro) {
     const auto& platforms = retro.platforms();
     const auto games = retro.games();
     const std::string tab = retro.platform() < platforms.size() ? platforms[retro.platform()].label : "ALL";
-    lv_label_set_text(frame_.tag, (tab + " · " + std::to_string(games.size())).c_str());
+    std::string count = std::to_string(games.size());
+    if (retro.search().empty() && retro.has_more()) count += "/" + std::to_string(retro.total_games());
+    lv_label_set_text(frame_.tag, (tab + " · " + count).c_str());
     lv_label_set_text(frame_.footer, retro.searching() ? "type to search [↵]done [ESC]clear"
                                                        : "[←→]game [TAB]system [/]search [↵]details");
 
@@ -127,7 +129,9 @@ void RetroView::render_library(const RetroChip& retro) {
         x += lv_obj_get_width(t) + 4;
     }
 
-    if (games.empty()) {
+    if (games.empty() && retro.loading_more()) {
+        wrapped(retro.search().empty() ? "loading games..." : "searching more games...", kRetroTheme.text, kLeft, 40, 304);
+    } else if (games.empty()) {
         wrapped(retro.search().empty() ? "No games on this system in RomM." : "Nothing matches \"" + retro.search() + "\".",
                 kRetroTheme.text, kLeft, 40, 304);
     } else {
@@ -145,6 +149,7 @@ void RetroView::render_library(const RetroChip& retro) {
         std::string line = g->name;
         if (g->year > 0) line += " · " + std::to_string(g->year);
         if (retro.downloaded(*g)) line += " · on PET";
+        if (retro.loading_more() && sel + 1 >= games.size()) line = "loading more...";
         text(body_, clip_cols(line, 43), fonts_.small, kWhite, kLeft, 116);
     }
     if (retro.searching() || !retro.search().empty()) {

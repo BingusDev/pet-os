@@ -229,6 +229,7 @@ HttpResponse https_via_curl(const std::string& method, const std::string& url, c
     }
     std::string config = "url = " + curl_quote(url) + "\nrequest = " + curl_quote(method) + "\n";
     for (const auto& header : headers) config += "header = " + curl_quote(header) + "\n";
+    config += "compressed\n";  // RomM's JSON lists gzip ~2x smaller over slow links
     if (body_file) config += "data-binary = " + curl_quote(std::string("@") + body_path) + "\n";
     const ssize_t written = write(fd, config.data(), config.size());
     close(fd);

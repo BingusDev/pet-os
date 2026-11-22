@@ -27,6 +27,15 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr int kApiTimeoutMs = 15000;
+// A page of the game list. RomM 5.4 sends ~10 KB of metadata per game with no way
+// to ask for less, so pages stay small enough for a slow link (~100 KB/s) to
+// finish one well inside the timeout.
+constexpr int kPageSize = 25;
+constexpr int kPageTimeoutMs = 25000;
+constexpr size_t kPageMaxReply = 2u * 1024 * 1024;
+constexpr int kLoadAheadGames = 8;       // fetch the next page this close to the end
+constexpr size_t kMaxLoadedGames = 5000;
+constexpr size_t kCacheGames = 200;      // per tab, on disk
 constexpr int kDownloadTimeoutMs = 180000;
 constexpr size_t kMaxRomBytes = 64u * 1024 * 1024;
 constexpr uint32_t kQuickExitMs = 3000;  // an emulator that dies this fast didn't start
@@ -56,7 +65,8 @@ std::string replace_all(std::string value, const std::string& from, const std::s
 } // namespace
 
 RetroChip::RetroChip(model::PetConfig config)
-    : config_(std::move(config)), dir_(platform::proc::expand_home(config_.retro_dir)) {
+    : config_(std::move(config)), dir_(platform::proc::expand_home(config_.retro_dir)),
+      cache_dir_(platform::proc::expand_home("~/.cache/alicepet")) {
     base_ = config_.romm_url;
     while (!base_.empty() && base_.back() == '/') base_.pop_back();
 }
@@ -189,11 +199,12 @@ std::vector<RetroChip::Platform> RetroChip::parse_platforms(const std::string& t
     return out;
 }
 
-std::vector<RetroChip::Game> RetroChip::parse_games(const std::string& text) {
+std::vector<RetroChip::Game> RetroChip::parse_games_page(const std::string& text, int& total) {
     std::vector<Game> out;
+    total = -1;
     platform::json::Value root;
     if (!platform::json::parse(text, root)) return out;
-    // RomM 3.5+ pages results ({"items": [...]}); older servers return the array.
+    // RomM 3.5+ pages results ({"items": [...], "total": N}); older servers return the array.
     const auto& list = root.is_array() ? root : root["items"];
     for (const auto& r : list.items()) {
         Game game;
@@ -206,8 +217,86 @@ std::vector<RetroChip::Game> RetroChip::parse_games(const std::string& text) {
         if (released_ms > 0) game.year = 1970 + static_cast<int>(released_ms / 31556952000LL);
         if (game.id > 0 && !game.file.empty()) out.push_back(std::move(game));
     }
+    total = root.is_array() ? static_cast<int>(out.size()) : static_cast<int>(root["total"].integer(-1));
+    return out;
+}
+
+std::vector<RetroChip::Game> RetroChip::parse_games(const std::string& text) {
+    int total = 0;
+    auto out = parse_games_page(text, total);
     std::sort(out.begin(), out.end(), [](const Game& a, const Game& b) { return lower(a.name) < lower(b.name); });
     return out;
+}
+
+std::string RetroChip::games_url(const std::string& base, int platform_id, int offset, int limit) {
+    std::string url = base + "/api/roms?order_by=name&order_dir=asc&limit=" + std::to_string(limit) +
+                      "&offset=" + std::to_string(offset) +
+                      "&with_char_index=false&with_rom_id_index=false&with_filter_values=false&with_files=false";
+    // RomM 5 filters on platform_ids; the old platform_id is silently ignored.
+    if (platform_id > 0) url += "&platform_ids=" + std::to_string(platform_id);
+    return url;
+}
+
+void RetroChip::merge_page(std::vector<Game>& games, int offset, std::vector<Game> page) {
+    const size_t at = std::min(games.size(), static_cast<size_t>(std::max(0, offset)));
+    std::vector<int> ids;
+    for (const auto& g : page) ids.push_back(g.id);
+    auto in_page = [&](const Game& g) { return std::find(ids.begin(), ids.end(), g.id) != ids.end(); };
+    std::vector<Game> out;
+    out.reserve(std::max(games.size(), at + page.size()));
+    for (size_t i = 0; i < at; ++i) {
+        if (!in_page(games[i])) out.push_back(std::move(games[i]));
+    }
+    const size_t end = std::min(games.size(), at + page.size());
+    for (auto& g : page) out.push_back(std::move(g));
+    for (size_t i = end; i < games.size(); ++i) {
+        if (!in_page(games[i])) out.push_back(std::move(games[i]));
+    }
+    games = std::move(out);
+}
+
+std::string RetroChip::cache_json(int total, const std::vector<Game>& games, size_t max_games) {
+    using platform::net::json_escape;
+    std::string out = "{\"total\":" + std::to_string(total) + ",\"items\":[";
+    for (size_t i = 0; i < games.size() && i < max_games; ++i) {
+        const auto& g = games[i];
+        if (i) out += ",";
+        out += "{\"id\":" + std::to_string(g.id) + ",\"name\":\"" + json_escape(g.name) + "\",\"fs_name\":\"" +
+               json_escape(g.file) + "\",\"platform_slug\":\"" + json_escape(g.platform) +
+               "\",\"fs_size_bytes\":" + std::to_string(g.size) + ",\"year\":" + std::to_string(g.year) + "}";
+    }
+    return out + "]}";
+}
+
+std::vector<RetroChip::Game> RetroChip::parse_cache(const std::string& text, int& total) {
+    std::vector<Game> out;
+    total = 0;
+    platform::json::Value root;
+    if (!platform::json::parse(text, root) || !root.is_object()) return out;
+    for (const auto& r : root["items"].items()) {
+        Game game;
+        game.id = static_cast<int>(r["id"].integer());
+        game.name = r["name"].str();
+        game.file = r["fs_name"].str();
+        game.platform = r["platform_slug"].str();
+        game.size = r["fs_size_bytes"].integer();
+        game.year = static_cast<int>(r["year"].integer());
+        if (game.id > 0 && !game.file.empty()) out.push_back(std::move(game));
+    }
+    total = std::max(static_cast<int>(out.size()), static_cast<int>(root["total"].integer()));
+    return out;
+}
+
+std::string RetroChip::platforms_cache_json(const std::vector<Platform>& platforms) {
+    using platform::net::json_escape;
+    std::string out = "[";
+    for (const auto& p : platforms) {
+        if (p.id <= 0) continue;  // ALL is rebuilt on load
+        if (out.size() > 1) out += ",";
+        out += "{\"id\":" + std::to_string(p.id) + ",\"slug\":\"" + json_escape(p.slug) + "\",\"display_name\":\"" +
+               json_escape(p.label) + "\",\"rom_count\":" + std::to_string(p.rom_count) + "}";
+    }
+    return out + "]";
 }
 
 std::vector<std::string> RetroChip::headers() const {
@@ -219,6 +308,35 @@ void RetroChip::enter() {
     if (!loaded_) load_platforms();
 }
 
+namespace {
+std::string read_file(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::stringstream ss;
+    if (in) ss << in.rdbuf();
+    return ss.str();
+}
+
+void write_file_atomic(const std::string& path, const std::string& text) {
+    std::error_code ec;
+    fs::create_directories(fs::path(path).parent_path(), ec);
+    const std::string tmp = path + ".part";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out << text;
+        if (!out) return;
+    }
+    fs::rename(tmp, path, ec);
+}
+}  // namespace
+
+std::string RetroChip::cache_path(const std::string& tab) const {
+    return cache_dir_ + "/retro-" + (tab.empty() ? "all" : tab) + ".json";
+}
+
+std::string RetroChip::current_tab() const {
+    return platform_ < platforms_.size() ? platforms_[platform_].slug : "";
+}
+
 void RetroChip::load_platforms() {
     loaded_ = true;
     if (base_.empty()) {
@@ -227,15 +345,28 @@ void RetroChip::load_platforms() {
         touch();
         return;
     }
-    view_ = View::Loading;
-    status_ = "loading systems...";
-    const size_t gen = ++generation_;
+    // Last session's systems come up at once; RomM's answer replaces them.
+    const auto cached = parse_platforms(read_file(cache_path("platforms")));
+    if (!cached.empty() && platforms_.empty()) {
+        Result seed;
+        seed.what = Result::What::Platforms;
+        seed.platforms = cached;
+        seed.generation = generation_;
+        seed.offset = -1;  // marks "from cache"
+        on_result(std::move(seed));
+    } else if (platforms_.empty()) {
+        view_ = View::Loading;
+        status_ = "loading systems...";
+    }
+    const size_t gen = generation_;
     results_.run([url = base_ + "/api/platforms", headers = headers(), gen]() {
         Result result;
         result.generation = gen;
-        const auto response = platform::net::http_request("GET", url, "", headers, kApiTimeoutMs);
+        auto response = platform::net::http_request("GET", url, "", headers, kApiTimeoutMs, kPageMaxReply);
+        if (!response.ok) response = platform::net::http_request("GET", url, "", headers, kPageTimeoutMs, kPageMaxReply);
         if (!response.ok || response.status != 200) {
             result.text = response.ok ? "RomM said HTTP " + std::to_string(response.status) : "RomM: " + response.error;
+            result.offset = -2;  // platforms failed
             return result;
         }
         result.what = Result::What::Platforms;
@@ -246,27 +377,53 @@ void RetroChip::load_platforms() {
 }
 
 void RetroChip::load_games() {
-    view_ = View::Loading;
-    status_ = "loading games...";
     games_.clear();
     selected_ = 0;
+    total_ = 0;
+    next_offset_ = 0;
+    more_failed_ = false;
+    loading_more_ = false;
+    ++list_generation_;
+    int cached_total = 0;
+    auto cached = parse_cache(read_file(cache_path(current_tab())), cached_total);
+    from_cache_ = !cached.empty();
+    if (from_cache_) {
+        games_ = std::move(cached);
+        total_ = cached_total;
+        view_ = View::Library;
+        status_.clear();
+    } else {
+        view_ = View::Loading;
+        status_ = "loading games...";
+    }
+    fetch_page(0);
+    touch();
+}
+
+void RetroChip::fetch_page(int offset) {
+    loading_more_ = true;
     const int platform_id = platform_ < platforms_.size() ? platforms_[platform_].id : 0;
-    std::string url = base_ + "/api/roms?limit=1000&order_by=name";
-    if (platform_id > 0) url += "&platform_id=" + std::to_string(platform_id);
-    const size_t gen = ++generation_;
-    results_.run([url, headers = headers(), gen]() {
+    results_.run([url = games_url(base_, platform_id, offset, kPageSize), headers = headers(),
+                  gen = list_generation_, offset]() {
         Result result;
+        result.what = Result::What::Games;
         result.generation = gen;
-        const auto response = platform::net::http_request("GET", url, "", headers, kApiTimeoutMs, 16 * 1024 * 1024);
+        result.offset = offset;
+        const auto response = platform::net::http_request("GET", url, "", headers, kPageTimeoutMs, kPageMaxReply);
         if (!response.ok || response.status != 200) {
             result.text = response.ok ? "RomM said HTTP " + std::to_string(response.status) : "RomM: " + response.error;
             return result;
         }
-        result.what = Result::What::Games;
-        result.games = parse_games(response.body);
+        result.games = parse_games_page(response.body, result.total);
         return result;
     });
-    touch();
+}
+
+void RetroChip::maybe_load_more() {
+    if (loading_more_ || more_failed_ || next_offset_ >= total_ || games_.size() >= kMaxLoadedGames) return;
+    // Searching only sees what is loaded, so a search pulls the rest in.
+    const size_t near = static_cast<size_t>(std::max(0, next_offset_ - kLoadAheadGames));
+    if (!search_.empty() || selected_ >= near || games().size() <= selected_ + kLoadAheadGames) fetch_page(next_offset_);
 }
 
 std::string RetroChip::local_path(const Game& game) const {
@@ -628,6 +785,57 @@ void RetroChip::on_result(Result result) {
         touch();
         return;
     }
+    if (result.what == Result::What::Games) {
+        if (result.generation != list_generation_) return;  // another tab now
+        loading_more_ = false;
+        if (!result.text.empty()) {
+            more_failed_ = true;
+            if (games_.empty()) {
+                view_ = View::Error;
+                status_ = result.text;
+            } else {
+                status_ = (from_cache_ ? "offline, showing saved list (" : "more games didn't load (") + result.text + ")";
+            }
+            touch();
+            return;
+        }
+        if (result.total >= 0) total_ = result.total;
+        const int got = static_cast<int>(result.games.size());
+        merge_page(games_, result.offset, std::move(result.games));
+        next_offset_ = result.offset + got;
+        if (got == 0 || next_offset_ >= total_) {
+            // Everything is here: drop cached games RomM no longer has.
+            if (static_cast<int>(games_.size()) > next_offset_) games_.resize(static_cast<size_t>(next_offset_));
+            next_offset_ = total_ = static_cast<int>(games_.size());
+            from_cache_ = false;
+        }
+        if (result.offset < static_cast<int>(kCacheGames)) {
+            write_file_atomic(cache_path(current_tab()), cache_json(total_, games_, kCacheGames));
+        }
+        if (selected_ >= games().size()) selected_ = games().empty() ? 0 : games().size() - 1;
+        if (view_ == View::Loading) {
+            view_ = View::Library;
+            status_.clear();
+        } else if (view_ == View::Library && status_.rfind("offline", 0) == 0) {
+            status_.clear();
+        }
+        maybe_load_more();
+        touch();
+        return;
+    }
+    if (result.what == Result::What::Platforms || result.offset == -2) {
+        if (result.generation != generation_) return;
+        if (result.offset == -2) {  // couldn't reach RomM for systems
+            if (platforms_.empty()) {
+                view_ = View::Error;
+                status_ = result.text;
+            } else if (view_ == View::Library) {
+                status_ = "offline, showing saved list (" + result.text + ")";
+            }
+            touch();
+            return;
+        }
+    }
     if (result.generation != generation_) return;
     switch (result.what) {
     case Result::What::Saves:
@@ -657,21 +865,30 @@ void RetroChip::on_result(Result result) {
         status_ = result.text;
         break;
     case Result::What::Platforms: {
+        const bool from_cache = result.offset == -1;
+        const bool first = platforms_.empty();
+        const int current_id = platform_ < platforms_.size() ? platforms_[platform_].id : 0;
+        if (!from_cache && !result.platforms.empty()) {
+            write_file_atomic(cache_path("platforms"), platforms_cache_json(result.platforms));
+        }
         platforms_.clear();
         int total = 0;
         for (const auto& p : result.platforms) total += p.rom_count;
         platforms_.push_back({0, "", "ALL", total});
         for (auto& p : result.platforms) platforms_.push_back(std::move(p));
         platform_ = 0;
-        load_games();
-        return;
+        for (size_t i = 0; i < platforms_.size(); ++i) {
+            if (platforms_[i].id == current_id) platform_ = i;
+        }
+        // Fresh systems after cached ones: the tab's list is already loading.
+        if (first) {
+            load_games();
+            return;
+        }
+        break;
     }
     case Result::What::Games:
-        games_ = std::move(result.games);
-        selected_ = 0;
-        view_ = View::Library;
-        status_.clear();
-        break;
+        break;  // handled above (own generation)
     case Result::What::Download: {
         const Game* g = nullptr;
         for (const auto& candidate : games_) {
@@ -703,7 +920,10 @@ bool RetroChip::handle_key(Key key) {
             }
             return false;
         }
-        if (key == Key::Enter) load_platforms();
+        if (key == Key::Enter) {
+            if (platforms_.empty()) load_platforms();
+            else load_games();
+        }
         break;
     case View::Library: {
         const size_t count = games().size();
@@ -722,6 +942,7 @@ bool RetroChip::handle_key(Key key) {
             } else if (key == Key::Right && selected_ + 1 < count) {
                 ++selected_;
             }
+            maybe_load_more();
             break;
         }
         if (key == Key::Escape) {
@@ -734,6 +955,7 @@ bool RetroChip::handle_key(Key key) {
         }
         if (key == Key::Left && selected_ > 0) --selected_;
         if (key == Key::Right && selected_ + 1 < count) ++selected_;
+        if (key == Key::Right) maybe_load_more();
         if ((key == Key::Tab || key == Key::Down) && !platforms_.empty()) {
             platform_ = (platform_ + 1) % platforms_.size();
             search_.clear();
@@ -789,6 +1011,7 @@ void RetroChip::handle_char(const std::string& utf8) {
         if (!utf8.empty() && static_cast<unsigned char>(utf8[0]) >= 0x20 && search_.size() < 24) {
             search_ += utf8;
             selected_ = 0;
+            maybe_load_more();
             touch();
         }
         return;
@@ -800,7 +1023,8 @@ void RetroChip::handle_char(const std::string& utf8) {
     } else if (view_ == View::Details && c == 'o') {
         if (const Game* g = game(); g && !downloaded(*g)) download(*g, false);
     } else if (view_ == View::Error && c == 'r') {
-        load_platforms();
+        if (platforms_.empty()) load_platforms();
+        else load_games();
     }
 }
 

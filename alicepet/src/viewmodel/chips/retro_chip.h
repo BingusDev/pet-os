@@ -103,6 +103,8 @@ public:
         std::vector<Platform> platforms;
         std::vector<Game> games;
         std::vector<Save> saves;
+        int total{-1};   // Games: RomM's total for the tab (-1 = unknown)
+        int offset{0};   // Games: where this page starts
         int rom_id{0};
         std::string text;
         size_t generation{0};
@@ -110,10 +112,29 @@ public:
     void on_result(Result result);
     static std::vector<Platform> parse_platforms(const std::string& json);
     static std::vector<Game> parse_games(const std::string& json);
+    // One page of GET /api/roms in server order (order_by=name); `total` gets RomM's count.
+    static std::vector<Game> parse_games_page(const std::string& json, int& total);
+    // Lightweight list URL: no char/id index, filter values or file lists (RomM 5.4).
+    static std::string games_url(const std::string& base, int platform_id, int offset, int limit);
+    // Puts a page fetched at `offset` in place in `games`, dropping stale duplicates;
+    // entries past it (from the cache) stay until their own page replaces them.
+    static void merge_page(std::vector<Game>& games, int offset, std::vector<Game> page);
+    // The lean on-disk copy of a tab's first games (~/.cache/alicepet/retro-<tab>.json).
+    static std::string cache_json(int total, const std::vector<Game>& games, size_t max_games);
+    static std::vector<Game> parse_cache(const std::string& json, int& total);
+    static std::string platforms_cache_json(const std::vector<Platform>& platforms);
+    void set_cache_dir(std::string dir) { cache_dir_ = std::move(dir); }
+    int total_games() const { return total_; }
+    bool loading_more() const { return loading_more_; }
+    bool has_more() const { return next_offset_ < total_; }
 
 private:
     void load_platforms();
     void load_games();
+    void fetch_page(int offset);
+    void maybe_load_more();
+    std::string cache_path(const std::string& tab) const;
+    std::string current_tab() const;
     void download(const Game& game, bool then_play);
     void play(const Game& game);
     // Jacked in: opens RomM's web player for the game in the PC's browser
@@ -144,6 +165,13 @@ private:
     bool play_after_download_{false};
     int downloading_id_{0};
     size_t generation_{0};
+    size_t list_generation_{0};  // game-list pages; separate so a download doesn't orphan them
+    std::string cache_dir_;
+    int total_{0};
+    int next_offset_{0};
+    bool loading_more_{false};
+    bool more_failed_{false};
+    bool from_cache_{false};
 
     pid_t player_{-1};
     uint32_t play_ms_{0};

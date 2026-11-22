@@ -13,6 +13,7 @@
 #include "linux_input.h"
 #include "logger.h"
 #include "screenshot_service.h"
+#include "viewmodel/pc_input.h"
 #include "theme.h"
 #include "alice_view.h"
 #include "alice_viewmodel.h"
@@ -277,32 +278,16 @@ void pc_pointer_event(viewmodel::AliceViewModel& vm, const viewmodel::chips::Jac
     vm.handle_key(viewmodel::Key::Enter);
 }
 
-// PC requests from the Jack In link, applied on the UI thread: open one of the
-// PC-capable chips (keeping the link up), then forward keys and characters to it.
+// PC requests from the Jack In link, applied on the UI thread (viewmodel/pc_input):
+// chip opens, then keys, characters and mouse events for the PC's chip. Each
+// batch is logged so a PC input problem shows up in /tmp/alicepet.log.
 void drain_pc_requests(viewmodel::AliceViewModel& vm) {
-    auto* jack = static_cast<viewmodel::chips::JackInChip*>(vm.chip_module(model::chip_index("jack-in")));
-    if (!jack) return;
-    std::string id;
-    while (jack->take_open(id)) {
-        const size_t index = model::chip_index(id.c_str());
-        if (index >= model::kChipCount) continue;
-        jack->set_switching(true);
-        vm.open_chip(index);
-        jack->set_switching(false);
-        // HOME brings the PC back to the Jack In screen; any other chip runs for the PC.
-        jack->set_pc_chip(id == jack->id() ? std::string() : id);
-    }
-    viewmodel::chips::JackInChip::Input input;
-    while (jack->take_input(input)) {
-        const auto* active = vm.active_chip();
-        if (!active || !viewmodel::chips::JackInChip::pc_capable(active->id())) continue;
-        if (input.pointer) {
-            pc_pointer_event(vm, input);
-        } else if (input.text) {
-            vm.handle_char(input.utf8);
-        } else {
-            vm.handle_key(input.key);
-        }
+    const auto batch = viewmodel::drain_pc_requests(
+        vm, [&vm](const viewmodel::chips::JackInChip::Input& input) { pc_pointer_event(vm, input); });
+    if (batch.keys || batch.chars || batch.pointers || batch.dropped) {
+        LOG_INFO("pc input: {} keys, {} chars, {} mouse to {}{}", batch.keys, batch.chars, batch.pointers,
+                 batch.chip.empty() ? std::string("(no chip)") : batch.chip,
+                 batch.dropped ? fmt::format(", {} dropped (no PC chip open)", batch.dropped) : std::string());
     }
 }
 
@@ -863,6 +848,35 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
                 LOG_WARN("overlay snapshot failed: {}", error);
             }
         }
+        // PC input reaches the PC-opened chip while the PET shows the OPERATING card
+        // (jack-pc-<chip>-before/-after differ).
+        jack->on_line(R"({"t":"state","full":true,"admin":true,"net":true,"input":true,"mode":"ask"})");
+        for (const char* chip : {"lan-tech", "retro", "terminal", "jellyfin"}) {
+            jack->on_line(std::string(R"({"t":"open","chip":")") + chip + "\"}");
+            drain_pc_requests(vm);
+            update_pc_overlay(vm, fonts, art_dir);
+            advance(virtual_now + 400);
+            capture((std::string("jack-pc-") + chip + "-before.png").c_str());
+            jack->capture_sent = true;
+            jack->on_line(R"({"t":"mirror","on":true})");
+            mirror_frame(vm, virtual_now);
+            const size_t first_bands = jack->sent.size();
+            jack->sent.clear();
+            for (const char* line : {R"({"t":"key","k":"Down"})", R"({"t":"key","k":"Down"})",
+                                     R"({"t":"key","k":"Right"})", R"({"t":"char","c":"a"})",
+                                     R"({"t":"pointer","x":160,"y":120,"b":"down"})",
+                                     R"({"t":"pointer","x":160,"y":120,"b":"up"})"}) {
+                jack->on_line(line);
+            }
+            drain_pc_requests(vm);
+            update_pc_overlay(vm, fonts, art_dir);
+            advance(virtual_now + 400);
+            capture((std::string("jack-pc-") + chip + "-after.png").c_str());
+            mirror_frame(vm, virtual_now);
+            LOG_INFO("snapshot mirror {}: {} bands first, {} after PC input", chip, first_bands, jack->sent.size());
+            jack->sent.clear();
+            jack->capture_sent = false;
+        }
         jack->on_line(R"({"t":"home"})");
         drain_pc_requests(vm);
         update_pc_overlay(vm, fonts, art_dir);
@@ -906,6 +920,10 @@ int Application::run() {
 
     logger::Logger::init();
     logger::Logger::set_tag("alicepet");
+#if !USE_DESKTOP
+    // stdout goes to APPLaunch (a socket nobody reads): keep a readable copy.
+    logger::Logger::set_file("/tmp/alicepet.log", 512 * 1024);
+#endif
 
     lv_init();
 

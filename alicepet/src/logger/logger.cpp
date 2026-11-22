@@ -9,6 +9,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <mutex>
+#include <string>
 #ifdef _WIN32
 #  include <io.h>
 #  include <process.h>
@@ -186,6 +188,36 @@ bool Logger::should_use_color() {
     return term_supports_color();
 }
 
+namespace {
+std::mutex g_file_mutex;
+std::string g_file_path;
+long g_file_max = 0;
+} // namespace
+
+void Logger::set_file(const std::string& path, long max_bytes) {
+    std::lock_guard<std::mutex> lock(g_file_mutex);
+    g_file_path = path;
+    g_file_max = max_bytes;
+}
+
+static void append_to_file(const std::string& prefix, const std::string& msg) {
+    std::lock_guard<std::mutex> lock(g_file_mutex);
+    if (g_file_path.empty()) return;
+    FILE* f = std::fopen(g_file_path.c_str(), "a");
+    if (!f) return;
+    if (g_file_max > 0 && std::ftell(f) > g_file_max) {
+        std::fclose(f);
+        std::rename(g_file_path.c_str(), (g_file_path + ".1").c_str());
+        f = std::fopen(g_file_path.c_str(), "a");
+        if (!f) return;
+    }
+    const std::time_t now = std::time(nullptr);
+    char when[32];
+    std::strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+    std::fprintf(f, "%s %s %s\n", when, prefix.c_str(), msg.c_str());
+    std::fclose(f);
+}
+
 void Logger::log(LogLevel level,
                  const std::string& msg,
                  const char* file,
@@ -205,6 +237,10 @@ void Logger::log(LogLevel level,
                prefix.c_str(),
                msg.c_str());
     }
+    // stdout is a socket to APPLaunch on the PET (block-buffered, not readable):
+    // flush it, and keep a copy in the log file when one is set.
+    std::fflush(stdout);
+    append_to_file(prefix, msg);
 }
 
 } // namespace logger

@@ -23,6 +23,7 @@
 #include "viewmodel/chips/retro_chip.h"
 #include "viewmodel/chips/terminal_chip.h"
 #include "viewmodel/chips/vt_screen.h"
+#include "viewmodel/pc_input.h"
 
 #include <chrono>
 #include <filesystem>
@@ -949,9 +950,90 @@ void test_jack_relay() {
     relay.stop();
 }
 
+// Records what reaches a chip the PC opened through JACK IN.
+class ProbeChip : public viewmodel::ChipModule {
+public:
+    explicit ProbeChip(const char* id) : id_(id) {}
+    const char* id() const override { return id_; }
+    bool handle_key(viewmodel::Key key) override {
+        keys.push_back(key);
+        return key != viewmodel::Key::Escape;  // ESC at the top level leaves the chip
+    }
+    void enter() override { ++entered; }
+    int entered{0};
+    void handle_char(const std::string& utf8) override { text += utf8; }
+    std::vector<viewmodel::Key> keys;
+    std::string text;
+
+private:
+    const char* id_;
+};
+
+// Regression (rev12): with the PET panel showing the Jack In "OPERATING" card, the
+// PC's keys, typing and mouse must still reach the chip it opened.
+void test_pc_input_reaches_open_chip() {
+    using viewmodel::Key;
+    using viewmodel::chips::JackInChip;
+    model::PetConfig config;
+    config.jack_gadget_up.clear();
+    config.jack_gadget_down.clear();
+    config.bridge_url.clear();
+    for (const char* id : {"jellyfin", "retro", "terminal", "lan-tech"}) for (const bool napped : {false, true}) {
+        AliceViewModel vm;
+        auto jack_owned = std::make_unique<JackInChip>(config);
+        JackInChip& jack = *jack_owned;
+        jack.capture_sent = true;
+        auto probe_owned = std::make_unique<ProbeChip>(id);
+        ProbeChip& probe = *probe_owned;
+        vm.set_chip_module(model::chip_index("jack-in"), std::move(jack_owned));
+        vm.set_chip_module(model::chip_index(id), std::move(probe_owned));
+        vm.handle_key(Key::Enter);  // skip boot
+        vm.open_chip(model::chip_index("jack-in"));
+        // The PET napped on the Jack In screen while JackIn.cmd was starting: the
+        // link must not leave the PC's keys waking it (which closed the PC's chip).
+        if (napped) {
+            vm.sleep_now();
+            CHECK(vm.sleeping());
+        }
+        // The lines JackIn.ps1 sends (ConvertTo-Json -Compress of its ordered hashtables).
+        jack.on_line(R"({"t":"hello","host":"HK-DESKTOP","os":"Windows 11","user":"hkrip","admin":false,"full":true,"input":true,"mode":"ask","app":"0.8"})");
+        jack.on_line(R"({"t":"state","full":true,"admin":false,"net":false,"input":true,"mode":"ask"})");
+        jack.on_line(std::string(R"({"t":"open","chip":")") + id + "\"}");
+        jack.on_line(R"({"t":"mirror","on":true})");
+        viewmodel::drain_pc_requests(vm, nullptr);
+        CHECK(vm.active_chip() == &probe);
+        CHECK(jack.pc_chip() == id);
+        int pointers = 0;
+        const auto pointer = [&](const JackInChip::Input& in) {
+            ++pointers;
+            CHECK(in.x == 40 && in.y == 60);
+        };
+        for (const char* k : {"Down", "Up", "Left", "Right", "Enter", "Tab", "Backspace"}) {
+            jack.on_line(std::string(R"({"t":"key","k":")") + k + "\"}");
+        }
+        jack.on_line(R"({"t":"char","c":"h"})");
+        jack.on_line(R"({"t":"char","c":"i"})");
+        jack.on_line(R"({"t":"pointer","x":40,"y":60,"b":"down"})");
+        jack.on_line(R"({"t":"pointer","x":40,"y":60,"b":"up"})");
+        jack.on_line(R"({"t":"key","k":"Escape"})");  // right click
+        const auto batch = viewmodel::drain_pc_requests(vm, pointer);
+        CHECK(batch.keys == 8 && batch.chars == 2 && batch.pointers == 2 && batch.dropped == 0);
+        CHECK(probe.keys.size() == 8 && probe.keys.front() == Key::Down && probe.keys.back() == Key::Escape);
+        CHECK(probe.text == "hi");
+        CHECK(pointers == 2);
+        CHECK(!vm.sleeping() && vm.active_chip() == &probe);
+        // That ESC (right click) left the chip on the PET; the PC's chip came back
+        // up and the next key still reaches it.
+        jack.on_line(R"({"t":"key","k":"Down"})");
+        viewmodel::drain_pc_requests(vm, pointer);
+        CHECK(vm.active_chip() == &probe && probe.keys.size() == 9 && probe.entered == 2);
+    }
+}
+
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"wrap", test_wrap},
+        {"pc_input_reaches_open_chip", test_pc_input_reaches_open_chip},
         {"screen_text", test_screen_text},
         {"clip_for_bridge", test_clip_for_bridge},
         {"boot_and_hotkeys", test_boot_and_hotkeys},

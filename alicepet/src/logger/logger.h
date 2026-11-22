@@ -59,6 +59,10 @@ public:
     static void set_color_mode(ColorMode mode);
 
     static void set_timestamp_enabled(bool enabled);
+
+    // Also appends every line (with a wall-clock time) to `path`; past `max_bytes`
+    // the file moves to `path`.1 and starts over. Empty path turns it off.
+    static void set_file(const std::string& path, long max_bytes);
     static bool timestamp_enabled();
 
     static constexpr int compile_level() { return APP_LOG_LEVEL; }

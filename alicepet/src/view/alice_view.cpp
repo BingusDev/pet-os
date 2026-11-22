@@ -19,6 +19,12 @@
 #include <sys/stat.h>
 #include <ctime>
 
+#ifdef __APPLE__
+#define ALICEPET_MTIM st_mtimespec
+#else
+#define ALICEPET_MTIM st_mtim
+#endif
+
 namespace view {
 
 namespace {
@@ -259,7 +265,7 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     struct stat st {};
     LOG_INFO("volume osd watching {}", volume_path_.empty() ? std::string("(no XDG_RUNTIME_DIR)") : volume_path_);
     if (!volume_path_.empty() && ::stat(volume_path_.c_str(), &st) == 0) {
-        volume_mtime_ns_ = int64_t(st.st_mtim.tv_sec) * 1000000000 + st.st_mtim.tv_nsec;
+        volume_mtime_ns_ = int64_t(st.ALICEPET_MTIM.tv_sec) * 1000000000 + st.ALICEPET_MTIM.tv_nsec;
     }
 }
 
@@ -267,7 +273,7 @@ void AliceView::update_volume_osd(uint32_t now_ms) {
     if (!volume_osd_ || volume_path_.empty()) return;
     struct stat st {};
     if (::stat(volume_path_.c_str(), &st) == 0) {
-        const int64_t mtime = int64_t(st.st_mtim.tv_sec) * 1000000000 + st.st_mtim.tv_nsec;
+        const int64_t mtime = int64_t(st.ALICEPET_MTIM.tv_sec) * 1000000000 + st.ALICEPET_MTIM.tv_nsec;
         if (mtime != volume_mtime_ns_) {
             volume_mtime_ns_ = mtime;
             int percent = 0, muted = 0;

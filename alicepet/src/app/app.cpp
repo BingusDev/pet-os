@@ -1024,6 +1024,7 @@ int Application::run() {
     platform::PowerManager power;
     if (pet_config.power_profiles) power.init();
     bool display_lent = false;
+    bool jack_mirroring = false;
     while (!g_stop_requested
 #if USE_DESKTOP
            && simulator_frame.process_events()
@@ -1044,6 +1045,7 @@ int Application::run() {
             const bool linked = jack_chip && jack_chip->connected();
             if (linked && !jack_was_linked) g_last_local_key_ms = now_ms;  // countdown starts at link
             jack_was_linked = linked;
+            jack_mirroring = linked && jack_chip->mirroring();
             g_jack_blanked = linked && now_ms - g_last_local_key_ms >= kJackBlankAfterMs;
         }
         const auto want_level = (view_model.sleeping() || g_jack_blanked) ? platform::ScreenLevel::Off
@@ -1095,8 +1097,15 @@ int Application::run() {
             // unset at runtime, so lv_delay_ms() busy-spun a whole core (rev15 fix).
             // A blanked jack-in panel needs no 30 fps: a slower loop still serves
             // the PC link, the mirror (12 fps cap) and input.
-            const uint32_t floor_ms = g_jack_blanked ? 20 : 5;
-            std::this_thread::sleep_for(std::chrono::milliseconds(std::clamp<uint32_t>(next_timer_ms, floor_ms, 33)));
+            if (g_jack_blanked && !jack_mirroring) {
+                // Blanked and the PC isn't watching: 10 Hz is plenty for the link
+                // (its socket buffers meanwhile); a key wakes the loop at once.
+                platform::wait_for_key_input(100);
+            } else {
+                const uint32_t floor_ms = g_jack_blanked ? 20 : 5;
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(std::clamp<uint32_t>(next_timer_ms, floor_ms, 33)));
+            }
         } else {
             // Napping: wait in the kernel for a key, waking once a second for workers.
             platform::wait_for_key_input(1000);

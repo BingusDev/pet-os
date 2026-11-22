@@ -882,10 +882,7 @@ const std::vector<const RetroChip::Game*>& RetroChip::games() const {
 }
 
 size_t RetroChip::list_first(size_t count, size_t selected, size_t rows) {
-    if (rows == 0 || count <= rows) return 0;
-    if (selected < rows / 2) return 0;
-    const size_t first = selected - rows / 2;
-    return first + rows > count ? count - rows : first;
+    return media_list_first(count, selected, rows);
 }
 
 const RetroChip::Game* RetroChip::game() const {
@@ -1089,10 +1086,7 @@ bool RetroChip::handle_key(Key key) {
             } else if (key == Key::Enter) {
                 searching_ = false;
             } else if (key == Key::Backspace && !search_.empty()) {
-                // Drop the whole last UTF-8 character, not one continuation byte.
-                do {
-                    search_.pop_back();
-                } while (!search_.empty() && (static_cast<unsigned char>(search_.back()) & 0xC0) == 0x80);
+                utf8_drop_last(search_);
                 selected_ = 0;
             } else if (key == Key::Left && selected_ > 0) {
                 --selected_;

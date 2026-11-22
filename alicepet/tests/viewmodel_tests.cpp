@@ -15,6 +15,7 @@
 #include "viewmodel/alice_viewmodel.h"
 #include "viewmodel/chips/bridge_client.h"
 #include "viewmodel/chips/ir_codec.h"
+#include "viewmodel/chips/jellyfin_chip.h"
 #include "viewmodel/chips/lan_tech_chip.h"
 #include "viewmodel/chips/jack_in_chip.h"
 #include "platform/jack_link.h"
@@ -1199,6 +1200,120 @@ void test_retro_list_layout() {
     CHECK(RetroChip::wrap_title("Tetris", 12, 1) == "Tetris");
 }
 
+void test_jellyfin_list_navigation() {
+    using viewmodel::chips::JellyfinChip;
+    using R = JellyfinChip::Result;
+    // Same keys as RETRO: Left/Right step one row, Up/Down move a page of 3 (no wrap),
+    // Esc clears a filter before it leaves the chip, TAB switches season.
+    model::PetConfig config;  // no server: results are fed in through on_result()
+    JellyfinChip chip(config);
+    std::vector<JellyfinChip::Item> shows;
+    for (int i = 0; i < 12; ++i) {
+        JellyfinChip::Item item;
+        item.id = "s" + std::to_string(i);
+        item.name = "Show " + std::to_string(i);
+        item.type = "Series";
+        shows.push_back(item);
+    }
+    R library{};
+    library.what = R::What::Library;
+    library.items = shows;
+    library.generation = 0;
+    chip.on_result(library);
+    CHECK(chip.view() == JellyfinChip::View::Library);
+    CHECK(chip.selected() == 0);
+
+    chip.handle_key(Key::Left);
+    CHECK(chip.selected() == 0);  // no wrap at the top
+    chip.handle_key(Key::Right);
+    chip.handle_key(Key::Right);
+    CHECK(chip.selected() == 2);
+    chip.handle_key(Key::Left);
+    CHECK(chip.selected() == 1);
+    chip.handle_key(Key::Down);
+    CHECK(chip.selected() == 4);  // one page
+    for (int i = 0; i < 5; ++i) chip.handle_key(Key::Down);
+    CHECK(chip.selected() == 11);  // stops at the last row
+    chip.handle_key(Key::Right);
+    CHECK(chip.selected() == 11);
+    chip.handle_key(Key::Up);
+    CHECK(chip.selected() == 8);
+    for (int i = 0; i < 5; ++i) chip.handle_key(Key::Up);
+    CHECK(chip.selected() == 0);
+
+    // Search filters as you type; Esc clears the filter first, a second Esc leaves the chip.
+    chip.handle_char("/");
+    chip.handle_char("1");
+    CHECK(chip.library().size() == 3);  // Show 1, Show 10, Show 11
+    chip.handle_key(Key::Enter);
+    CHECK(!chip.searching());
+    CHECK(chip.library().size() == 3);
+    CHECK(chip.handle_key(Key::Escape));
+    CHECK(chip.library().size() == 12 && chip.search().empty());
+    CHECK(!chip.handle_key(Key::Escape));
+
+    // Backspace drops a whole UTF-8 character, not one byte of it.
+    chip.handle_char("/");
+    chip.handle_char("\xc3\xa9");  // é
+    CHECK(chip.search() == "\xc3\xa9");
+    chip.handle_key(Key::Backspace);
+    CHECK(chip.search().empty());
+    chip.handle_key(Key::Enter);
+
+    // Opening a show: seasons arrive, Specials is skipped, episodes follow.
+    chip.handle_key(Key::Enter);  // generation 1: seasons
+    R seasons{};
+    seasons.what = R::What::Seasons;
+    seasons.generation = 1;
+    seasons.seasons = {{"a", "Specials", 0}, {"b", "Season 1", 1}, {"c", "Season 2", 2}};
+    chip.on_result(seasons);  // generation 2: episodes of season 1
+    CHECK(chip.view() == JellyfinChip::View::Episodes);
+    CHECK(chip.season() == 1);
+    R episodes{};
+    episodes.what = R::What::Episodes;
+    episodes.generation = 2;
+    for (int i = 1; i <= 9; ++i) {
+        JellyfinChip::Item item;
+        item.id = "e" + std::to_string(i);
+        item.name = "Episode";
+        item.type = "Episode";
+        item.index = i;
+        episodes.items.push_back(item);
+    }
+    chip.on_result(episodes);
+    CHECK(chip.episodes().size() == 9);
+    CHECK(chip.episode() == 0);
+
+    chip.handle_key(Key::Down);
+    CHECK(chip.episode() == 3);
+    chip.handle_key(Key::Down);
+    chip.handle_key(Key::Down);
+    CHECK(chip.episode() == 8);
+    chip.handle_key(Key::Down);
+    CHECK(chip.episode() == 8);  // last episode
+    chip.handle_key(Key::Up);
+    CHECK(chip.episode() == 5);
+    chip.handle_key(Key::Left);
+    CHECK(chip.episode() == 4);
+    chip.handle_key(Key::Right);
+    chip.handle_key(Key::Right);
+    CHECK(chip.episode() == 6);
+
+    // TAB moves to the next season (generation 3); Left/Right stay on episodes.
+    chip.handle_key(Key::Tab);
+    CHECK(chip.season() == 2);
+    CHECK(chip.view() == JellyfinChip::View::Episodes);
+    R season_two{};
+    season_two.what = R::What::Episodes;
+    season_two.generation = 3;
+    season_two.items = {episodes.items[0], episodes.items[1]};
+    chip.on_result(season_two);
+    CHECK(chip.episodes().size() == 2);
+    CHECK(chip.episode() == 0);
+    CHECK(chip.handle_key(Key::Escape));
+    CHECK(chip.view() == JellyfinChip::View::Library);
+}
+
 void test_http_status_line() {
     using platform::net::parse_http_status;
     CHECK(parse_http_status("HTTP/1.1 200 OK\r\n\r\n") == 200);
@@ -1262,6 +1377,7 @@ int main() {
         {"retro_parsing", test_retro_parsing},
         {"retro_scrolling_systems_and_names", test_retro_scrolling_systems_and_names},
         {"retro_list_layout", test_retro_list_layout},
+        {"jellyfin_list_navigation", test_jellyfin_list_navigation},
         {"retro_pagination_and_cache", test_retro_pagination_and_cache},
         {"retro_needs_server", test_retro_needs_server},
         {"retro_save_sync_helpers", test_retro_save_sync_helpers},

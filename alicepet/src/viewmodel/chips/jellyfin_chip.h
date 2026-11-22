@@ -6,6 +6,7 @@
 
 #include "model/pet_config.h"
 #include "viewmodel/chip_module.h"
+#include "viewmodel/chips/list_nav.h"
 
 #include <sys/types.h>
 
@@ -96,7 +97,8 @@ public:
 
     static std::string clock_text(long long ticks);  // "8:41" / "1:02:03"
 
-private:
+public:
+    // Worker results; on_result() applies one (tests feed them directly).
     struct Result {
         enum class What { User, Library, Seasons, Episodes, Stream, Position, PcStream, Error } what;
         std::vector<Item> items;
@@ -109,6 +111,10 @@ private:
         std::string key{};   // PcStream: short-lived Jellyfin key for the PC's direct URL ("" = relay only)
     };
 
+    // Applies a worker result; results from before the latest request are dropped.
+    void on_result(Result result);
+
+private:
     void load_library();
     void open_series();
     void load_episodes();

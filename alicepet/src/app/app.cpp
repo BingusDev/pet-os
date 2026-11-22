@@ -13,6 +13,7 @@
 #include "linux_input.h"
 #include "logger.h"
 #include "screenshot_service.h"
+#include "viewmodel/pc_input.h"
 #include "theme.h"
 #include "alice_view.h"
 #include "alice_viewmodel.h"
@@ -31,6 +32,7 @@
 #include "view/chips/terminal_view.h"
 #include "viewmodel/chips/jellyfin_chip.h"
 #include "view/chips/voice_view.h"
+#include "view/widgets.h"
 #include "viewmodel/chips/terminal_chip.h"
 #include "viewmodel/chips/voice_chip.h"
 
@@ -109,6 +111,17 @@ bool key_to_utf8(uint32_t key, std::string& out) {
     return !out.empty();
 }
 
+// True while a PC operates a chip through JACK IN (the PET panel shows the
+// session view and the PET's own keys are kept off the PC's chip).
+bool g_pc_operating = false;
+// While a PC is jacked in, the PET panel turns off after a few seconds without a
+// PET key press (the app keeps running at full speed for the link). Any PET key
+// turns it back on; that key is swallowed.
+constexpr uint32_t kJackBlankAfterMs = 10000;
+uint32_t g_last_local_key_ms = 0;
+bool g_jack_blanked = false;
+viewmodel::chips::JackInChip* g_jack_keys = nullptr;
+
 // Routes global key presses into the view model.
 class KeyRouter {
 public:
@@ -132,8 +145,18 @@ private:
 
     static bool listener(uint32_t key, const char*, bool long_pressed, void* user_data) {
         auto* self = static_cast<KeyRouter*>(user_data);
+        g_last_local_key_ms = lv_tick_get();
+        if (g_jack_blanked) {
+            g_jack_blanked = false;
+            return true;
+        }
         if (!self) {
             return false;
+        }
+        if (g_pc_operating) {
+            // The PC has the controls; [X] on the PET still jacks out.
+            if (!long_pressed && (key == 'x' || key == 'X') && g_jack_keys) g_jack_keys->handle_char("x");
+            return true;
         }
         if (long_pressed) {
             // Holding SPACE on Home = push-to-talk (VOICE takes a plain press itself).
@@ -215,6 +238,147 @@ std::vector<viewmodel::HostRow> host_rows(const model::PetConfig& config) {
 volatile std::sig_atomic_t g_stop_requested = 0;
 void on_stop_signal(int) { g_stop_requested = 1; }
 
+// The PC mouse (Jack In mirror clicks). An LVGL pointer indev carries the
+// latest state so any clickable LVGL widget reacts; the chips' lists are drawn
+// from view-model state, so a release over a tap_target() row also moves the
+// selection there and presses Enter.
+struct PcPointer {
+    lv_indev_t* indev{nullptr};
+    int x{0};
+    int y{0};
+    bool pressed{false};
+};
+PcPointer g_pc_pointer;
+
+void pc_pointer_read(lv_indev_t*, lv_indev_data_t* data) {
+    data->point.x = g_pc_pointer.x;
+    data->point.y = g_pc_pointer.y;
+    data->state = g_pc_pointer.pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+}
+
+void pc_pointer_event(viewmodel::AliceViewModel& vm, const viewmodel::chips::JackInChip::Input& input) {
+    if (!g_pc_pointer.indev) {
+        g_pc_pointer.indev = lv_indev_create();
+        lv_indev_set_type(g_pc_pointer.indev, LV_INDEV_TYPE_POINTER);
+        lv_indev_set_read_cb(g_pc_pointer.indev, pc_pointer_read);
+    }
+    if (input.x >= 0 && input.y >= 0) {
+        g_pc_pointer.x = input.x;
+        g_pc_pointer.y = input.y;
+    }
+    g_pc_pointer.pressed = input.down;
+    if (input.down || input.x < 0 || input.y < 0) return;
+    int steps = 0;
+    bool horizontal = false;
+    lv_obj_update_layout(lv_screen_active());
+    if (!view::find_tap_target(lv_screen_active(), input.x, input.y, steps, horizontal)) return;
+    const viewmodel::Key forward = horizontal ? viewmodel::Key::Right : viewmodel::Key::Down;
+    const viewmodel::Key back = horizontal ? viewmodel::Key::Left : viewmodel::Key::Up;
+    for (int i = 0; i < std::abs(steps) && i < 64; ++i) vm.handle_key(steps > 0 ? forward : back);
+    vm.handle_key(viewmodel::Key::Enter);
+}
+
+// PC requests from the Jack In link, applied on the UI thread (viewmodel/pc_input):
+// chip opens, then keys, characters and mouse events for the PC's chip. Each
+// batch is logged so a PC input problem shows up in /tmp/alicepet.log.
+void drain_pc_requests(viewmodel::AliceViewModel& vm) {
+    const auto batch = viewmodel::drain_pc_requests(
+        vm, [&vm](const viewmodel::chips::JackInChip::Input& input) { pc_pointer_event(vm, input); });
+    if (batch.keys || batch.chars || batch.pointers || batch.dropped) {
+        LOG_INFO("pc input: {} keys, {} chars, {} mouse to {}{}", batch.keys, batch.chars, batch.pointers,
+                 batch.chip.empty() ? std::string("(no chip)") : batch.chip,
+                 batch.dropped ? fmt::format(", {} dropped (no PC chip open)", batch.dropped) : std::string());
+    }
+}
+
+// Captures the active LVGL screen for the PC mirror (about 12 fps while mirroring).
+void mirror_frame(viewmodel::AliceViewModel& vm, uint32_t now_ms) {
+    auto* jack = static_cast<viewmodel::chips::JackInChip*>(vm.chip_module(model::chip_index("jack-in")));
+    if (!jack || !jack->wants_frame(now_ms)) return;
+    lv_draw_buf_t* snapshot = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_ARGB8888);
+    if (!snapshot) return;
+    const auto* chip = vm.active_chip();
+    jack->offer_frame(static_cast<const uint8_t*>(snapshot->data), snapshot->header.stride,
+                      static_cast<int>(snapshot->header.w), static_cast<int>(snapshot->header.h),
+                      chip ? chip->id() : "launcher");
+    lv_draw_buf_destroy(snapshot);
+}
+
+// The PET panel while the PC operates a chip: the chip still renders on the LVGL
+// screen (that is what the PC's mirror captures with lv_snapshot_take), but a
+// full-panel Jack In card sits on lv_layer_top(), which snapshots of the screen
+// never include. So the PC sees the chip and the PET shows who is driving it.
+struct PcOverlay {
+    lv_obj_t* root{nullptr};
+    lv_obj_t* name{nullptr};
+    lv_obj_t* host{nullptr};
+    lv_obj_t* art_obj{nullptr};
+    view::ImageAsset art;
+    std::string chip;
+    bool visible{false};
+};
+PcOverlay g_overlay;
+
+void no_clicks(lv_obj_t* obj) {
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+    for (uint32_t i = 0; i < lv_obj_get_child_count(obj); ++i) no_clicks(lv_obj_get_child(obj, static_cast<int32_t>(i)));
+}
+
+void update_pc_overlay(viewmodel::AliceViewModel& vm, const view::AliceFonts& fonts,
+                       const std::filesystem::path& art_dir) {
+    using viewmodel::chips::JackInChip;
+    auto* jack = static_cast<JackInChip*>(vm.chip_module(model::chip_index("jack-in")));
+    const auto* active = vm.active_chip();
+    const bool show = jack && jack->connected() && !jack->pc_chip().empty() && active &&
+                      jack->pc_chip() == active->id();
+    g_pc_operating = show;
+    if (!show) {
+        if (g_overlay.visible) {
+            view::set_visible(g_overlay.root, false);
+            g_overlay.visible = false;
+            // The PC went away mid-chip: the PET goes back to its Jack In screen.
+            if (jack && !jack->connected() && active && JackInChip::pc_capable(active->id())) {
+                vm.open_chip(model::chip_index("jack-in"));
+            }
+        }
+        return;
+    }
+    if (!g_overlay.root) {
+        g_overlay.root = view::box(lv_layer_top(), 0, 0, 320, 170, view::kDeepBlue);
+        view::add_grid(g_overlay.root);
+        lv_obj_t* bar = view::box(g_overlay.root, 0, 0, 320, 16, view::kPanelBlue);
+        view::text(bar, "JACK IN", fonts.tiny, view::kGold, 6, 2);
+        view::text(bar, "PC SESSION", fonts.tiny, view::kCyan, 244, 2);
+        view::text(g_overlay.root, "OPERATING", fonts.tiny, view::kSubtitle, 112, 36);
+        g_overlay.name = view::text(g_overlay.root, "", fonts.body, view::kWhite, 112, 50);
+        view::text(g_overlay.root, "from", fonts.tiny, view::kSubtitle, 112, 82);
+        g_overlay.host = view::text(g_overlay.root, "", fonts.small, view::kCyan, 112, 96);
+        lv_obj_t* foot = view::box(g_overlay.root, 0, 156, 320, 14, view::kPanelBlue);
+        view::text(foot, "The PC has the controls  [X] jack out", fonts.tiny, view::kHintBlue, 6, 1);
+    }
+    if (g_overlay.chip != active->id()) {
+        g_overlay.chip = active->id();
+        if (g_overlay.art_obj) lv_obj_delete(g_overlay.art_obj);
+        g_overlay.art_obj = nullptr;
+        g_overlay.art = view::ImageAsset{};
+        if (view::load_png(art_dir / (g_overlay.chip + "-big.png"), g_overlay.art)) {
+            g_overlay.art_obj = view::image(g_overlay.root, g_overlay.art, 14, 26);
+        }
+        const size_t index = model::chip_index(g_overlay.chip.c_str());
+        const std::string name = index < model::kChipCount ? model::chip_at(index).name : g_overlay.chip;
+        lv_label_set_text(g_overlay.name, name.c_str());
+    }
+    const std::string host = jack->host().empty() ? "the PC" : jack->host();
+    if (std::string(lv_label_get_text(g_overlay.host)) != host) lv_label_set_text(g_overlay.host, host.c_str());
+    no_clicks(g_overlay.root);
+    if (!g_overlay.visible) {
+        view::set_visible(g_overlay.root, true);
+        lv_obj_move_foreground(g_overlay.root);
+        g_overlay.visible = true;
+    }
+    vm.hold_awake();  // napping would slow the PC's mirror to one frame a second
+}
+
 void install_chips(viewmodel::AliceViewModel& vm, view::AliceView& view, const model::PetConfig& config,
                    lv_obj_t* root, const view::AliceFonts& fonts, const std::filesystem::path& art_dir) {
     const auto add = [&](const char* id, std::unique_ptr<viewmodel::ChipModule> module,
@@ -277,7 +441,8 @@ lv_display_t* init_device_display() {
 // Each screenshot is taken immediately after a forced refresh, so the output
 // does not depend on real time.
 void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::AliceView& view,
-                  lv_display_t* display, ChatClient& chat, NetScanner& scanner) {
+                  lv_display_t* display, ChatClient& chat, NetScanner& scanner, const view::AliceFonts& fonts,
+                  const std::filesystem::path& art_dir) {
     constexpr uint32_t kStepMs = 16;
     uint32_t virtual_now = 0;
 
@@ -670,6 +835,52 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         advance(virtual_now + kStepMs);
         capture("jack-log.png");
         vm.handle_char("l");
+        // The PC opens JELLYFIN: it renders for the PC's mirror (jack-pc-jellyfin)
+        // while the PET panel shows the Jack In card on the top layer (jack-pet-operating).
+        jack->on_line(R"({"t":"open","chip":"jellyfin"})");
+        drain_pc_requests(vm);
+        update_pc_overlay(vm, fonts, art_dir);
+        advance(virtual_now + kStepMs);
+        capture("jack-pc-jellyfin.png");
+        {
+            std::string error;
+            if (!platform::screenshot::save_object_png(g_overlay.root, dir + "/jack-pet-operating.png", error)) {
+                LOG_WARN("overlay snapshot failed: {}", error);
+            }
+        }
+        // PC input reaches the PC-opened chip while the PET shows the OPERATING card
+        // (jack-pc-<chip>-before/-after differ).
+        jack->on_line(R"({"t":"state","full":true,"admin":true,"net":true,"input":true,"mode":"ask"})");
+        for (const char* chip : {"lan-tech", "retro", "terminal", "jellyfin"}) {
+            jack->on_line(std::string(R"({"t":"open","chip":")") + chip + "\"}");
+            drain_pc_requests(vm);
+            update_pc_overlay(vm, fonts, art_dir);
+            advance(virtual_now + 400);
+            capture((std::string("jack-pc-") + chip + "-before.png").c_str());
+            jack->capture_sent = true;
+            jack->on_line(R"({"t":"mirror","on":true})");
+            mirror_frame(vm, virtual_now);
+            const size_t first_bands = jack->sent.size();
+            jack->sent.clear();
+            for (const char* line : {R"({"t":"key","k":"Down"})", R"({"t":"key","k":"Down"})",
+                                     R"({"t":"key","k":"Right"})", R"({"t":"char","c":"a"})",
+                                     R"({"t":"pointer","x":160,"y":120,"b":"down"})",
+                                     R"({"t":"pointer","x":160,"y":120,"b":"up"})"}) {
+                jack->on_line(line);
+            }
+            drain_pc_requests(vm);
+            update_pc_overlay(vm, fonts, art_dir);
+            advance(virtual_now + 400);
+            capture((std::string("jack-pc-") + chip + "-after.png").c_str());
+            mirror_frame(vm, virtual_now);
+            LOG_INFO("snapshot mirror {}: {} bands first, {} after PC input", chip, first_bands, jack->sent.size());
+            jack->sent.clear();
+            jack->capture_sent = false;
+        }
+        jack->on_line(R"({"t":"home"})");
+        drain_pc_requests(vm);
+        update_pc_overlay(vm, fonts, art_dir);
+        advance(virtual_now + kStepMs);
         vm.handle_char("x");
         advance(virtual_now + kStepMs);
         capture("jack-out.png");
@@ -709,6 +920,10 @@ int Application::run() {
 
     logger::Logger::init();
     logger::Logger::set_tag("alicepet");
+#if !USE_DESKTOP
+    // stdout goes to APPLaunch (a socket nobody reads): keep a readable copy.
+    logger::Logger::set_file("/tmp/alicepet.log", 512 * 1024);
+#endif
 
     lv_init();
 
@@ -722,6 +937,9 @@ int Application::run() {
     auto* display = simulator_frame.display();
 #else
     auto* display = init_device_display();
+    // The fbdev/DRM drivers give LVGL a clock but no delay, so lv_delay_ms()
+    // busy-spun the main loop at 100% of a core. Sleep in the kernel instead.
+    lv_delay_set_cb([](uint32_t ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); });
 #endif
     if (!display) {
         LOG_ERROR("failed to initialize display");
@@ -773,6 +991,10 @@ int Application::run() {
     const auto art_dir = assets.resolve("images/chips");
     view::AliceView view(root, alice_fonts, art_dir);
     install_chips(view_model, view, pet_config, root, alice_fonts, art_dir);
+    if (auto* jack = static_cast<viewmodel::chips::JackInChip*>(view_model.chip_module(model::chip_index("jack-in")))) {
+        jack->set_art_dir(art_dir);
+        g_jack_keys = jack;
+    }
     KeyRouter keys(view_model);
 
     LOG_INFO("AlicePET started at {}x{}", lv_display_get_horizontal_resolution(display),
@@ -781,7 +1003,7 @@ int Application::run() {
 #if USE_DESKTOP
     if (const char* snapshot_dir = std::getenv("ALICEPET_SNAPSHOT")) {
         std::filesystem::create_directories(snapshot_dir);
-        run_snapshot(snapshot_dir, view_model, view, display, chat, scanner);
+        run_snapshot(snapshot_dir, view_model, view, display, chat, scanner, alice_fonts, art_dir);
         return 0;
     }
 #endif
@@ -791,12 +1013,18 @@ int Application::run() {
     // (offline cores, capped clock) is put back for whatever runs next.
     std::signal(SIGTERM, on_stop_signal);
     std::signal(SIGINT, on_stop_signal);
+    std::signal(SIGHUP, on_stop_signal);
+    // A run that was killed or crashed while dimmed or napping leaves the panel
+    // dark: start from a lit screen whatever the last run left behind.
+    platform::set_screen_level(platform::ScreenLevel::On, pet_config.backlight, pet_config.dim_percent);
+    bool jack_was_linked = false;
     bool screen_on = true;
     auto screen_level = platform::ScreenLevel::On;
     // Per-chip power profiles ([power] profiles=on): cores, CPU clock, Wi-Fi power save.
     platform::PowerManager power;
     if (pet_config.power_profiles) power.init();
     bool display_lent = false;
+    bool jack_mirroring = false;
     while (!g_stop_requested
 #if USE_DESKTOP
            && simulator_frame.process_events()
@@ -806,15 +1034,28 @@ int Application::run() {
         view_model.tick(now_ms - last_ms);
         last_ms = now_ms;
         pump_services(view_model, chat, scanner);
+        drain_pc_requests(view_model);
+        update_pc_overlay(view_model, alice_fonts, art_dir);
 
         // Idle: dim the backlight first, then nap with it off (the overlay covers
         // the desktop). The backlight is the biggest single draw on the pet.
-        const auto want_level = view_model.sleeping() ? platform::ScreenLevel::Off
-                                : view_model.dimmed()  ? platform::ScreenLevel::Dim
-                                                       : platform::ScreenLevel::On;
+        {
+            const auto* jack_chip = static_cast<const viewmodel::chips::JackInChip*>(
+                view_model.chip_module(model::chip_index("jack-in")));
+            const bool linked = jack_chip && jack_chip->connected();
+            if (linked && !jack_was_linked) g_last_local_key_ms = now_ms;  // countdown starts at link
+            jack_was_linked = linked;
+            jack_mirroring = linked && jack_chip->mirroring();
+            g_jack_blanked = linked && now_ms - g_last_local_key_ms >= kJackBlankAfterMs;
+        }
+        const auto want_level = (view_model.sleeping() || g_jack_blanked) ? platform::ScreenLevel::Off
+                                : view_model.dimmed()                      ? platform::ScreenLevel::Dim
+                                                                           : platform::ScreenLevel::On;
+        // Recomputed every pass: g_jack_blanked can change while the level stays the same.
+        // Blanked for a jack-in link: the panel is off but the loop keeps full speed.
+        screen_on = want_level != platform::ScreenLevel::Off || g_jack_blanked;
         if (want_level != screen_level) {
             screen_level = want_level;
-            screen_on = screen_level != platform::ScreenLevel::Off;
             const bool switched =
                 platform::set_screen_level(screen_level, pet_config.backlight, pet_config.dim_percent);
             LOG_INFO("screen {} (backlight {})",
@@ -844,20 +1085,38 @@ int Application::run() {
             view.render(view_model);
             // Napping: the backlight is off, so skip the status bar (and its sysfs reads).
             if (screen_on) view.update_clock();
+            view.update_volume_osd(now_ms);
         } else {
             display_lent = true;
         }
         const uint32_t next_timer_ms = lv_timer_handler();
+        if (!external) mirror_frame(view_model, now_ms);
         if (screen_on) {
             // Sleep until LVGL's next timer is due (indev read, redraw, animation),
             // between 5 ms and one 30 fps frame, instead of spinning every 5 ms.
-            lv_delay_ms(std::clamp<uint32_t>(next_timer_ms, 5, 33));
+            // Sleep in the kernel directly: on the device LVGL's delay hook ended up
+            // unset at runtime, so lv_delay_ms() busy-spun a whole core (rev15 fix).
+            // A blanked jack-in panel needs no 30 fps: a slower loop still serves
+            // the PC link, the mirror (12 fps cap) and input.
+            if (g_jack_blanked && !jack_mirroring) {
+                // Blanked and the PC isn't watching: 10 Hz is plenty for the link
+                // (its socket buffers meanwhile); a key wakes the loop at once.
+                platform::wait_for_key_input(100);
+            } else {
+                const uint32_t floor_ms = g_jack_blanked ? 20 : 5;
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(std::clamp<uint32_t>(next_timer_ms, floor_ms, 33)));
+            }
         } else {
             // Napping: wait in the kernel for a key, waking once a second for workers.
             platform::wait_for_key_input(1000);
         }
     }
 
+    // Stopped while dimmed or napping: hand the panel back lit.
+    if (screen_level != platform::ScreenLevel::On) {
+        platform::set_screen_level(platform::ScreenLevel::On, pet_config.backlight, pet_config.dim_percent);
+    }
     if (pet_config.power_profiles) power.restore();
     return 0;
 }

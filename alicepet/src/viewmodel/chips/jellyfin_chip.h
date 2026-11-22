@@ -21,6 +21,11 @@ namespace viewmodel::chips {
 // that fits the 320x170 panel and hands the URL to [jellyfin] player (mpv by
 // default; controlled over its IPC socket). Progress is reported back through
 // /Sessions/Playing so resume points sync with every Jellyfin app.
+// Jacked in (a PC app linked through JACK IN): playback happens in the PC app
+// instead. The PET asks Jellyfin for a stream Windows can play (the file itself
+// for H.264 MP4/MKV, else an H.264/AAC MP4 transcode), puts it behind the PET's
+// media relay on the USB link (the API key stays on the PET) and sends the PC
+// {"t":"play"}; the PC reports {"t":"progress"} and the PET reports it on.
 // Desktop: browsing is real; playback is a STUB that only fetches the HLS
 // playlist to prove the transcode works (no player in the simulator).
 class JellyfinChip : public ChipModule {
@@ -58,6 +63,8 @@ public:
     // A paused video doesn't hold the PET awake: after the idle timeout it naps,
     // and waking stops the player (leave()) with the resume point saved.
     bool keep_awake() const override { return (view_ == View::Playing && !paused_) || view_ == View::Loading; }
+    // Playing in the PC app (jacked in), not on the PET.
+    bool on_pc() const { return pc_playing_; }
     // Leaving the chip (including a wake from nap) never leaves mpv running behind the UI.
     void leave() override { stop_playback(); }
     bool wants_text() const override { return searching_; }
@@ -91,12 +98,15 @@ public:
 
 private:
     struct Result {
-        enum class What { User, Library, Seasons, Episodes, Stream, Position, Error } what;
+        enum class What { User, Library, Seasons, Episodes, Stream, Position, PcStream, Error } what;
         std::vector<Item> items;
         std::vector<Season> seasons;
         std::string text;
         double seconds{0};
         size_t generation{0};
+        bool direct{false};  // PcStream: the file itself (seekable) rather than a transcode
+        std::string name{};  // PcStream: file name for the relay URL
+        std::string key{};   // PcStream: short-lived Jellyfin key for the PC's direct URL ("" = relay only)
     };
 
     void load_library();
@@ -105,6 +115,11 @@ private:
     void choose(const Item& item);
     void start_playback(long long start_ticks);
     void stop_playback();
+    void start_pc_playback(long long start_ticks);
+    void finish_pc_playback();
+    void revoke_pc_key();
+    void pc_tick();
+    std::string pc_title() const;
     void report(const char* endpoint, long long ticks, bool paused);
     void mpv(const std::string& json);
     std::string auth_header() const;
@@ -149,6 +164,10 @@ private:
     uint32_t poll_ms_{0};
     uint32_t report_ms_{0};
     std::string stream_info_;
+    std::string play_method_{"Transcode"};
+    std::string pc_key_;  // Jellyfin key the PC streams with directly; revoked when the play ends
+    bool pc_playing_{false};
+    bool pc_direct_{false};
 
     Mailbox<Result> results_;
 };

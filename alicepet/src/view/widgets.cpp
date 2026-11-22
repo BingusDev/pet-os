@@ -44,6 +44,38 @@ lv_obj_t* box(lv_obj_t* parent, int x, int y, int w, int h, uint32_t bg) {
     return obj;
 }
 
+lv_obj_t* tap_target(lv_obj_t* parent, int x, int y, int w, int h, int steps, bool horizontal) {
+    lv_obj_t* obj = lv_obj_create(parent);
+    lv_obj_remove_style_all(obj);
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(obj, LV_OBJ_FLAG_USER_1);
+    lv_obj_set_pos(obj, x, y);
+    lv_obj_set_size(obj, w, h);
+    // steps in the high bits, axis in bit 0 (offset keeps the value non-null).
+    const intptr_t tag = (static_cast<intptr_t>(steps + 4096) << 1) | (horizontal ? 1 : 0);
+    lv_obj_set_user_data(obj, reinterpret_cast<void*>(tag));
+    return obj;
+}
+
+bool find_tap_target(lv_obj_t* root, int x, int y, int& steps, bool& horizontal) {
+    if (!root || lv_obj_has_flag(root, LV_OBJ_FLAG_HIDDEN)) return false;
+    lv_area_t a;
+    lv_obj_get_coords(root, &a);
+    const bool inside = x >= a.x1 && x <= a.x2 && y >= a.y1 && y <= a.y2;
+    if (inside && lv_obj_has_flag(root, LV_OBJ_FLAG_USER_1)) {
+        const intptr_t tag = reinterpret_cast<intptr_t>(lv_obj_get_user_data(root));
+        steps = static_cast<int>(tag >> 1) - 4096;
+        horizontal = (tag & 1) != 0;
+        return true;
+    }
+    // Children may overflow their parent, so search them regardless (topmost first).
+    for (int32_t i = static_cast<int32_t>(lv_obj_get_child_count(root)) - 1; i >= 0; --i) {
+        if (find_tap_target(lv_obj_get_child(root, i), x, y, steps, horizontal)) return true;
+    }
+    return false;
+}
+
 void set_gradient(lv_obj_t* obj, uint32_t bottom) {
     lv_obj_set_style_bg_grad_color(obj, lv_color_hex(bottom), 0);
     lv_obj_set_style_bg_grad_dir(obj, LV_GRAD_DIR_VER, 0);

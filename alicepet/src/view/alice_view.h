@@ -42,6 +42,11 @@ public:
     // kStatusPollMs (each read can touch the fuel gauge over I2C).
     void update_clock();
     static constexpr uint32_t kStatusPollMs = 10000;
+    // Volume bar for the fn+D/S/A keys. volkeys.service writes "<percent> <muted>" to
+    // $XDG_RUNTIME_DIR/alicepet-volume after each change; this checks the file's
+    // mtime (one stat per call) and shows the bar for kVolumeOsdMs when it changes.
+    void update_volume_osd(uint32_t now_ms);
+    static constexpr uint32_t kVolumeOsdMs = 1500;
     // Registers the screen for chip `index`; it is shown while that chip is open.
     void add_chip_view(size_t index, std::unique_ptr<ChipView> chip_view);
     const AliceFonts& fonts() const { return fonts_; }
@@ -87,6 +92,13 @@ private:
     lv_obj_t* slotted_{nullptr};
     lv_obj_t* slotted_holder_{nullptr};
     lv_obj_t* sleep_overlay_{nullptr};
+    lv_obj_t* volume_osd_{nullptr};
+    lv_obj_t* volume_bar_{nullptr};
+    lv_obj_t* volume_label_{nullptr};
+    std::string volume_path_;
+    int64_t volume_mtime_ns_{-1};
+    uint32_t volume_hide_at_ms_{0};
+    bool volume_shown_{false};
 
     // Home chat: greeting label (with its inline bolt), reply label, page tag, prompt.
     lv_obj_t* bubble_greeting_{nullptr};

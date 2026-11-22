@@ -9,14 +9,16 @@
 #     PC 10.55.0.2 with no gateway and no DNS, so the PC never routes through
 #     the PET. The PC app dials 10.55.0.1:7341.
 #
-#   usb-gadget.sh up      build the gadget and bind it (makes the image if missing)
+#   usb-gadget.sh up      build the gadget and bind it (makes the image if missing
+#                         or older than the app folder)
 #   usb-gadget.sh down    unbind and remove everything this script created
 #   usb-gadget.sh status
 #   usb-gadget.sh image   (re)build the drive image from the app folder
 #
 # Needs root (configfs, ip, dnsmasq). The app runs it through sudo -n; see
 # alicepet-jackin.sudoers. The port must be able to act as a device: on the
-# CM0 that is `dtoverlay=dwc2,dr_mode=otg` (or peripheral) in config.txt.
+# CardputerZero that is `dtoverlay=dwc2,dr_mode=peripheral` in config.txt (otg
+# stays in host mode there), the cable in USB-C2, and the USB-SW slider on C2.
 # While the gadget is up, the USB-A ports and Ethernet behind the hub are off.
 set -euo pipefail
 
@@ -28,6 +30,8 @@ BRIDGE=br-jack
 PET_IP=10.55.0.1
 PC_IP=10.55.0.2
 PIDFILE=/run/alicepet-jackin-dnsmasq.pid
+DNSMASQ_UNIT=alicepet-jackin-dnsmasq
+LOCKFILE=/run/alicepet-jackin.lock
 
 say() { echo "usb-gadget: $*" >&2; }
 die() { say "$*"; exit 1; }
@@ -49,15 +53,59 @@ make_image() {
     say "image $IMAGE from $APP_DIR"
 }
 
+# One up/down/image at a time: the app starts `up` and `down` from separate
+# threads, and two of them in the same configfs tree leave a half-built gadget.
+LOCKED=0
+lock() {
+    [ "$LOCKED" -eq 0 ] || return 0
+    exec 9>"$LOCKFILE"
+    flock -w 20 9 || die "another usb-gadget.sh is still running"
+    LOCKED=1
+}
+
+# A gadget is only "up" when it is bound to the controller and the bridge is there.
+gadget_ready() {
+    [ -d "$G" ] && [ -n "$(cat "$G/UDC" 2>/dev/null)" ] && ip link show "$BRIDGE" >/dev/null 2>&1
+}
+
 udc_name() { ls /sys/class/udc 2>/dev/null | head -n1 || true; }
+
+UP_UNFINISHED=0
+undo_failed_up() {
+    local rc=$?
+    [ "$UP_UNFINISHED" -eq 1 ] || return 0
+    UP_UNFINISHED=0
+    set +e
+    say "up failed (exit $rc); removing the half-built gadget"
+    cd /
+    down
+    exit "$([ "$rc" -ne 0 ] && echo "$rc" || echo 1)"
+}
 
 up() {
     need_root
-    [ -d "$G" ] && { say "already up"; return 0; }
+    lock
+    if gadget_ready; then
+        say "already up"
+        return 0
+    fi
+    if [ -d "$G" ]; then
+        # Left behind by an `up` that died part-way (killed, or the bind failed).
+        say "found a half-built gadget; removing it and starting again"
+        down
+        [ ! -d "$G" ] || die "can't clear $G (reboot the PET to reset the USB port)"
+    fi
+    # From here any failure (set -e) takes the gadget back down, so a later
+    # `up` never mistakes the leftovers for a working link.
+    UP_UNFINISHED=1
+    trap undo_failed_up EXIT
     local udc
     udc=$(udc_name)
-    [ -n "$udc" ] || die "no USB device controller (add dtoverlay=dwc2,dr_mode=otg to config.txt and reboot)"
-    [ -f "$IMAGE" ] || make_image
+    [ -n "$udc" ] || die "no USB device controller (add dtoverlay=dwc2,dr_mode=peripheral to config.txt and reboot)"
+    # A new package puts a newer app in $APP_DIR: rebuild the drive so the PC gets it.
+    if [ ! -f "$IMAGE" ] || [ -n "$(find "$APP_DIR" -newer "$IMAGE" -print -quit 2>/dev/null)" ]; then
+        make_image
+    fi
     modprobe libcomposite 2>/dev/null || true
     mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config
 
@@ -102,17 +150,18 @@ up() {
     echo 1 >functions/mass_storage.0/lun.0/ro  # the PC can't change the app
     echo "$IMAGE" >functions/mass_storage.0/lun.0/file
 
-    mkdir -p configs/c.1/strings/0x409 configs/c.2/strings/0x409
-    echo "RNDIS + drive" >configs/c.1/strings/0x409/configuration
-    echo "ECM + drive" >configs/c.2/strings/0x409/configuration
+    # One configuration only: Windows loads its composite driver (so the
+    # drive shows up next to the network link) only for single-config
+    # devices. Windows binds RNDIS, macOS/Linux bind ECM, both get the drive.
+    mkdir -p configs/c.1/strings/0x409
+    echo "RNDIS + ECM + drive" >configs/c.1/strings/0x409/configuration
     echo 250 >configs/c.1/MaxPower
-    echo 250 >configs/c.2/MaxPower
     ln -s functions/rndis.usb0 configs/c.1/
+    ln -s functions/ecm.usb1 configs/c.1/
     ln -s functions/mass_storage.0 configs/c.1/
-    ln -s functions/ecm.usb1 configs/c.2/
-    ln -s functions/mass_storage.0 configs/c.2/
     ln -s configs/c.1 os_desc/
 
+    echo 1 >/sys/class/leds/ext_usb_gpio_fun/brightness 2>/dev/null || true  # USB-C mux -> device
     echo "$udc" >UDC
     cd /
 
@@ -131,17 +180,32 @@ up() {
 
     if command -v dnsmasq >/dev/null; then
         # DHCP only: no DNS (port 0), no router, no DNS server option.
-        dnsmasq --conf-file=/dev/null --interface="$BRIDGE" --bind-interfaces --except-interface=lo \
+        set -- --conf-file=/dev/null --interface="$BRIDGE" --bind-interfaces --except-interface=lo \
             --port=0 --dhcp-range="$PC_IP,$PC_IP,255.255.255.252,10m" --dhcp-option=3 --dhcp-option=6 \
-            --dhcp-authoritative --leasefile-ro --pid-file="$PIDFILE"
+            --dhcp-authoritative --leasefile-ro
+        if command -v systemd-run >/dev/null && [ -d /run/systemd/system ]; then
+            # A transient unit makes dnsmasq a child of PID 1. Daemonized from here it
+            # was orphaned onto APPLaunch (a child subreaper that never reaps), leaving
+            # two <defunct> dnsmasq per Jack In.
+            systemctl stop "$DNSMASQ_UNIT" 2>/dev/null || true
+            systemctl reset-failed "$DNSMASQ_UNIT" 2>/dev/null || true
+            systemd-run --quiet --collect --unit="$DNSMASQ_UNIT" \
+                dnsmasq --keep-in-foreground "$@" 9>&- || say "dnsmasq failed to start"
+        else
+            dnsmasq "$@" --pid-file="$PIDFILE" 9>&-  # don't hand dnsmasq the lock
+        fi
     else
         say "dnsmasq missing: set the PC's address to $PC_IP/30 by hand (apt install dnsmasq-base)"
     fi
+    UP_UNFINISHED=0
+    trap - EXIT
     say "up on $udc: drive + network at $PET_IP"
 }
 
 down() {
     need_root
+    lock
+    systemctl stop "$DNSMASQ_UNIT" 2>/dev/null || true
     if [ -f "$PIDFILE" ]; then
         kill "$(cat "$PIDFILE")" 2>/dev/null || true
         rm -f "$PIDFILE"
@@ -150,8 +214,9 @@ down() {
     [ -d "$G" ] || { say "already down"; return 0; }
     cd "$G"
     echo "" >UDC 2>/dev/null || true
+    echo 0 >/sys/class/leds/ext_usb_gpio_fun/brightness 2>/dev/null || true  # USB-C mux -> hub
     rm -f os_desc/c.1
-    rm -f configs/c.1/rndis.usb0 configs/c.1/mass_storage.0 configs/c.2/ecm.usb1 configs/c.2/mass_storage.0
+    rm -f configs/c.1/rndis.usb0 configs/c.1/ecm.usb1 configs/c.1/mass_storage.0 configs/c.2/ecm.usb1 configs/c.2/mass_storage.0
     rmdir configs/c.1/strings/0x409 configs/c.2/strings/0x409 2>/dev/null || true
     rmdir configs/c.1 configs/c.2 2>/dev/null || true
     rmdir functions/rndis.usb0 functions/ecm.usb1 functions/mass_storage.0 2>/dev/null || true
@@ -162,7 +227,9 @@ down() {
 }
 
 status() {
-    if [ -d "$G" ]; then
+    if [ -d "$G" ] && ! gadget_ready; then
+        echo "gadget: half-built (run: usb-gadget.sh down)"
+    elif [ -d "$G" ]; then
         echo "gadget: up (UDC $(cat "$G/UDC" 2>/dev/null || echo ?))"
         echo "state: $(cat /sys/class/udc/*/state 2>/dev/null | head -n1)"
         ip -br addr show "$BRIDGE" 2>/dev/null || true
@@ -177,6 +244,6 @@ case "${1:-}" in
 up) up ;;
 down) down ;;
 status) status ;;
-image) need_root; make_image ;;
+image) need_root; lock; make_image ;;
 *) echo "usage: $0 up|down|status|image" >&2; exit 2 ;;
 esac

@@ -169,6 +169,19 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
             if (key == "player") config.retro_player = value;
             else if (key == "dir") config.retro_dir = value;
             else if (key == "sync_saves") config.retro_sync_saves = value == "on" || value == "1" || value == "true";
+            else if (key == "systems") {
+                // RomM platform slugs, in tab order (comma or space separated).
+                config.retro_systems.clear();
+                std::string slug;
+                for (const char c : value + ",") {
+                    if (c == ',' || c == ' ' || c == '\t') {
+                        if (!slug.empty()) config.retro_systems.push_back(lowercase(slug));
+                        slug.clear();
+                    } else {
+                        slug += c;
+                    }
+                }
+            }
             else if (key.rfind("core_", 0) == 0 && key.size() > 5) config.retro_cores[key.substr(5)] = value;
         } else if (section == "remote") {
             if (key == "send_device") config.ir_send_device = value;
@@ -191,9 +204,11 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
             if (key == "listen") config.jack_listen = value;
             else if (key == "port") config.jack_port = std::atoi(value.c_str());
             else if (key == "tunnel_port") config.jack_tunnel_port = std::atoi(value.c_str());
+            else if (key == "media_port") config.jack_media_port = std::atoi(value.c_str());
             else if (key == "proxy_port") config.jack_proxy_port = std::atoi(value.c_str());
             else if (key == "gadget_up") config.jack_gadget_up = value;
             else if (key == "gadget_down") config.jack_gadget_down = value;
+            else if ((key == "operator" || key == "owner") && !value.empty()) config.jack_operator = value;
         }
     }
     return config;

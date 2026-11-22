@@ -1,6 +1,8 @@
 #include "linux_input.h"
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <array>
 #include <cstdint>
 #include <vector>
@@ -521,7 +523,7 @@ bool wait_for_key_input(int timeout_ms) {
         if (keypad && keypad->fd >= 0) fds.push_back(pollfd{keypad->fd, POLLIN, 0});
     }
     if (fds.empty()) {
-        lv_delay_ms(static_cast<uint32_t>(std::max(0, timeout_ms)));
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::max(0, timeout_ms)));
         return false;
     }
     return poll(fds.data(), fds.size(), timeout_ms) > 0;

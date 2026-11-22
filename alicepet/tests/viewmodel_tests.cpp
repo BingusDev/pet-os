@@ -18,11 +18,13 @@
 #include "viewmodel/chips/lan_tech_chip.h"
 #include "viewmodel/chips/jack_in_chip.h"
 #include "platform/jack_link.h"
+#include "platform/net.h"
 #include "platform/device_status.h"
 #include "viewmodel/chips/remote_chip.h"
 #include "viewmodel/chips/retro_chip.h"
 #include "viewmodel/chips/terminal_chip.h"
 #include "viewmodel/chips/vt_screen.h"
+#include "viewmodel/pc_input.h"
 
 #include <chrono>
 #include <filesystem>
@@ -566,6 +568,100 @@ void test_retro_save_sync_helpers() {
     game.file = "Golden_Sun.zip";
     game.platform = "gba";
     CHECK(retro.local_save_path(game) == "/data/roms/gba/saves/Golden_Sun.srm");
+
+    // Newest-wins needs a believable clock: one that was never set, or one that
+    // is behind a RomM save's stamp, pauses the sync instead of guessing.
+    const long long nov14 = RetroChip::parse_iso_time("2026-11-14T00:00:00+00:00");
+    CHECK(RetroChip::clock_trusted(saves, nov14 + 3600));
+    CHECK(RetroChip::clock_trusted(saves, nov14 - 60));      // small skew is fine
+    CHECK(!RetroChip::clock_trusted(saves, nov14 - 86400));  // RomM has a save "from tomorrow"
+    CHECK(!RetroChip::clock_trusted({}, 1700000000LL));      // clock never set (2023)
+    CHECK(RetroChip::clock_trusted({}, nov14));
+}
+
+void test_retro_failed_pull_keeps_both_saves() {
+    using viewmodel::chips::RetroChip;
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("alicepet-retro-test-" + std::to_string(::getpid()));
+    fs::remove_all(dir);
+    fs::create_directories(dir / "gba" / "saves");
+    const fs::path save = dir / "gba" / "saves" / "G.srm";
+    const fs::path marker = dir / "gba" / "saves" / "G.srm.conflict";
+    std::ofstream(dir / "gba" / "G.gba") << "rom";
+    std::ofstream(save) << "old";
+    fs::last_write_time(save, fs::file_time_type::clock::now() - std::chrono::hours(1));
+    const fs::path player = dir / "player.sh";
+    std::ofstream(player) << "#!/bin/sh\nsleep 0.2\necho played > \"$1/G.srm\"\n";
+    fs::permissions(player, fs::perms::owner_all);
+
+    model::PetConfig config;
+    config.romm_url = "http://127.0.0.1:9";  // nothing listens: every request fails at once
+    config.retro_dir = dir.string();
+    config.retro_cores["gba"] = "core";
+    config.retro_player = player.string() + " {savedir}";
+    RetroChip retro(config);
+    const auto wait_until = [&](const std::function<bool()>& done) {
+        for (int i = 0; i < 400 && !done(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            retro.tick(10);
+        }
+        return done();
+    };
+
+    RetroChip::Result games;
+    games.what = RetroChip::Result::What::Games;
+    RetroChip::Game game;
+    game.id = 1;
+    game.name = "G";
+    game.file = "G.gba";
+    game.platform = "gba";
+    games.games.push_back(game);
+    retro.on_result(games);
+    retro.handle_key(Key::Enter);  // open the game: asks RomM for its saves (fails)
+    CHECK(retro.view() == RetroChip::View::Details);
+    bool good = false;
+    CHECK(wait_until([&] { return retro.save_text(good) != "checking RomM..."; }));
+
+    // RomM has a save from ten seconds ago; the PET's is an hour old.
+    RetroChip::Result saves;
+    saves.what = RetroChip::Result::What::Saves;
+    saves.rom_id = 1;
+    RetroChip::Save remote;
+    remote.id = 5;
+    remote.file_name = "G.srm";
+    remote.updated = static_cast<long long>(std::time(nullptr)) - 10;
+    saves.saves.push_back(remote);
+    retro.on_result(saves);
+
+    retro.handle_key(Key::Enter);  // play: pulls the newer save first, and that fails
+    CHECK(wait_until([&] { return retro.view() != RetroChip::View::Downloading; }));
+    CHECK(retro.view() == RetroChip::View::Details);  // did not start on the old save by itself
+    CHECK(retro.status().find("ENTER") != std::string::npos);
+    CHECK(!fs::exists(marker));
+
+    retro.handle_key(Key::Enter);  // the user's choice: play the PET's save
+    CHECK(retro.view() == RetroChip::View::Playing);
+    CHECK(fs::exists(marker));
+    CHECK(wait_until([&] { return retro.view() != RetroChip::View::Playing; }));
+    // The session changed the save, but it is not uploaded over RomM's newer one.
+    CHECK(retro.status() == "save kept on the PET: RomM has a different one");
+    CHECK(retro.save_text(good) == "differs (not uploaded)");
+    retro.leave();
+    fs::remove_all(dir);
+}
+
+void test_run_capture_cap() {
+    // A reply bigger than the default 1 MiB cap is kept whole when the caller
+    // asks for more room (https downloads go through curl's stdout), and the
+    // child is drained either way so it exits normally.
+    const std::vector<std::string> argv = {"sh", "-c", "head -c 3000000 /dev/zero; printf END"};
+    std::string big;
+    CHECK(platform::proc::run_capture(argv, big, 10000, false, 4 * 1024 * 1024) == 0);
+    CHECK(big.size() == 3000003);
+    CHECK(big.compare(big.size() - 3, 3, "END") == 0);
+    std::string capped;
+    CHECK(platform::proc::run_capture(argv, capped, 10000, false) == 0);
+    CHECK(capped.size() == 1024 * 1024);
 }
 
 void test_retro_needs_server() {
@@ -667,6 +763,9 @@ void test_jack_session() {
     CHECK(jack.view() == JackInChip::View::Waiting);
     jack.on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk"})");
     CHECK(jack.connected() && jack.view() == JackInChip::View::Session);
+    // The PET names its operator (never the Windows user) right after hello.
+    CHECK(!jack.sent.empty() && jack.sent[0] == R"({"t":"pet","operator":"Holden"})");
+    jack.sent.clear();
     CHECK(!jack.full() && !jack.admin());
     CHECK(jack.keep_awake());
     jack.on_line(R"({"t":"scan","cpu":78,"ram":91,"disk":"C:","disk_free":8,"startup":14,"defender":"off"})");
@@ -706,14 +805,45 @@ void test_jack_session() {
     jack.on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk"})");
     jack.on_line(R"({"t":"chat","text":"why is this PC slow?"})");
     CHECK(jack.chat_waiting());
-    CHECK(jack.log().back().text == "PC: why is this PC slow?");
+    CHECK(jack.log().back().text == "Holden: why is this PC slow?");
+    CHECK(jack.agent_running());
     viewmodel::chips::BridgeReply chat;
     chat.ok = true;
     chat.reply = "Memory is nearly full.\nCMD: Stop-Process -Name OneDrive";
     jack.on_chat_reply(chat);
     CHECK(!jack.chat_waiting());
-    CHECK(jack.sent.back() == R"({"t":"alice","ok":true,"text":"Memory is nearly full.","heard":"","cmd":"Stop-Process -Name OneDrive"})");
-    CHECK(jack.suggestion() == "Stop-Process -Name OneDrive");
+    // The loop sends her command to the PC itself (the PC applies its mode) and
+    // feeds the output back to her as the next turn.
+    CHECK(jack.sent.size() >= 2);
+    CHECK(jack.sent[jack.sent.size() - 2] == R"({"t":"alice","ok":true,"text":"Memory is nearly full.","heard":"","cmd":"Stop-Process -Name OneDrive","step":1})");
+    CHECK(jack.sent.back().find(R"("agent":true,"cmd":"Stop-Process -Name OneDrive")") != std::string::npos);
+    CHECK(jack.suggestion().empty() && jack.agent_steps() == 1);
+    const std::string run_line = jack.sent.back();
+    const std::string run_id = run_line.substr(run_line.find("\"id\":") + 5, run_line.find(',', run_line.find("\"id\":")) - run_line.find("\"id\":") - 5);
+    jack.on_line(R"({"t":"result","id":)" + run_id + R"(,"ok":false,"out":"declined on the PC","reason":"declined"})");
+    CHECK(jack.chat_waiting());
+    chat.reply = "OK, leaving it.";
+    jack.on_chat_reply(chat);
+    CHECK(!jack.agent_running() && jack.sent.back().find(R"("cmd":"","step":0)") != std::string::npos);
+    // FULL: 25 commands, then "Keep going?" on the PC; Yes runs the held one.
+    jack.on_line(R"({"t":"state","full":true,"admin":false,"net":false,"input":true,"mode":"full"})");
+    jack.on_line(R"({"t":"chat","text":"fix it"})");
+    chat.reply = "CMD: Get-Date";
+    for (int i = 0; i < JackInChip::kAgentMaxStepsFull; ++i) {
+        jack.on_chat_reply(chat);
+        const std::string r = jack.sent.back();
+        const size_t at = r.find("\"id\":") + 5;
+        jack.on_line(R"({"t":"result","ok":true,"out":"x","id":)" + r.substr(at, r.find(',', at) - at) + "}");
+    }
+    CHECK(jack.agent_steps() == 25);
+    jack.on_chat_reply(chat);
+    CHECK(jack.agent_holding() && jack.sent.back().rfind(R"({"t":"agent_more","steps":25)", 0) == 0);
+    jack.on_line(R"({"t":"agent_more","yes":true})");
+    CHECK(!jack.agent_holding() && jack.agent_steps() == 26 && jack.sent.back().find(R"("agent":true)") != std::string::npos);
+    jack.on_line(R"({"t":"abort"})");
+    CHECK(!jack.agent_running());
+    CHECK(JackInChip::output_prompt("full", "Get-Process", true, "", std::string(5000, 'x')).size() <= viewmodel::chips::kBridgeMaxInput);
+    CHECK(JackInChip::chat_prompt("LAPTOP-FRONT", "read", "hi").find("READ") != std::string::npos);
     jack.on_line(R"({"t":"voice","wav":"not base64!"})");
     CHECK(!jack.chat_waiting());
     CHECK(jack.sent.back().find("didn't come through") != std::string::npos);
@@ -821,9 +951,293 @@ void test_jack_relay() {
     relay.stop();
 }
 
+// Records what reaches a chip the PC opened through JACK IN.
+class ProbeChip : public viewmodel::ChipModule {
+public:
+    explicit ProbeChip(const char* id) : id_(id) {}
+    const char* id() const override { return id_; }
+    bool handle_key(viewmodel::Key key) override {
+        keys.push_back(key);
+        return key != viewmodel::Key::Escape;  // ESC at the top level leaves the chip
+    }
+    void enter() override { ++entered; }
+    int entered{0};
+    void handle_char(const std::string& utf8) override { text += utf8; }
+    std::vector<viewmodel::Key> keys;
+    std::string text;
+
+private:
+    const char* id_;
+};
+
+// Regression (rev12): with the PET panel showing the Jack In "OPERATING" card, the
+// PC's keys, typing and mouse must still reach the chip it opened.
+void test_pc_input_reaches_open_chip() {
+    using viewmodel::Key;
+    using viewmodel::chips::JackInChip;
+    model::PetConfig config;
+    config.jack_gadget_up.clear();
+    config.jack_gadget_down.clear();
+    config.bridge_url.clear();
+    for (const char* id : {"jellyfin", "retro", "terminal", "lan-tech"}) for (const bool napped : {false, true}) {
+        AliceViewModel vm;
+        auto jack_owned = std::make_unique<JackInChip>(config);
+        JackInChip& jack = *jack_owned;
+        jack.capture_sent = true;
+        auto probe_owned = std::make_unique<ProbeChip>(id);
+        ProbeChip& probe = *probe_owned;
+        vm.set_chip_module(model::chip_index("jack-in"), std::move(jack_owned));
+        vm.set_chip_module(model::chip_index(id), std::move(probe_owned));
+        vm.handle_key(Key::Enter);  // skip boot
+        vm.open_chip(model::chip_index("jack-in"));
+        // The PET napped on the Jack In screen while JackIn.cmd was starting: the
+        // link must not leave the PC's keys waking it (which closed the PC's chip).
+        if (napped) {
+            vm.sleep_now();
+            CHECK(vm.sleeping());
+        }
+        // The lines JackIn.ps1 sends (ConvertTo-Json -Compress of its ordered hashtables).
+        jack.on_line(R"({"t":"hello","host":"HK-DESKTOP","os":"Windows 11","user":"hkrip","admin":false,"full":true,"input":true,"mode":"ask","app":"0.8"})");
+        jack.on_line(R"({"t":"state","full":true,"admin":false,"net":false,"input":true,"mode":"ask"})");
+        jack.on_line(std::string(R"({"t":"open","chip":")") + id + "\"}");
+        jack.on_line(R"({"t":"mirror","on":true})");
+        viewmodel::drain_pc_requests(vm, nullptr);
+        CHECK(vm.active_chip() == &probe);
+        CHECK(jack.pc_chip() == id);
+        int pointers = 0;
+        const auto pointer = [&](const JackInChip::Input& in) {
+            ++pointers;
+            CHECK(in.x == 40 && in.y == 60);
+        };
+        for (const char* k : {"Down", "Up", "Left", "Right", "Enter", "Tab", "Backspace"}) {
+            jack.on_line(std::string(R"({"t":"key","k":")") + k + "\"}");
+        }
+        jack.on_line(R"({"t":"char","c":"h"})");
+        jack.on_line(R"({"t":"char","c":"i"})");
+        jack.on_line(R"({"t":"pointer","x":40,"y":60,"b":"down"})");
+        jack.on_line(R"({"t":"pointer","x":40,"y":60,"b":"up"})");
+        jack.on_line(R"({"t":"key","k":"Escape"})");  // right click
+        const auto batch = viewmodel::drain_pc_requests(vm, pointer);
+        CHECK(batch.keys == 8 && batch.chars == 2 && batch.pointers == 2 && batch.dropped == 0);
+        CHECK(probe.keys.size() == 8 && probe.keys.front() == Key::Down && probe.keys.back() == Key::Escape);
+        CHECK(probe.text == "hi");
+        CHECK(pointers == 2);
+        CHECK(!vm.sleeping() && vm.active_chip() == &probe);
+        // That ESC (right click) left the chip on the PET; the PC's chip came back
+        // up and the next key still reaches it.
+        jack.on_line(R"({"t":"key","k":"Down"})");
+        viewmodel::drain_pc_requests(vm, pointer);
+        CHECK(vm.active_chip() == &probe && probe.keys.size() == 9 && probe.entered == 2);
+    }
+}
+
+void test_retro_pagination_and_cache() {
+    using viewmodel::chips::RetroChip;
+    using Game = RetroChip::Game;
+    // Page parse keeps server order and RomM's total.
+    int total = 0;
+    auto page = RetroChip::parse_games_page(R"({"items":[
+        {"id":5,"name":"Zelda","fs_name":"z.gba","platform_slug":"gba"},
+        {"id":4,"name":"Advance Wars","fs_name":"aw.gba","platform_slug":"gba"}],"total":87,"limit":25,"offset":0})", total);
+    CHECK(total == 87 && page.size() == 2 && page[0].id == 5);
+    RetroChip::parse_games_page("[]", total);
+    CHECK(total == 0);
+    RetroChip::parse_games_page("not json", total);
+    CHECK(total == -1);
+
+    const auto url = RetroChip::games_url("https://r", 3, 50, 25);
+    CHECK(url.find("limit=25") != std::string::npos && url.find("offset=50") != std::string::npos);
+    CHECK(url.find("platform_ids=3") != std::string::npos && url.find("with_char_index=false") != std::string::npos);
+    CHECK(RetroChip::games_url("https://r", 0, 0, 25).find("platform_ids") == std::string::npos);
+
+    auto mk = [](int id) { Game g; g.id = id; g.name = "g" + std::to_string(id); g.file = "f"; return g; };
+    // Appending pages.
+    std::vector<Game> games;
+    RetroChip::merge_page(games, 0, {mk(1), mk(2)});
+    RetroChip::merge_page(games, 2, {mk(3), mk(4)});
+    CHECK(games.size() == 4 && games[2].id == 3);
+    // Refresh over a cached list: page 0 replaces the head, the cached tail stays,
+    // and an id that moved into the page is not shown twice.
+    std::vector<Game> cached{mk(1), mk(2), mk(3), mk(4), mk(5)};
+    RetroChip::merge_page(cached, 0, {mk(9), mk(1), mk(4)});
+    CHECK(cached.size() == 4);  // 2 and 3 sat in the refreshed range; their own page brings them back
+    CHECK(cached[0].id == 9 && cached[1].id == 1 && cached[2].id == 4 && cached[3].id == 5);
+    int seen4 = 0;
+    for (const auto& g : cached) seen4 += g.id == 4;
+    CHECK(seen4 == 1);
+    // Offset past the end just appends.
+    std::vector<Game> few{mk(1)};
+    RetroChip::merge_page(few, 10, {mk(2)});
+    CHECK(few.size() == 2 && few[1].id == 2);
+
+    // Lean cache round trip, bounded.
+    Game g = mk(7);
+    g.name = "Quote \"and\" slash \\";
+    g.platform = "gba";
+    g.size = 4194304;
+    g.year = 2001;
+    std::vector<Game> list{g, mk(8), mk(9)};
+    const auto text = RetroChip::cache_json(342, list, 2);
+    int ctotal = 0;
+    const auto back = RetroChip::parse_cache(text, ctotal);
+    CHECK(back.size() == 2 && ctotal == 342);
+    CHECK(back[0].name == g.name && back[0].platform == "gba" && back[0].size == 4194304 && back[0].year == 2001);
+    CHECK(RetroChip::parse_cache("garbage", ctotal).empty() && ctotal == 0);
+    CHECK(text.size() < 1024);
+
+    std::vector<RetroChip::Platform> plats{{0, "", "ALL", 9}, {1, "gba", "GBA", 9}};
+    CHECK(RetroChip::parse_platforms(RetroChip::platforms_cache_json(plats)).size() == 1);
+}
+
+void test_retro_scrolling_systems_and_names() {
+    using viewmodel::chips::RetroChip;
+    using Game = RetroChip::Game;
+    namespace fs = std::filesystem;
+    // [retro] systems= parses to slugs; tabs follow it, matched loosely, no ALL.
+    const auto conf_path = fs::temp_directory_path() / ("alicepet-retro-conf-" + std::to_string(::getpid()) + ".conf");
+    std::ofstream(conf_path) << "[retro]\nsystems = gba,gb, GBC,nes,snes,gamegear,wonderswan,wonderswancolor\n";
+    model::PetConfig config;
+    CHECK(model::load_pet_config(conf_path.string(), config));
+    fs::remove(conf_path);
+    CHECK(config.retro_systems.size() == 8 && config.retro_systems[2] == "gbc" && config.retro_systems[7] == "wonderswancolor");
+    const auto server = RetroChip::parse_platforms(R"([
+        {"id":4,"slug":"gb","name":"Game Boy","rom_count":22},{"id":1,"slug":"gba","rom_count":87},
+        {"id":2,"slug":"browser","rom_count":111},{"id":3,"slug":"gamegear","rom_count":11},
+        {"id":11,"slug":"wonderswan-color","rom_count":4},{"id":5,"slug":"gbc","rom_count":34},
+        {"id":12,"slug":"nes","rom_count":13},{"id":9,"slug":"snes","rom_count":22}])");
+    const auto shown = RetroChip::filter_platforms(server, config.retro_systems);
+    CHECK(shown.size() == 7 && shown[0].slug == "gba" && shown[1].slug == "gb" && shown[5].slug == "gamegear");
+    CHECK(shown[6].slug == "wonderswan-color" && shown[6].label == "WSC" && shown[5].label == "GG");
+    CHECK(RetroChip::filter_platforms(server, {}).size() == server.size());
+
+    // Card titles: whole words per line, "..." only at the end.
+    CHECK(RetroChip::wrap_title("Achievement Unlocked", 13, 3) == "Achievement\nUnlocked");
+    CHECK(RetroChip::wrap_title("Advance Wars 2: Black Hole Rising", 13, 3) == "Advance Wars\n2: Black Hole\nRising");
+    CHECK(RetroChip::wrap_title("The Legend of Zelda: A Link to the Past & Four Swords", 13, 3) ==
+          "The Legend of\nZelda: A Link\nto the...");
+    CHECK(RetroChip::wrap_title("Supercalifragilistic", 8, 2) == "Supercal\nifrag...");
+    CHECK(RetroChip::wrap_title("Tetris", 13, 3) == "Tetris");
+    // Unmatched games (no RomM name) show their tag-free file name.
+    int total = 0;
+    const auto named = RetroChip::parse_games_page(R"({"items":[
+        {"id":1,"name":null,"fs_name_no_tags":"Altered","fs_name_no_ext":"Altered (USA) [!]","fs_name":"Altered (USA) [!].gba"},
+        {"id":2,"name":"","fs_name":"x.gba"}],"total":2})", total);
+    CHECK(named.size() == 2 && named[0].name == "Altered" && named[1].name == "x.gba");
+
+    // The library: first allowed system, arrows (and Z/C letters) move, the next page loads near the end.
+    config.romm_url = "http://127.0.0.1:1";
+    RetroChip retro(config);
+    retro.set_cache_dir((fs::temp_directory_path() / ("alicepet-retro-cache-" + std::to_string(::getpid()))).string());
+    RetroChip::Result plats;
+    plats.what = RetroChip::Result::What::Platforms;
+    plats.platforms = server;
+    retro.on_result(plats);
+    CHECK(retro.platforms().size() == 7 && retro.platforms()[0].slug == "gba" && retro.platform() == 0);
+    auto mk = [](int id) { Game g; g.id = id; g.name = "Game " + std::to_string(id); g.file = "f.gba"; g.platform = "gba"; return g; };
+    RetroChip::Result page;
+    page.what = RetroChip::Result::What::Games;
+    page.generation = 1;  // the first tab's list
+    page.total = 87;
+    for (int i = 1; i <= 25; ++i) page.games.push_back(mk(i));
+    page.games.push_back(mk(3));  // RomM repeating a game: shown once
+    retro.on_result(page);
+    CHECK(retro.view() == RetroChip::View::Library && retro.games().size() == 25 && retro.selected() == 0);
+    CHECK(!retro.loading_more() && retro.has_more());
+    retro.handle_key(Key::Right);
+    CHECK(retro.selected() == 1);
+    retro.handle_char("c");  // plain C (Fn+C is the arrow)
+    CHECK(retro.selected() == 2);
+    retro.handle_char("z");
+    CHECK(retro.selected() == 1);
+    retro.handle_key(Key::Down);  // PC wheel notch / Fn+X: a screenful
+    CHECK(retro.selected() == 1 + RetroChip::kPageStep);
+    retro.handle_key(Key::Up);
+    CHECK(retro.selected() == 1);
+    while (retro.selected() < 16) retro.handle_key(Key::Right);
+    CHECK(!retro.loading_more());
+    retro.handle_key(Key::Right);  // 8 from the end of what's loaded
+    CHECK(retro.selected() == 17 && retro.loading_more());
+    for (int i = 0; i < 20; ++i) retro.handle_key(Key::Right);
+    CHECK(retro.selected() == 24);  // the end of the loaded list until the page lands
+    RetroChip::Result next = page;
+    next.offset = 25;
+    next.games.clear();
+    for (int i = 26; i <= 50; ++i) next.games.push_back(mk(i));
+    next.games.push_back(mk(26));
+    retro.on_result(next);
+    CHECK(retro.games().size() == 50);
+    retro.handle_key(Key::Right);
+    CHECK(retro.selected() == 25 && retro.game()->id == 26);
+    retro.handle_char("/");  // search still opens; letters then type
+    retro.handle_char("c");
+    CHECK(retro.searching() && retro.search() == "c");
+    retro.handle_key(Key::Escape);
+    retro.handle_key(Key::Tab);  // next system
+    CHECK(retro.platform() == 1 && retro.selected() == 0);
+}
+
+void test_retro_list_layout() {
+    using viewmodel::chips::RetroChip;
+    // The window keeps the selection on screen and stays inside the list.
+    CHECK(RetroChip::list_first(3, 2, RetroChip::kListRows) == 0);  // short list: no scroll
+    CHECK(RetroChip::list_first(20, 0, RetroChip::kListRows) == 0);
+    CHECK(RetroChip::list_first(20, 3, RetroChip::kListRows) == 0);
+    CHECK(RetroChip::list_first(20, 4, RetroChip::kListRows) == 1);  // selection centred
+    CHECK(RetroChip::list_first(20, 10, RetroChip::kListRows) == 7);
+    CHECK(RetroChip::list_first(20, 19, RetroChip::kListRows) == 13);  // last window, no overrun
+    CHECK(RetroChip::list_first(8, 7, RetroChip::kListRows) == 1);
+    for (size_t sel = 0; sel < 20; ++sel) {
+        const size_t first = RetroChip::list_first(20, sel, RetroChip::kListRows);
+        CHECK(sel >= first && sel < first + RetroChip::kListRows);
+    }
+    CHECK(RetroChip::list_first(5, 4, 0) == 0);
+
+    // Single-line titles keep whole words; a long name is cut at a space, not mid-word.
+    const std::string one = RetroChip::wrap_title("Mega Man Battle Network 3", 12, 1);
+    CHECK(one.rfind("Mega Man", 0) == 0);
+    CHECK(one.find("Ba") == std::string::npos || one.find("Battle") != std::string::npos);
+    CHECK(RetroChip::wrap_title("Tetris", 12, 1) == "Tetris");
+}
+
+void test_http_status_line() {
+    using platform::net::parse_http_status;
+    CHECK(parse_http_status("HTTP/1.1 200 OK\r\n\r\n") == 200);
+    CHECK(parse_http_status("HTTP/1.0 404 Not Found\r\n\r\n") == 404);
+    // No space on the status line: must not read the "HTTP/1.1" prefix as 0 or borrow a later space.
+    CHECK(parse_http_status("HTTP/1.1\r\nServer: a b\r\n\r\n") == 0);
+    CHECK(parse_http_status("HTTP/1.1\r\n\r\nbody with spaces 500") == 0);
+    CHECK(parse_http_status("garbage 200\r\n\r\n") == 0);
+    CHECK(parse_http_status("") == 0);
+}
+
+// Server strings can carry separators, quotes, CR/LF, or ".."; none may reach a path or header.
+void test_retro_safe_names() {
+    using viewmodel::chips::RetroChip;
+    const std::string traversal = RetroChip::safe_name("../../etc/passwd", "fallback");
+    CHECK(traversal == "etcpasswd");
+    CHECK(traversal.find('/') == std::string::npos);
+    CHECK(traversal.find("..") == std::string::npos);
+
+    const std::string injected = RetroChip::safe_name("Game\"\r\nX-Evil: 1", "fallback");
+    CHECK(injected == "GameX-Evil: 1");
+    CHECK(injected.find_first_of("\r\n\"") == std::string::npos);
+
+    CHECK(RetroChip::safe_name("", "other") == "other");
+    CHECK(RetroChip::safe_name("..", "other") == "other");
+    CHECK(RetroChip::safe_name("/\\", "other") == "other");
+    CHECK(RetroChip::safe_name(std::string("\0", 1), "other") == "other");
+    CHECK(RetroChip::safe_name("Zelda (USA).sfc", "x") == "Zelda (USA).sfc");
+
+    // The multipart filename header keeps its two quote delimiters and nothing else.
+    const std::string body = RetroChip::multipart_body("B", "saveFile", "a\"\r\nEvil: 1", "x");
+    CHECK(body.find("filename=\"aEvil: 1\"\r\n") != std::string::npos);
+    CHECK(body.find("\r\nEvil: 1") == std::string::npos);
+}
+
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"wrap", test_wrap},
+        {"pc_input_reaches_open_chip", test_pc_input_reaches_open_chip},
         {"screen_text", test_screen_text},
         {"clip_for_bridge", test_clip_for_bridge},
         {"boot_and_hotkeys", test_boot_and_hotkeys},
@@ -846,14 +1260,21 @@ int main() {
         {"ir_codec", test_ir_codec},
         {"remote_chip_files_and_pad", test_remote_chip_files_and_pad},
         {"retro_parsing", test_retro_parsing},
+        {"retro_scrolling_systems_and_names", test_retro_scrolling_systems_and_names},
+        {"retro_list_layout", test_retro_list_layout},
+        {"retro_pagination_and_cache", test_retro_pagination_and_cache},
         {"retro_needs_server", test_retro_needs_server},
         {"retro_save_sync_helpers", test_retro_save_sync_helpers},
+        {"retro_failed_pull_keeps_both_saves", test_retro_failed_pull_keeps_both_saves},
+        {"retro_safe_names", test_retro_safe_names},
+        {"run_capture_cap", test_run_capture_cap},
         {"lan_who_is_new", test_lan_who_is_new},
         {"lan_helpers", test_lan_helpers},
         {"lan_static_config", test_lan_static_config},
         {"jack_session", test_jack_session},
         {"jack_line_server", test_jack_line_server},
         {"jack_relay", test_jack_relay},
+        {"http_status_line", test_http_status_line},
     };
     for (const auto& [name, fn] : tests) {
         const int before = g_failures;

@@ -9,15 +9,24 @@
 #include "platform/process.h"
 #include "viewmodel/alice_viewmodel.h"
 #include "viewmodel/chips/terminal_chip.h"
+#include "model/chip_registry.h"
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <sstream>
 
 namespace viewmodel::chips {
 namespace {
 
 using platform::net::json_escape;
+
+// usb-gadget.sh takes one up/down at a time and waits up to 20 s for the other
+// to finish, so give it longer than that before giving up on it.
+constexpr int kGadgetTimeoutMs = 40000;
 
 std::string trim(const std::string& value) {
     const auto a = value.find_first_not_of(" \t\r\n");
@@ -34,12 +43,164 @@ int as_int(const platform::json::Value& v) {
     return v.is_null() ? -1 : static_cast<int>(v.num(-1) + 0.5);
 }
 
+// The chips the PC app can open. Voice, Remote and Jack In stay on the PET.
+struct PcChip {
+    const char* id;
+    const char* code;  // red letter on the PC folder row
+    const char* desc;
+};
+constexpr PcChip kPcChips[] = {
+    {"terminal", "T", "Shell to any host"},
+    {"jellyfin", "J", "Your media library"},
+    {"retro", "R", "Retro games (play on this PC)"},
+    {"lan-tech", "L", "Check the LAN"},
+};
+
+const PcChip* find_pc_chip(const std::string& id) {
+    for (const auto& c : kPcChips) {
+        if (id == c.id) return &c;
+    }
+    return nullptr;
+}
+
+std::string base64_encode(const std::string& in) {
+    static const char* kAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((in.size() + 2) / 3 * 4);
+    size_t i = 0;
+    for (; i + 2 < in.size(); i += 3) {
+        const uint32_t v = (static_cast<uint8_t>(in[i]) << 16) | (static_cast<uint8_t>(in[i + 1]) << 8) |
+                           static_cast<uint8_t>(in[i + 2]);
+        out += kAlphabet[(v >> 18) & 63];
+        out += kAlphabet[(v >> 12) & 63];
+        out += kAlphabet[(v >> 6) & 63];
+        out += kAlphabet[v & 63];
+    }
+    if (i + 1 == in.size()) {
+        const uint32_t v = static_cast<uint8_t>(in[i]) << 16;
+        out += kAlphabet[(v >> 18) & 63];
+        out += kAlphabet[(v >> 12) & 63];
+        out += "==";
+    } else if (i + 2 == in.size()) {
+        const uint32_t v = (static_cast<uint8_t>(in[i]) << 16) | (static_cast<uint8_t>(in[i + 1]) << 8);
+        out += kAlphabet[(v >> 18) & 63];
+        out += kAlphabet[(v >> 12) & 63];
+        out += kAlphabet[(v >> 6) & 63];
+        out += '=';
+    }
+    return out;
+}
+
+// Run-length RGB565: (count 1..255, pixel big-endian), the fastest thing to ship over the cable.
+std::string rle_rgb565(const std::vector<uint16_t>& px, size_t from, size_t count) {
+    std::string out;
+    size_t i = 0;
+    while (i < count) {
+        const uint16_t v = px[from + i];
+        size_t run = 1;
+        while (i + run < count && run < 255 && px[from + i + run] == v) ++run;
+        out += static_cast<char>(run);
+        out += static_cast<char>(v >> 8);
+        out += static_cast<char>(v & 0xff);
+        i += run;
+    }
+    return out;
+}
+
+std::string read_file_base64(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return "";
+    const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return base64_encode(bytes);
+}
+
+bool key_from_name(const std::string& name, Key& key) {
+    static const std::pair<const char*, Key> kKeys[] = {
+        {"Left", Key::Left},   {"Right", Key::Right},         {"Up", Key::Up},           {"Down", Key::Down},
+        {"Enter", Key::Enter}, {"Escape", Key::Escape},       {"Backspace", Key::Backspace}, {"Tab", Key::Tab},
+    };
+    for (const auto& k : kKeys) {
+        if (name == k.first) {
+            key = k.second;
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
+// The one Jack In chip, for pc_link (set by its constructor).
+JackInChip* g_jack = nullptr;
+
+namespace pc_link {
+bool connected() { return g_jack && g_jack->connected(); }
+const std::string& host() {
+    static const std::string none;
+    return g_jack ? g_jack->host() : none;
+}
+void send(const std::string& json) {
+    if (connected()) g_jack->send_line(json);
+}
+std::string relay_file(const std::string& upstream_url, const std::vector<std::string>& headers,
+                       const std::string& name) {
+    return connected() ? g_jack->relay_file(upstream_url, headers, name) : "";
+}
+std::string relay_site(const std::string& origin, const std::vector<std::string>& headers, const std::string& path) {
+    return connected() ? g_jack->relay_site(origin, headers, path) : "";
+}
+bool take_progress(Progress& progress) { return g_jack && g_jack->take_progress(progress); }
+}  // namespace pc_link
+
+std::string JackInChip::relay_file(const std::string& upstream_url, const std::vector<std::string>& headers,
+                                   const std::string& name) {
+    if (!media_.running()) {
+        const std::string error = media_.start(config_.jack_listen, config_.jack_media_port);
+        if (!error.empty()) {
+            note("media relay: " + error, LogLine::Kind::Fail);
+            return "";
+        }
+    }
+    const std::string path = media_.add_file(upstream_url, headers, name);
+    if (path.empty()) return "";
+    return "http://" + config_.jack_listen + ":" + std::to_string(config_.jack_media_port) + path;
+}
+
+std::string JackInChip::relay_site(const std::string& origin, const std::vector<std::string>& headers,
+                                   const std::string& path) {
+    const int port = config_.jack_media_port + 1;
+    if (!site_.running()) {
+        const std::string error = site_.start(config_.jack_listen, port);
+        if (!error.empty()) {
+            note("web relay: " + error, LogLine::Kind::Fail);
+            return "";
+        }
+    }
+    const std::string gate = site_.set_site(origin, headers, path);
+    if (gate.empty()) return "";
+    return "http://" + config_.jack_listen + ":" + std::to_string(port) + gate;
+}
+
+bool JackInChip::take_progress(pc_link::Progress& progress) {
+    if (progress_.empty()) return false;
+    progress = std::move(progress_.front());
+    progress_.pop_front();
+    return true;
+}
+
+bool JackInChip::pc_capable(const std::string& chip_id) {
+    return find_pc_chip(chip_id) != nullptr;
+}
+
 JackInChip::JackInChip(model::PetConfig config)
-    : config_(std::move(config)), opens_(std::make_shared<Opens>()) {}
+    : config_(std::move(config)), opens_(std::make_shared<Opens>()) {
+    g_jack = this;
+}
 
 JackInChip::~JackInChip() {
+    if (g_jack == this) g_jack = nullptr;
+    media_.stop();
+    site_.stop();
     relay_.stop();
     if (sharing_) platform::jack::set_proxy_env("");
 }
@@ -47,7 +208,13 @@ JackInChip::~JackInChip() {
 // --- lifecycle -----------------------------------------------------------------
 
 void JackInChip::enter() {
-    view_ = connected_ ? View::Session : View::Waiting;
+    // Back from a chip the PC opened: the link and USB port never went down.
+    if (connected_) {
+        view_ = View::Session;
+        touch();
+        return;
+    }
+    view_ = View::Waiting;
     status_.clear();
     if (config_.jack_gadget_up.empty()) {
         usb_ok_ = true;
@@ -59,7 +226,7 @@ void JackInChip::enter() {
         gadget_.run([cmd = config_.jack_gadget_up]() {
             GadgetResult r;
             r.up = true;
-            r.code = platform::proc::run_capture(platform::proc::split_command(cmd), r.text, 15000);
+            r.code = platform::proc::run_capture(platform::proc::split_command(cmd), r.text, kGadgetTimeoutMs);
             return r;
         });
     }
@@ -69,13 +236,15 @@ void JackInChip::enter() {
 }
 
 void JackInChip::leave() {
+    // The PC asked for another chip: the link and the USB port stay up behind it.
+    if (connected_ && switching_) return;
     // Leaving the chip ends the session and gives the USB port back.
     if (connected_) jack_out("PET left JACK IN");
     server_.close();
     if (!config_.jack_gadget_down.empty()) {
         gadget_.run([cmd = config_.jack_gadget_down]() {
             GadgetResult r;
-            r.code = platform::proc::run_capture(platform::proc::split_command(cmd), r.text, 15000);
+            r.code = platform::proc::run_capture(platform::proc::split_command(cmd), r.text, kGadgetTimeoutMs);
             return r;
         });
     }
@@ -102,8 +271,12 @@ void JackInChip::on_line(const std::string& line) {
         user_ = msg["user"].str();
         admin_ = msg["admin"].boolean();
         full_ = msg["full"].boolean();
+        input_ok_ = msg["input"].boolean(false);
+        mode_ = msg["mode"].str(full_ ? "full" : "read");
         view_ = View::Session;
         note("linked to " + host_ + (admin_ ? " (admin)" : "") + (full_ ? ", full access" : ", read-only"));
+        send("{\"t\":\"pet\",\"operator\":\"" + json_escape(config_.jack_operator) + "\"}");
+        send_chips();
     } else if (t == "scan") {
         scan_ = Scan{};
         scan_.have = true;
@@ -135,6 +308,64 @@ void JackInChip::on_line(const std::string& line) {
             note("admin prompt was cancelled on the PC", LogLine::Kind::Fail);
         }
         if (net != sharing_) set_sharing(net);
+        input_ok_ = msg["input"].boolean(input_ok_);
+        const std::string mode = msg["mode"].str(full_ ? mode_ : "read");
+        if (mode != mode_) {
+            mode_ = mode;
+            if (mode_ == "read" && agent_running_) agent_stop("PC switched to Read");
+        }
+    } else if (t == "abort") {
+        if (agent_running_) agent_stop("stopped on the PC");
+    } else if (t == "agent_more") {
+        // The PC's answer to "Keep going?": Yes allows as many steps again.
+        if (agent_running_ && !agent_held_.empty()) {
+            const std::string held = std::move(agent_held_);
+            agent_held_.clear();
+            if (msg["yes"].boolean(false)) {
+                agent_limit_ += agent_cap(mode_);
+                note("Keep going: yes");
+                agent_run(held);
+            } else {
+                agent_stop("Holden said stop after " + std::to_string(agent_steps_) + " commands");
+            }
+        }
+    } else if (t == "open") {
+        const std::string id = msg["chip"].str();
+        if (pc_capable(id)) {
+            opening_.push_back(id);
+        } else {
+            note("PC asked for a chip that stays on the PET", LogLine::Kind::Fail);
+        }
+    } else if (t == "home") {
+        // The PC app's HOME: leave the PC-opened chip (stopping its player) and
+        // come back to this Jack In screen.
+        opening_.push_back(id());
+    } else if (t == "mirror") {
+        const bool on = msg["on"].boolean(false) && connected_;
+        if (on && !mirror_on_) last_px_.clear();  // the next frame is a full one
+        mirror_on_ = on;
+    } else if (t == "key") {
+        Key key{Key::Enter};
+        if (input_ok_ && key_from_name(msg["k"].str(), key) && inputs_.size() < 256) {
+            inputs_.push_back({false, key, ""});
+        }
+    } else if (t == "pointer") {
+        const std::string b = msg["b"].str();
+        if (input_ok_ && (b == "down" || b == "up") && inputs_.size() < 256) {
+            Input in;
+            in.pointer = true;
+            in.down = b == "down";
+            // A release outside the mirror picture arrives as -1/-1: release only.
+            const long long x = msg["x"].integer(-1), y = msg["y"].integer(-1);
+            in.x = x < 0 || y < 0 ? -1 : static_cast<int>(std::min<long long>(x, 319));
+            in.y = x < 0 || y < 0 ? -1 : static_cast<int>(std::min<long long>(y, 169));
+            inputs_.push_back(in);
+        }
+    } else if (t == "char") {
+        const std::string c = msg["c"].str();
+        if (input_ok_ && !c.empty() && c.size() <= 4 && inputs_.size() < 256) {
+            inputs_.push_back({true, Key::Enter, c});
+        }
     } else if (t == "log") {
         // A command the PC app ran itself (the read-only scan, or one clicked there).
         const std::string text = first_line(msg["text"].str());
@@ -147,33 +378,56 @@ void JackInChip::on_line(const std::string& line) {
         }
         const std::string out = AliceViewModel::screen_text(first_line(msg["out"].str()));
         if (!out.empty()) note("  " + out, ok ? LogLine::Kind::Note : LogLine::Kind::Fail);
-        if (!ok && msg["reason"].str() == "read-only") status_ = "PC is read-only: [F] asks for Full Access";
+        if (!ok && msg["reason"].str() == "read-only" && id != agent_id_) status_ = "PC is read-only: [F] asks for Full Access";
+        if (agent_running_ && id == agent_id_) {
+            agent_id_ = 0;
+            if (chat_waiting_) {
+                agent_stop("busy");
+            } else {
+                note("Alice reads the output (step " + std::to_string(agent_steps_) + ")");
+                ask_chat(output_prompt(mode_, agent_cmd_, ok, msg["reason"].str(), msg["out"].str()));
+            }
+        }
     } else if (t == "chat" || t == "voice") {
         // Talking to Alice from the PC app: the PET is the one with the bridge.
         if (chat_waiting_) {
-            send(R"({"t":"alice","ok":false,"text":"Still answering the last one..."})");
+            send(R"({"t":"alice","ok":false,"text":"Still answering the last one...","heard":"","cmd":""})");
         } else if (t == "chat") {
             const std::string text = trim(msg["text"].str());
             if (!text.empty()) {
-                note("PC: " + AliceViewModel::screen_text(text));
-                chat_waiting_ = true;
-                alice_waiting_ = true;
-                const std::string prompt = clip_for_bridge(
-                    "(Holden is typing on " + host_ + " through PET JACK IN; answer briefly, plain text. If a "
-                    "PowerShell fix helps, put it alone on a last line 'CMD: <command>'.) " + text);
-                chat_.run([config = config_, prompt]() { return bridge_ask(config, prompt); });
+                note(config_.jack_operator + ": " + AliceViewModel::screen_text(text));
+                agent_running_ = true;
+                agent_steps_ = 0;
+                agent_id_ = 0;
+                agent_limit_ = agent_cap(mode_);
+                agent_held_.clear();
+                ask_chat(chat_prompt(host_, mode_, text));
             }
         } else {
             std::string wav;
             if (platform::jack::base64_decode(msg["wav"].str(), wav) && wav.size() > 44) {
-                note("PC: (voice, " + std::to_string(wav.size() / 32000) + " s)");
+                note(config_.jack_operator + ": (voice, " + std::to_string(wav.size() / 32000) + " s)");
+                agent_running_ = true;
+                agent_steps_ = 0;
+                agent_id_ = 0;
+                agent_limit_ = agent_cap(mode_);
+                agent_held_.clear();
                 chat_waiting_ = true;
                 alice_waiting_ = true;
                 chat_.run([config = config_, wav = std::move(wav)]() { return bridge_voice(config, wav); });
             } else {
-                send(R"({"t":"alice","ok":false,"text":"That recording didn't come through. Try again?"})");
+                send(R"({"t":"alice","ok":false,"text":"That recording didn't come through. Try again?","heard":"","cmd":""})");
             }
         }
+    } else if (t == "progress") {
+        // Video playing in the PC app (Jellyfin chip): where it is, and when it stops.
+        pc_link::Progress p;
+        p.item = msg["item"].str();
+        p.pos = msg["pos"].num(0);
+        p.paused = msg["paused"].boolean(false);
+        p.state = msg["state"].str("playing");
+        p.error = msg["error"].str();
+        if (progress_.size() < 64) progress_.push_back(std::move(p));
     } else if (t == "net_fail") {
         relay_.fail(static_cast<int>(msg["id"].integer()));
     } else if (t == "bye") {
@@ -194,6 +448,22 @@ void JackInChip::reset_session() {
     alice_asked_ = false;
     alice_waiting_ = false;
     chat_waiting_ = false;
+    agent_running_ = false;
+    agent_steps_ = 0;
+    agent_id_ = 0;
+    agent_cmd_.clear();
+    agent_held_.clear();
+    mode_ = "read";
+    input_ok_ = false;
+    mirror_on_ = false;
+    pc_chip_.clear();
+    media_.stop();
+    site_.stop();
+    progress_.clear();
+    opening_.clear();
+    inputs_.clear();
+    last_px_.clear();
+    last_screen_.clear();
     ++alice_generation_;
     alice_text_.clear();
     suggestion_.clear();
@@ -282,18 +552,60 @@ void JackInChip::on_chat_reply(const BridgeReply& reply) {
     std::string words;
     std::string command;
     if (reply.ok) split_reply(reply.reply, words, command);
-    if (!reply.transcript.empty()) note("PC (heard): " + AliceViewModel::screen_text(reply.transcript));
+    if (!reply.transcript.empty()) note(config_.jack_operator + " (heard): " + AliceViewModel::screen_text(reply.transcript));
     if (reply.ok) {
         alice_text_ = words;
-        if (!command.empty()) suggestion_ = command;
         note("Alice: " + words);
     } else {
         note("Alice: (can't reach her: " + reply.error + ")", LogLine::Kind::Fail);
     }
+    // Her command goes straight to the PC while the loop runs; the PC applies its
+    // mode (Read: read-only list, Ask: Yes/No each, Full: Yes/No only if destructive).
+    bool run = reply.ok && !command.empty() && agent_running_ && connected_;
+    // At the cap the command waits and the PC asks Holden "Keep going?" (agent_more).
+    const bool hold = run && agent_steps_ >= agent_limit_;
+    if (hold) run = false;
+    const std::string text = reply.ok ? words : "Can't reach Alice: " + reply.error;
+    if (!command.empty() && !run && !hold && reply.ok) suggestion_ = command;
     send("{\"t\":\"alice\",\"ok\":" + std::string(reply.ok ? "true" : "false") + ",\"text\":\"" +
-         json_escape(reply.ok ? words : "Can't reach Alice: " + reply.error) + "\",\"heard\":\"" +
-         json_escape(reply.transcript) + "\",\"cmd\":\"" + json_escape(command) + "\"}");
+         json_escape(text) + "\",\"heard\":\"" + json_escape(reply.transcript) + "\",\"cmd\":\"" +
+         json_escape(run ? command : "") + "\",\"step\":" + std::to_string(run ? agent_steps_ + 1 : 0) + "}");
+    if (run) {
+        agent_run(command);
+    } else if (hold) {
+        agent_held_ = command;
+        note("Alice ran " + std::to_string(agent_steps_) + " commands: asking the PC to keep going");
+        send("{\"t\":\"agent_more\",\"steps\":" + std::to_string(agent_steps_) + ",\"next\":\"" +
+             json_escape(command) + "\"}");
+    } else {
+        agent_running_ = false;
+        agent_id_ = 0;
+    }
     touch();
+}
+
+void JackInChip::ask_chat(const std::string& prompt) {
+    chat_waiting_ = true;
+    alice_waiting_ = true;
+    chat_.run([config = config_, prompt = clip_for_bridge(prompt)]() { return bridge_ask(config, prompt); });
+}
+
+void JackInChip::agent_run(const std::string& command) {
+    ++agent_steps_;
+    agent_id_ = next_id_++;
+    agent_cmd_ = command;
+    send("{\"t\":\"run\",\"id\":" + std::to_string(agent_id_) + ",\"agent\":true,\"cmd\":\"" +
+         json_escape(command) + "\"}");
+    log_.push_back({LogLine::Kind::Pending, "> " + command, agent_id_});
+    while (log_.size() > kMaxLog) log_.pop_front();
+}
+
+void JackInChip::agent_stop(const std::string& why) {
+    agent_held_.clear();
+    agent_running_ = false;
+    agent_id_ = 0;
+    note("Alice's command loop stopped (" + why + ")");
+    send("{\"t\":\"agent_stop\",\"why\":\"" + json_escape(why) + "\"}");
 }
 
 void JackInChip::run_suggestion() {
@@ -414,6 +726,7 @@ void JackInChip::tick(uint32_t elapsed_ms) {
             if (server_.listening()) touch();
         }
     }
+    check_cable(elapsed_ms);
     const auto polled = server_.poll();
     if (polled.connected && !connected_) touch();
     for (const auto& line : polled.lines) on_line(line);
@@ -436,6 +749,44 @@ void JackInChip::tick(uint32_t elapsed_ms) {
     BridgeReply chat;
     while (chat_.poll(chat)) {
         if (connected_) on_chat_reply(chat);
+    }
+}
+
+// The CardputerZero only reaches a PC through USB-C2 with the USB-SW slider on
+// C2. If the gadget is up but the controller has seen no host for a few
+// seconds, say so on the PET: the PC can't show anything until this is right.
+void JackInChip::check_cable(uint32_t elapsed_ms) {
+    if (!usb_ok_ || connected_) {
+        unattached_ms_ = 0;
+        if (usb_no_pc_) { usb_no_pc_ = false; usb_status_ = "USB: drive + network ready"; touch(); }
+        return;
+    }
+    udc_check_ms_ += elapsed_ms;
+    if (udc_check_ms_ < 500) return;
+    const uint32_t step = udc_check_ms_;
+    udc_check_ms_ = 0;
+    std::string state;
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator("/sys/class/udc", ec)) {
+        std::ifstream f(e.path() / "state");
+        std::getline(f, state);
+        break;
+    }
+    if (state.empty()) return;  // no controller info: don't guess
+    if (state == "not attached") {
+        unattached_ms_ += step;
+        if (unattached_ms_ >= 5000 && !usb_no_pc_) {
+            usb_no_pc_ = true;
+            usb_status_ = "No PC: cable in C2 (top), USB-SW to C2";
+            touch();
+        }
+    } else if (usb_no_pc_) {
+        unattached_ms_ = 0;
+        usb_no_pc_ = false;
+        usb_status_ = "USB: PC found, start JackIn on it";
+        touch();
+    } else {
+        unattached_ms_ = 0;
     }
 }
 
@@ -468,6 +819,43 @@ std::string JackInChip::alice_prompt(const std::string& host, const std::string&
     return clip_for_bridge(p);
 }
 
+namespace {
+const char* mode_rule(const std::string& mode) {
+    if (mode == "full") return "FULL: commands run at once, except destructive ones (delete, kill, uninstall, "
+                               "registry/boot/user/policy changes), which Holden must OK on the PC";
+    if (mode == "ask") return "ASK: Holden OKs each command on the PC before it runs";
+    return "READ: only read-only commands run (Get-*, Test-*, sort/select/format, ipconfig, whoami, "
+           "systeminfo, tasklist...); anything else is refused";
+}
+std::string upper(std::string v) {
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return std::toupper(c); });
+    return v;
+}
+}  // namespace
+
+std::string JackInChip::chat_prompt(const std::string& host, const std::string& mode, const std::string& text) {
+    return "[PET JACK IN on " + host + ", mode " + mode_rule(mode) +
+           ". You can run PowerShell on that PC: put ONE line 'CMD: <command>' FIRST in your reply. Its output comes "
+           "back to you automatically; then continue. Reply with no CMD when done. Brief plain text, no markdown.] " +
+           text;
+}
+
+std::string JackInChip::output_prompt(const std::string& mode, const std::string& cmd, bool ok,
+                                      const std::string& reason, const std::string& out) {
+    std::string head = "[JACK IN, mode " + upper(mode) + "] ";
+    if (!ok && reason == "declined") return head + "Holden declined `" + cmd + "` on the PC. Continue without it, or stop.";
+    if (!ok && reason == "read-only")
+        return head + "Not run: `" + cmd + "` is not read-only and the PC is in READ mode. Use a read-only command or stop.";
+    std::string body = trim(out);
+    if (body.empty()) body = "(no output)";
+    head += "Output of `" + cmd + "` (exit " + (ok ? "ok" : "failed") + "): ";
+    // The bridge keeps 600 characters: the command and the start of its output.
+    const size_t room = kBridgeMaxInput > head.size() + 40 ? kBridgeMaxInput - head.size() - 20 : 40;
+    const std::string clipped = clip_for_bridge(body, room);
+    if (clipped.size() < body.size()) body = clipped + " [cut]";
+    return head + body;
+}
+
 void JackInChip::split_reply(const std::string& reply, std::string& words, std::string& command) {
     words.clear();
     command.clear();
@@ -487,6 +875,96 @@ void JackInChip::split_reply(const std::string& reply, std::string& words, std::
         }
     }
     words = AliceViewModel::screen_text(words);
+}
+
+// The chips the PC can open, with their label art, sent once per link.
+void JackInChip::send_chips() {
+    std::string list;
+    for (size_t i = 0; i < model::chip_count(); ++i) {
+        const model::ChipInfo& info = model::chip_at(i);
+        const PcChip* pc = find_pc_chip(info.id);
+        if (!pc) continue;
+        if (!list.empty()) list += ',';
+        list += "{\"id\":\"" + json_escape(info.id) + "\",\"name\":\"" + json_escape(info.name) +
+                "\",\"number\":\"" + json_escape(info.number) + "\",\"code\":\"" + json_escape(pc->code) +
+                "\",\"desc\":\"" + json_escape(pc->desc) + "\",\"art\":\"" +
+                read_file_base64(art_dir_ / (std::string(info.id) + "-small.png")) + "\"}";
+    }
+    send("{\"t\":\"chips\",\"list\":[" + list + "]}");
+}
+
+bool JackInChip::take_open(std::string& chip_id) {
+    if (opening_.empty()) return false;
+    chip_id = opening_.front();
+    opening_.pop_front();
+    return true;
+}
+
+bool JackInChip::take_input(Input& input) {
+    if (inputs_.empty()) return false;
+    input = inputs_.front();
+    inputs_.pop_front();
+    return true;
+}
+
+// About 12 fps while the PC is mirroring; nothing is captured otherwise.
+bool JackInChip::wants_frame(uint32_t now_ms) {
+    if (!mirroring()) return false;
+    if (last_frame_ms_ != 0 && now_ms - last_frame_ms_ < 80) return false;
+    last_frame_ms_ = now_ms;
+    return true;
+}
+
+// Sends only the rows that changed since the last frame, in bands of up to 16 rows.
+void JackInChip::offer_frame(const uint8_t* argb, uint32_t stride, int w, int h, const std::string& screen) {
+    if (!mirroring() || w <= 0 || h <= 0) return;
+    std::vector<uint16_t> px(static_cast<size_t>(w) * h);
+    for (int y = 0; y < h; ++y) {
+        const uint8_t* row = argb + static_cast<size_t>(y) * stride;
+        for (int x = 0; x < w; ++x) {
+            uint32_t v;
+            std::memcpy(&v, row + static_cast<size_t>(x) * 4, 4);
+            const uint16_t r = (v >> 19) & 0x1f;
+            const uint16_t g = (v >> 10) & 0x3f;
+            const uint16_t b = (v >> 3) & 0x1f;
+            px[static_cast<size_t>(y) * w + x] = static_cast<uint16_t>((r << 11) | (g << 5) | b);
+        }
+    }
+    // A new screen, size, or link starts from a full frame.
+    const bool full = last_px_.size() != px.size() || last_screen_ != screen;
+    last_screen_ = screen;
+    int y = 0;
+    while (y < h) {
+        if (!full) {
+            bool same = true;
+            const size_t off = static_cast<size_t>(y) * w;
+            same = std::equal(px.begin() + off, px.begin() + off + w, last_px_.begin() + off);
+            if (same) {
+                ++y;
+                continue;
+            }
+        }
+        int end = y;
+        while (end < h && end - y < 16) {
+            if (!full) {
+                const size_t off = static_cast<size_t>(end) * w;
+                if (std::equal(px.begin() + off, px.begin() + off + w, last_px_.begin() + off)) break;
+            }
+            ++end;
+        }
+        send_frame_band(screen, w, h, px, y, end);
+        y = end;
+    }
+    last_px_ = std::move(px);
+}
+
+void JackInChip::send_frame_band(const std::string& screen, int w, int h, const std::vector<uint16_t>& px, int y0,
+                                 int y1) {
+    const size_t from = static_cast<size_t>(y0) * w;
+    const std::string rle = rle_rgb565(px, from, static_cast<size_t>(y1 - y0) * w);
+    send("{\"t\":\"frame\",\"screen\":\"" + json_escape(screen) + "\",\"w\":" + std::to_string(w) +
+         ",\"h\":" + std::to_string(h) + ",\"y\":" + std::to_string(y0) + ",\"n\":" +
+         std::to_string(y1 - y0) + ",\"rle\":\"" + base64_encode(rle) + "\"}");
 }
 
 } // namespace viewmodel::chips

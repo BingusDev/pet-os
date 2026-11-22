@@ -69,8 +69,12 @@ public:
     const std::string& status() const { return status_; }
     const std::vector<Platform>& platforms() const { return platforms_; }
     size_t platform() const { return platform_; }
-    // Games of the current tab, filtered by the search text.
-    std::vector<const Game*> games() const;
+    // Games of the current tab, filtered by the search text (cached until the list or search changes).
+    const std::vector<const Game*>& games() const;
+    // Library rows that fit on the panel at once.
+    static constexpr size_t kListRows = 7;
+    // The first row shown so `selected` stays in a `rows`-high window of `count` games.
+    static size_t list_first(size_t count, size_t selected, size_t rows);
     size_t selected() const { return selected_; }
     const Game* game() const;
     bool searching() const { return searching_; }
@@ -91,6 +95,12 @@ public:
     static std::vector<Save> parse_saves(const std::string& json);
     // Picks the save to sync: same file name as ours, else the newest.
     static const Save* pick_save(const std::vector<Save>& saves, const std::string& file_name);
+    // False when the PET's clock can't be right (never set, or behind a RomM save's
+    // stamp): "newest wins" would then pick the wrong side, so sync is paused.
+    static bool clock_trusted(const std::vector<Save>& saves, long long now);
+    // A server-supplied name made safe for a path component or a quoted header value:
+    // no separators, "..", quotes, or control bytes; `fallback` when nothing is left.
+    static std::string safe_name(const std::string& raw, const std::string& fallback);
     static std::string multipart_body(const std::string& boundary, const std::string& field,
                                       const std::string& file_name, const std::string& bytes);
 
@@ -100,24 +110,58 @@ public:
         std::vector<Platform> platforms;
         std::vector<Game> games;
         std::vector<Save> saves;
+        int total{-1};   // Games: RomM's total for the tab (-1 = unknown)
+        int offset{0};   // Games: where this page starts
         int rom_id{0};
         std::string text;
         size_t generation{0};
     };
     void on_result(Result result);
     static std::vector<Platform> parse_platforms(const std::string& json);
+    // Keeps only the [retro] systems= platforms, in that order (all of them when empty).
+    static std::vector<Platform> filter_platforms(std::vector<Platform> platforms,
+                                                  const std::vector<std::string>& allowed);
+    static bool slug_matches(const std::string& slug, const std::string& wanted);
+    // A game title for a card: wrapped at spaces into at most `lines` lines of `cols`
+    // characters ('\n' between), "..." only at the very end when it doesn't fit.
+    static std::string wrap_title(const std::string& title, size_t cols, size_t lines);
     static std::vector<Game> parse_games(const std::string& json);
+    // One page of GET /api/roms in server order (order_by=name); `total` gets RomM's count.
+    static std::vector<Game> parse_games_page(const std::string& json, int& total);
+    // Lightweight list URL: no char/id index, filter values or file lists (RomM 5.4).
+    static std::string games_url(const std::string& base, int platform_id, int offset, int limit);
+    // Puts a page fetched at `offset` in place in `games`, dropping stale duplicates;
+    // entries past it (from the cache) stay until their own page replaces them.
+    static void merge_page(std::vector<Game>& games, int offset, std::vector<Game> page);
+    // The lean on-disk copy of a tab's first games (~/.cache/alicepet/retro-<tab>.json).
+    static std::string cache_json(int total, const std::vector<Game>& games, size_t max_games);
+    static std::vector<Game> parse_cache(const std::string& json, int& total);
+    static std::string platforms_cache_json(const std::vector<Platform>& platforms);
+    void set_cache_dir(std::string dir) { cache_dir_ = std::move(dir); }
+    int total_games() const { return total_; }
+    bool loading_more() const { return loading_more_; }
+    bool has_more() const { return next_offset_ < total_; }
+    // Games one Up/Down (or PC mouse-wheel notch) moves by.
+    static constexpr size_t kPageStep = 3;
 
 private:
     void load_platforms();
     void load_games();
+    void fetch_page(int offset);
+    void maybe_load_more();
+    std::string cache_path(const std::string& tab) const;
+    std::string current_tab() const;
     void download(const Game& game, bool then_play);
     void play(const Game& game);
+    // Jacked in: opens RomM's web player for the game in the PC's browser
+    // (through the PET's relay, which adds the RomM token) instead of RetroArch.
+    void play_on_pc(const Game& game);
     void stop_game();
     void start(const Game& game);  // pull a newer save if any, then play
     void fetch_saves(const Game& game);
     void pull_save(const Game& game, const Save& save);
     void push_save(const Game& game);
+    bool sync_paused(const Game& game) const;
     std::string local_path(const Game& game) const;
     std::vector<std::string> headers() const;
 
@@ -129,6 +173,11 @@ private:
     std::vector<Platform> platforms_;
     size_t platform_{0};
     std::vector<Game> games_;
+    mutable std::vector<const Game*> shown_;  // games() cache
+    mutable std::string shown_search_;
+    mutable size_t shown_size_{0};
+    mutable const Game* shown_data_{nullptr};
+    mutable bool shown_valid_{false};
     size_t selected_{0};
     bool searching_{false};
     std::string search_;
@@ -137,6 +186,13 @@ private:
     bool play_after_download_{false};
     int downloading_id_{0};
     size_t generation_{0};
+    size_t list_generation_{0};  // game-list pages; separate so a download doesn't orphan them
+    std::string cache_dir_;
+    int total_{0};
+    int next_offset_{0};
+    bool loading_more_{false};
+    bool more_failed_{false};
+    bool from_cache_{false};
 
     pid_t player_{-1};
     uint32_t play_ms_{0};
@@ -149,6 +205,7 @@ private:
     bool saves_failed_{false};
     std::vector<Save> saves_;
     long long launch_save_mtime_{0};
+    int play_local_rom_{0};  // RomM's newer save didn't download; the next ENTER plays the PET's
     std::string save_status_;
 
     Mailbox<Result> results_;

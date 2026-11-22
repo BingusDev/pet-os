@@ -5,6 +5,7 @@
 #include "backlight.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 
@@ -48,6 +49,14 @@ long read_number(const std::filesystem::path& path) {
 // Brightness the panel had before AlicePET first dimmed or switched it off.
 long normal_brightness = -1;
 
+// While the panel is dimmed or off, the normal brightness is also kept in a
+// small file, so a run that is killed or crashes in that state doesn't make
+// the next run take the dimmed value for normal.
+std::filesystem::path stash_path() {
+    const char* runtime = std::getenv("XDG_RUNTIME_DIR");
+    return std::filesystem::path(runtime && *runtime ? runtime : "/tmp") / "alicepet-backlight";
+}
+
 } // namespace
 
 // TODO(device): confirm the CardputerZero backlight node name and that the app
@@ -59,9 +68,14 @@ bool set_screen_level(ScreenLevel level, const std::string& dir, int dim_percent
     }
     const long max = read_number(node / "max_brightness");
     if (normal_brightness <= 0) {
+        const long stashed = read_number(stash_path());
         const long current = read_number(node / "brightness");
-        normal_brightness = current > 0 ? current : (max > 0 ? max : 1);
+        if (stashed > 0 && (max <= 0 || stashed <= max)) normal_brightness = stashed;
+        else normal_brightness = current > 0 ? current : (max > 0 ? max : 1);
     }
+    std::error_code ec;
+    if (level == ScreenLevel::On) std::filesystem::remove(stash_path(), ec);
+    else write_value(stash_path(), std::to_string(normal_brightness));
     const bool has_power = std::filesystem::exists(node / "bl_power");
     if (level == ScreenLevel::Off) {
         const bool ok = write_value(node / "brightness", "0");

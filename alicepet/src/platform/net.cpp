@@ -229,6 +229,7 @@ HttpResponse https_via_curl(const std::string& method, const std::string& url, c
     }
     std::string config = "url = " + curl_quote(url) + "\nrequest = " + curl_quote(method) + "\n";
     for (const auto& header : headers) config += "header = " + curl_quote(header) + "\n";
+    config += "compressed\n";  // RomM's JSON lists gzip ~2x smaller over slow links
     if (body_file) config += "data-binary = " + curl_quote(std::string("@") + body_path) + "\n";
     const ssize_t written = write(fd, config.data(), config.size());
     close(fd);
@@ -239,18 +240,27 @@ HttpResponse https_via_curl(const std::string& method, const std::string& url, c
         return response;
     }
     std::string out;
+    // Room for the largest reply the caller accepts plus the status marker;
+    // anything that fills it is reported as too large, not as a curl failure.
+    const size_t capture_cap = max_reply + 64;
     const int rc = proc::run_capture({"curl", "-sS", "--max-time", std::to_string(std::max(1, timeout_ms / 1000)),
                                       "-K", path, "-w", "\n@@HTTP@@%{http_code}"},
-                                     out, timeout_ms + 2000, false);
+                                     out, timeout_ms + 2000, false, capture_cap);
     unlink(path);
     if (body_file) unlink(body_path);
-    const size_t marker = out.rfind("\n@@HTTP@@");
+    if (rc == 0 && out.size() >= capture_cap) {
+        response.error = "reply too large";
+        return response;
+    }
+    static constexpr char kMarker[] = "\n@@HTTP@@";
+    const size_t marker = out.rfind(kMarker);
     if (rc != 0 || marker == std::string::npos) {
         response.error = rc == -1 ? "curl missing" : rc == -2 ? "timeout" : "curl exit " + std::to_string(rc);
         return response;
     }
-    response.status = std::atoi(out.c_str() + marker + 10);
-    response.body = out.substr(0, marker);
+    response.status = std::atoi(out.c_str() + marker + sizeof(kMarker) - 1);  // was +10: "200" read as 0
+    out.resize(marker);
+    response.body = std::move(out);  // no second copy of a large download
     if (response.body.size() > max_reply) {
         response.error = "reply too large";
         return response;
@@ -261,6 +271,15 @@ HttpResponse https_via_curl(const std::string& method, const std::string& url, c
 }
 
 } // namespace
+
+int parse_http_status(const std::string& raw) {
+    if (raw.rfind("HTTP/", 0) != 0) return 0;
+    const size_t line_end = raw.find_first_of("\r\n");
+    const size_t space = raw.find(' ');
+    // The space must sit on the status line; find(' ') alone can land in a later header or body.
+    if (space == std::string::npos || space > line_end) return 0;
+    return std::atoi(raw.c_str() + space + 1);
+}
 
 HttpResponse http_request(const std::string& method, const std::string& url, const std::string& body,
                           const std::vector<std::string>& headers, int timeout_ms, size_t max_reply) {
@@ -339,8 +358,11 @@ HttpResponse http_request(const std::string& method, const std::string& url, con
         response.error = raw.empty() ? "empty reply" : "bad http reply";
         return response;
     }
-    const size_t space = raw.find(' ');
-    response.status = std::atoi(raw.c_str() + space + 1);
+    response.status = parse_http_status(raw);
+    if (response.status <= 0) {
+        response.error = "no http status";
+        return response;
+    }
     std::string reply_headers = raw.substr(0, header_end);
     for (char& c : reply_headers) {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

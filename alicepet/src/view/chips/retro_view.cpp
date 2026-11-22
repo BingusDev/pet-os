@@ -88,10 +88,15 @@ lv_obj_t* RetroView::poster(const RetroChip::Game& game, int x, int y, int w, in
     set_border(p, selected ? 2 : 1, selected ? kRetroTheme.text : 0x55555f);
     lv_obj_set_style_clip_corner(p, true, 0);
     // Title at the bottom, white on a dark shadow line, like the mockup posters.
-    lv_obj_t* title = text(p, game.name, fonts_.small, kWhite, 0, 0);
-    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(title, w - 8);
-    lv_obj_set_height(title, 3 * 12);
+    // Wrapped here at spaces (LVGL would break inside a word), "..." only at the end.
+    const int text_w = w - 6;
+    const int lines = h >= 100 ? 4 : 3;
+    lv_point_t glyph{};
+    lv_text_get_size(&glyph, "MMMMMMMMMM", fonts_.small, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    const size_t cols = glyph.x > 0 ? static_cast<size_t>(text_w * 10 / glyph.x) : 10;
+    lv_obj_t* title = text(p, RetroChip::wrap_title(game.name, cols, static_cast<size_t>(lines)), fonts_.small, kWhite, 0, 0);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(title, text_w);
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_line_space(title, 0, 0);
     lv_obj_align(title, LV_ALIGN_BOTTOM_MID, 0, -3);
@@ -105,11 +110,13 @@ void RetroView::render_library(const RetroChip& retro) {
     // Screen 1: system tabs, four posters, the selected game's line.
     lv_label_set_text(frame_.title, "RETRO · ROMM");
     const auto& platforms = retro.platforms();
-    const auto games = retro.games();
+    const auto& games = retro.games();
     const std::string tab = retro.platform() < platforms.size() ? platforms[retro.platform()].label : "ALL";
-    lv_label_set_text(frame_.tag, (tab + " · " + std::to_string(games.size())).c_str());
+    std::string count = std::to_string(games.size());
+    if (retro.search().empty() && retro.has_more()) count += "/" + std::to_string(retro.total_games());
+    lv_label_set_text(frame_.tag, (tab + " · " + count).c_str());
     lv_label_set_text(frame_.footer, retro.searching() ? "type to search [↵]done [ESC]clear"
-                                                       : "[←→]game [TAB]system [/]search [↵]details");
+                                                       : "[←→]game [TAB]system [/]find [↵]open");
 
     // Tabs: scroll so the current one is always visible.
     int x = 6;
@@ -127,27 +134,47 @@ void RetroView::render_library(const RetroChip& retro) {
         x += lv_obj_get_width(t) + 4;
     }
 
-    if (games.empty()) {
+    if (games.empty() && retro.loading_more()) {
+        wrapped(retro.search().empty() ? "loading games..." : "searching more games...", kRetroTheme.text, kLeft, 40, 304);
+    } else if (games.empty()) {
         wrapped(retro.search().empty() ? "No games on this system in RomM." : "Nothing matches \"" + retro.search() + "\".",
                 kRetroTheme.text, kLeft, 40, 304);
     } else {
+        // Dense list: one row per game (system badge + whole-word title), the selected row filled gold.
+        // Rows scroll with the selection; each row is its own tap target.
+        constexpr int kRowTop = 18;
+        constexpr int kRowStep = 15;
+        constexpr int kRowH = 14;
+        constexpr int kBadgeW = 30;
         const size_t sel = retro.selected();
-        const size_t first = sel >= 3 ? std::min(sel - 2, games.size() >= 4 ? games.size() - 4 : 0) : 0;
-        lv_obj_t* selected = nullptr;
-        for (size_t i = first; i < games.size() && i < first + 4; ++i) {
-            const int px = kLeft + static_cast<int>(i - first) * 76;
-            lv_obj_t* p = poster(*games[i], px, 24, 70, 86, i == sel);
-            if (i == sel) selected = p;
+        const size_t first = RetroChip::list_first(games.size(), sel, RetroChip::kListRows);
+        lv_point_t glyph{};
+        lv_text_get_size(&glyph, "MMMMMMMMMM", fonts_.small, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        const int title_w = 304 - kBadgeW - 6;
+        const size_t cols = glyph.x > 0 ? static_cast<size_t>(title_w * 10 / glyph.x) : 30;
+        for (size_t row = 0; row < RetroChip::kListRows && first + row < games.size(); ++row) {
+            const size_t i = first + row;
+            const RetroChip::Game& game = *games[i];
+            const bool on = i == sel;
+            const int y = kRowTop + static_cast<int>(row) * kRowStep;
+            tap_target(body_, kLeft, y, 304, kRowH, static_cast<int>(i) - static_cast<int>(sel), true);
+            lv_obj_t* r = box(body_, kLeft, y, 304, kRowH, on ? kRetroTheme.text : kRetroTheme.bg_bottom);
+            set_border(r, 1, on ? kRetroTheme.text : 0x55555f);
+            lv_obj_set_style_radius(r, 3, 0);
+            lv_obj_t* badge = text(r, RetroChip::short_label(game.platform, game.platform), fonts_.small, on ? kInkDark : kGoldDim, 4, 1);
+            lv_obj_t* title = text(r, RetroChip::wrap_title(game.name, cols, 1), fonts_.small, on ? kInkDark : kWhite, kBadgeW + 2, 1);
+            lv_label_set_long_mode(title, LV_LABEL_LONG_CLIP);
+            lv_obj_set_width(title, title_w);
         }
-        if (selected) lv_obj_move_foreground(selected);
         const auto* g = games[sel];
         std::string line = g->name;
         if (g->year > 0) line += " · " + std::to_string(g->year);
         if (retro.downloaded(*g)) line += " · on PET";
-        text(body_, clip_cols(line, 43), fonts_.small, kWhite, kLeft, 116);
+        if (retro.loading_more() && sel + 1 >= games.size()) line = "loading more...";
+        text(body_, clip_cols(line, 43), fonts_.small, kWhite, kLeft, 126);
     }
     if (retro.searching() || !retro.search().empty()) {
-        lv_obj_t* s = box(body_, 180, 116, 132, 14, kRetroTheme.bar);
+        lv_obj_t* s = box(body_, 180, 126, 132, 14, kRetroTheme.bar);
         set_border(s, 1, kRetroTheme.text);
         lv_obj_set_style_radius(s, 3, 0);
         text(s, clip_cols("/" + retro.search() + (retro.searching() ? "_" : ""), 17), fonts_.small, kRetroTheme.text, 4, 0);

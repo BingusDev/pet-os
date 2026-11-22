@@ -43,3 +43,9 @@ Pi CM0 has no real suspend; manage power per subsystem.
 - Knobs: backlight PWM (biggest), cpufreq governor + max-freq cap, offline cores 1-3 (`/sys/devices/system/cpu/cpuN/online`), HDMI off, Bluetooth off (rfkill) unless controller paired, Wi-Fi `iw power_save on` when idle, USB hub + Ethernet chip power-off when LAN/USB-A unused (check if hub VBUS/reset is GPIO-switchable), audio codec standby, ACT LED off, camera driver not loaded, trim services.
 - **Nap mode:** screen off, 1 core @ lowest freq, Wi-Fi powersave, hub off; any key wakes. Optional **Deep nap = full poweroff + RTC alarm wake** if RX8130CE alarm can trigger power-on (verify on hardware).
 - Measure with BQ27220 fuel gauge (real mA); show live draw + per-chip estimate in status bar. Phase 0 task: baseline current for idle / Wi-Fi / video / each knob.
+
+## Device-day findings (2026-11-18, first boot on CardputerZero trixie stable)
+- [x] **Volume OSD:** show a volume bar when fn+D / fn+S / fn+A (KEY_VOLUMEUP/DOWN/MUTE on tca8418c) are pressed. A user service (`~/.local/bin/volkeys.py`, `volkeys.service`) already changes PipeWire volume in 5% steps; AlicePET only needs to read the keys or poll `wpctl get-volume` and draw the overlay.
+- [x] **Jellyfin auth for mpv:** `write_mpv_auth_config()` sends `X-Emby-Token`, which this server rejects (401). Send `Authorization: MediaBrowser Token="<key>"` instead. Until then the device uses `player=/usr/bin/env mpv ...` so the key goes in the URL, which disables mpv IPC (pause, seek, resume).
+- [x] **Default player audio:** use `--ao=pipewire` in the shipped `[jellyfin] player=`; `--ao=alsa` goes to HDMI on this board.
+- [x] **pet-setup.sh audio:** install the WirePlumber rule forcing S16LE/48 kHz on `alsa_output.platform-sound.*`; the ES8389 plays silence at PipeWire's default s32le.

@@ -89,6 +89,7 @@ void JellyfinView::render_library(const JellyfinChip& jf) {
         const auto* item = items[i];
         const int x = 6 + static_cast<int>(slot) * (kTileW + kTileGap);
         const auto& colors = kTiles[i % 5];
+        tap_target(frame_.body, x, 4, kTileW, kTileH, static_cast<int>(i) - static_cast<int>(sel), true);
         lv_obj_t* tile = box(frame_.body, x, 4, kTileW, kTileH, colors[0]);
         set_gradient(tile, colors[1]);
         lv_obj_set_style_radius(tile, 4, 0);
@@ -138,6 +139,7 @@ void JellyfinView::render_episodes(const JellyfinChip& jf) {
     for (size_t i = first; i < eps.size() && i < first + kEpisodeRows; ++i) {
         const int y = 2 + static_cast<int>(i - first) * 15;
         const bool selected = i == jf.episode();
+        tap_target(frame_.body, 4, y, 312, 14, static_cast<int>(i) - static_cast<int>(jf.episode()), false);
         if (selected) {
             lv_obj_t* hl = box(frame_.body, 4, y, 312, 14, kSel);
             lv_obj_set_style_radius(hl, 3, 0);

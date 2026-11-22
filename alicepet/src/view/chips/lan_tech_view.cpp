@@ -170,6 +170,7 @@ void LanTechView::render_devices(const LanTechChip& lan) {
     for (size_t i = first; i < devices.size() && i < first + kVisibleDevices; ++i) {
         const auto& d = *devices[i];
         const bool sel = i == selected;
+        tap_target(body_, 4, y - 1, 312, kDevRowH, static_cast<int>(i) - static_cast<int>(selected), false);
         if (sel) {
             lv_obj_t* hl = box(body_, 4, y - 1, 312, kDevRowH, kSel);
             lv_obj_set_style_radius(hl, 3, 0);

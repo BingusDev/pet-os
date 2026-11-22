@@ -1,0 +1,63 @@
+<html><head><link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet"><style>
+*{box-sizing:border-box}body{margin:0;font-family:'VT323',monospace;color:#fff}
+.px{font-family:'Press Start 2P',monospace}
+.win{width:1100px;height:640px;display:flex;flex-direction:column;background:#0a1f3c;
+ background-image:
+  linear-gradient(45deg,transparent 46%,rgba(0,255,160,.10) 47%,rgba(0,255,160,.10) 53%,transparent 54%),
+  linear-gradient(-45deg,transparent 46%,rgba(0,200,255,.08) 47%,rgba(0,200,255,.08) 53%,transparent 54%),
+  linear-gradient(#0d3a5c,#071a33);background-size:32px 32px,32px 32px,100% 100%}
+.frame{border:3px solid #001030;box-shadow:inset 0 0 0 3px #58c8f8,inset 0 0 0 6px #1060b0,inset 0 0 0 7px #001030;background:#0c2a6a;padding:10px}
+.hdr{display:inline-block;padding:3px 10px 4px;background:linear-gradient(#f8e858,#d89818);color:#402000;border:2px solid #001030;font-size:9px}
+.row{display:flex;align-items:center;gap:8px;padding:4px 6px;font-size:22px;line-height:1}
+.row.sel{background:#f8f070;color:#203060;outline:2px solid #001030}
+.ci{width:30px;height:30px;border:2px solid #001030;display:flex;align-items:center;justify-content:center;font-size:20px;image-rendering:pixelated}
+.code{margin-left:auto;width:22px;height:22px;background:#f8f8f8;color:#c01818;border:2px solid #001030;display:flex;align-items:center;justify-content:center;font-family:'Press Start 2P';font-size:10px}
+.btn{font-family:'Press Start 2P';font-size:9px;padding:9px 12px;border:2px solid #001030;box-shadow:inset -3px -3px 0 rgba(0,0,0,.35),inset 3px 3px 0 rgba(255,255,255,.45)}
+</style></head><body><div class="win">
+<div style="height:28px;background:linear-gradient(#3a6fd8,#1c47b0 60%,#2558c8);display:flex;align-items:center;padding:0 8px;font:bold 13px Tahoma,Arial;color:#fff;text-shadow:1px 1px #0a1f60">🗔&nbsp; Jack In - Alice.exe<span style="margin-left:auto;display:flex;gap:3px"><b style="width:21px;height:21px;background:#3d7bf0;border:1px solid #fff;border-radius:3px;text-align:center">_</b><b style="width:21px;height:21px;background:#3d7bf0;border:1px solid #fff;border-radius:3px;text-align:center">□</b><b style="width:21px;height:21px;background:#d8452a;border:1px solid #fff;border-radius:3px;text-align:center">×</b></span></div>
+<div style="display:flex;gap:10px;padding:10px 12px;align-items:stretch">
+ <div style="background:linear-gradient(#90a8b8,#506878);border:3px solid #001030;padding:4px 12px;display:flex;align-items:center;gap:10px">
+  <span class="px" style="font-size:8px;color:#e8f0f8;line-height:1.6">PET<br>BATT</span><span style="display:flex;gap:2px;padding:3px;background:#203040;border:2px solid #001030"><i style="width:9px;height:18px;background:#58f898"></i><i style="width:9px;height:18px;background:#58f898"></i><i style="width:9px;height:18px;background:#58f898"></i><i style="width:9px;height:18px;background:#58f898"></i><i style="width:9px;height:18px;background:#405060"></i></span></div>
+ <div class="frame" style="padding:8px 14px;display:flex;align-items:center;gap:14px;flex:1">
+  <span class="px" style="font-size:12px;color:#f8e858;text-shadow:2px 2px #001030">JACK IN!</span>
+  <span style="font-size:24px;color:#80f8a0">▶ OPERATOR: HK &nbsp;·&nbsp; LINK: HK-DESKTOP</span>
+  <span style="margin-left:auto;display:flex;gap:4px">
+   <span class="btn" style="background:#5878a0;color:#d0e0f0">READ</span><span class="btn" style="background:#f8e858;color:#402000">ASK</span><span class="btn" style="background:#5878a0;color:#d0e0f0">FULL</span></span>
+ </div>
+ <div class="btn" style="background:#30a0e8;color:#fff;display:flex;align-items:center">NET</div>
+ <div class="btn" style="background:#e83030;color:#fff;display:flex;align-items:center">JACK OUT</div>
+</div>
+<div style="flex:1;display:flex;gap:10px;padding:0 12px 12px;min-height:0">
+ <div class="frame" style="width:230px;display:flex;flex-direction:column;gap:6px">
+  <div><span class="hdr px">FOLDER</span></div>
+  <div style="background:#082050;border:2px solid #001030;padding:4px">
+   <div class="row sel"><img class="ci" src="terminal-small.png" style="object-fit:contain;background:#001030;padding:0">Terminal<div class="code">T</div></div>
+   <div class="row"><img class="ci" src="jellyfin-small.png" style="object-fit:contain;background:#001030;padding:0">Jellyfin<div class="code">J</div></div>
+   <div class="row"><img class="ci" src="retro-small.png" style="object-fit:contain;background:#001030;padding:0">Retro<div class="code">R</div></div>
+   <div class="row"><img class="ci" src="lan-tech-small.png" style="object-fit:contain;background:#001030;padding:0">LAN Tech<div class="code">L</div></div>
+  </div>
+  <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
+   <img src="terminal-big.png" style="width:87px;height:120px;image-rendering:pixelated;border:3px solid #001030">
+   <div style="font-size:20px;line-height:1.05;color:#c8e8ff">TERMINAL<br><span style="color:#f8e858">CODE T</span><br>Shell to<br>any host</div>
+  </div>
+  <div style="margin-top:auto;font-size:17px;color:#7898c0">Voice/Remote/Camera<br>stay in the PET.</div>
+ </div>
+ <div class="frame" style="flex:1;display:flex;flex-direction:column;min-width:0">
+  <div style="display:flex;gap:4px;align-items:flex-end">
+   <span class="hdr px" style="font-size:8px">TERMINAL.CHP</span>
+   <span class="px" style="font-size:8px;padding:4px 8px;background:#406090;border:2px solid #001030;color:#c0d0e0">JELLYFIN.CHP</span>
+   <span style="margin-left:auto;font-size:20px;color:#c8e8ff">VIEW: <span style="background:#f8f070;color:#203060;padding:0 4px">FULL</span> PET</span></div>
+  <div style="flex:1;margin-top:6px;background:#000814;border:2px solid #001030;box-shadow:inset 0 0 0 2px #205090;padding:10px 12px;font-size:20px;line-height:1.15;color:#58f898;white-space:nowrap;overflow:hidden">
+   hk@HK-Cardputer:~$ ssh gaming-pc<br>PS C:\Users\hkrip&gt; Get-Process | sort WS -desc | select -f 3<br><br><span style="color:#c8e8ff">Handles  WS(M)  ProcessName<br>   2104   1880  chrome<br>    948    612  steam<br>    611    402  Discord</span><br><br>PS C:\Users\hkrip&gt; <span style="background:#58f898">&nbsp;</span></div>
+ </div>
+ <div class="frame" style="width:250px;display:flex;flex-direction:column;gap:8px">
+  <div><span class="hdr px">NAVI</span></div>
+  <div style="display:flex;gap:8px">
+   <div style="width:76px;height:76px;border:3px solid #001030;box-shadow:inset 0 0 0 2px #f8a8e0;background:#203060;overflow:hidden"><img src="alice.png" style="width:150%;margin:-6px 0 0 -19px;image-rendering:pixelated"></div>
+   <div style="font-size:20px;line-height:1.05"><span class="px" style="font-size:10px;color:#f8a8e0">ALICE.EXE</span><br><span style="color:#80f8a0">● ONLINE</span><br>HP 1000</div>
+  </div>
+  <div style="flex:1;background:#f8f8f8;border:3px solid #001030;box-shadow:inset 0 0 0 2px #88a0c0;color:#102040;padding:8px;font-size:21px;line-height:1.05">
+   <span style="color:#2050c0">HK:</span> what's eating my RAM?<br><br><span style="color:#c02880">ALICE:</span> Chrome is hogging 1.8GB! Want me to close the background tabs? <span style="color:#c02880">▼</span></div>
+  <div style="display:flex;gap:4px"><div style="flex:1;background:#f8f8f8;border:2px solid #001030;color:#8090a0;font-size:20px;padding:2px 6px">Send mail...</div><div class="btn" style="background:#c050f0;color:#fff;padding:6px 7px">MIC</div><div class="btn" style="background:#4080d0;color:#fff;padding:6px 7px">♪</div></div>
+ </div>
+</div></div></body></html>

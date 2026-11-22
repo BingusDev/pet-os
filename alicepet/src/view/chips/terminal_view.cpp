@@ -71,6 +71,7 @@ void TerminalView::render_hosts(const TerminalChip& term) {
         const auto& h = hosts[i];
         const int y = 2 + static_cast<int>(i - first) * kRowH;
         const bool selected = i == term.selected();
+        tap_target(hosts_, 6, y, 308, kRowH - 1, static_cast<int>(i) - static_cast<int>(term.selected()), false);
         if (selected) {
             lv_obj_t* hl = box(hosts_, 6, y, 308, kRowH - 1, kSel);
             lv_obj_set_style_radius(hl, 3, 0);

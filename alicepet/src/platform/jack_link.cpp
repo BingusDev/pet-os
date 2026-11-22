@@ -23,6 +23,27 @@
 #include <set>
 #include <thread>
 
+#ifndef SOCK_CLOEXEC
+// macOS (desktop builds): no SOCK_CLOEXEC/SOCK_NONBLOCK flags or accept4().
+#define SOCK_CLOEXEC 0x10000000
+#define SOCK_NONBLOCK 0x20000000
+namespace {
+int accept4(int fd, sockaddr* addr, socklen_t* len, int flags) {
+    const int client = ::accept(fd, addr, len);
+    if (client < 0) return client;
+    fcntl(client, F_SETFD, FD_CLOEXEC);
+    if (flags & SOCK_NONBLOCK) fcntl(client, F_SETFL, fcntl(client, F_GETFL, 0) | O_NONBLOCK);
+    return client;
+}
+int portable_socket(int domain, int type, int protocol) {
+    const int fd = ::socket(domain, type & ~(SOCK_CLOEXEC | SOCK_NONBLOCK), protocol);
+    if (fd >= 0) fcntl(fd, F_SETFD, FD_CLOEXEC);
+    return fd;
+}
+} // namespace
+#define socket portable_socket
+#endif
+
 namespace platform::jack {
 namespace {
 

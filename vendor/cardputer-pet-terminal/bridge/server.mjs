@@ -122,19 +122,31 @@ function updateTelemetry(body = {}, req) {
   return lastDeviceTelemetry;
 }
 
+// Command lines ("CMD: ...") pass through untouched: stripping * or squeezing
+// spaces there breaks PowerShell/shell math and globs. Prose loses markdown emphasis.
+function sanitizeProseLine(line) {
+  return line
+    .replace(/\*\*(\S(?:[^*]*\S)?)\*\*/g, '$1')
+    .replace(/(^|\s)\*(\S(?:[^*]*\S)?)\*(?=\s|[.,!?:;]|$)/g, '$1$2')
+    .replace(/^(\s*)\* /, '$1- ')
+    .replace(/[ \t]{2,}/g, ' ');
+}
+
 function sanitizeReply(text) {
-  return String(text || '')
+  const base = String(text || '')
     .replace(/\r/g, '')
     .replace(/[‘’‚‛]/g, "'")
     .replace(/[“”„‟]/g, '"')
     .replace(/[–—]/g, '-')
     .replace(/…/g, '...')
     .replace(/\u00a0/g, ' ')
-    .replace(/\*/g, '')
-    .replace(/```[\s\S]*?```/g, block => block.replace(/```/g, '').slice(0, 900))
+    .replace(/```[\s\S]*?```/g, block => block.replace(/```/g, '').slice(0, 900));
+  return base
+    .split('\n')
+    .map(line => (/^\s*CMD:/i.test(line) ? line.trim() : sanitizeProseLine(line)))
+    .join('\n')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
-    .replace(/[ \t]{2,}/g, ' ')
     .trim();
 }
 

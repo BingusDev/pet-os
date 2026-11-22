@@ -61,6 +61,12 @@ constexpr int kGlyphW = 7;
 
 bool load_png(const std::filesystem::path& path, ImageAsset& out);
 lv_obj_t* box(lv_obj_t* parent, int x, int y, int w, int h, uint32_t bg);
+// An invisible click target over a list row/tile for the Jack In mouse: a PC
+// click on it moves the selection `steps` rows (negative = up/left) along the
+// given axis, then presses Enter. Found later with find_tap_target().
+lv_obj_t* tap_target(lv_obj_t* parent, int x, int y, int w, int h, int steps, bool horizontal);
+// The tap target under screen point (x, y), if any.
+bool find_tap_target(lv_obj_t* root, int x, int y, int& steps, bool& horizontal);
 void set_gradient(lv_obj_t* obj, uint32_t bottom);
 void set_border(lv_obj_t* obj, int width, uint32_t color);
 lv_obj_t* text(lv_obj_t* parent, const char* value, const lv_font_t* font, uint32_t color, int x, int y);

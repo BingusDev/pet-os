@@ -30,6 +30,8 @@ HttpResponse http_request(const std::string& method, const std::string& url, con
 HttpResponse http_get(const std::string& url, const std::vector<std::string>& headers, int timeout_ms);
 // Percent-encodes a query parameter value.
 std::string url_encode(const std::string& value);
+// Status code from an HTTP/1.x status line at the start of `raw`; 0 when the line is malformed.
+int parse_http_status(const std::string& raw);
 
 enum class ProbeState { Online, Rest, Offline };
 

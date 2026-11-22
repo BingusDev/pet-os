@@ -69,8 +69,12 @@ public:
     const std::string& status() const { return status_; }
     const std::vector<Platform>& platforms() const { return platforms_; }
     size_t platform() const { return platform_; }
-    // Games of the current tab, filtered by the search text.
-    std::vector<const Game*> games() const;
+    // Games of the current tab, filtered by the search text (cached until the list or search changes).
+    const std::vector<const Game*>& games() const;
+    // Library rows that fit on the panel at once.
+    static constexpr size_t kListRows = 7;
+    // The first row shown so `selected` stays in a `rows`-high window of `count` games.
+    static size_t list_first(size_t count, size_t selected, size_t rows);
     size_t selected() const { return selected_; }
     const Game* game() const;
     bool searching() const { return searching_; }
@@ -166,6 +170,11 @@ private:
     std::vector<Platform> platforms_;
     size_t platform_{0};
     std::vector<Game> games_;
+    mutable std::vector<const Game*> shown_;  // games() cache
+    mutable std::string shown_search_;
+    mutable size_t shown_size_{0};
+    mutable const Game* shown_data_{nullptr};
+    mutable bool shown_valid_{false};
     size_t selected_{0};
     bool searching_{false};
     std::string search_;

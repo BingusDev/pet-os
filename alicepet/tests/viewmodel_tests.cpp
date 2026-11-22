@@ -1175,6 +1175,29 @@ void test_retro_scrolling_systems_and_names() {
     CHECK(retro.platform() == 1 && retro.selected() == 0);
 }
 
+void test_retro_list_layout() {
+    using viewmodel::chips::RetroChip;
+    // The window keeps the selection on screen and stays inside the list.
+    CHECK(RetroChip::list_first(3, 2, RetroChip::kListRows) == 0);  // short list: no scroll
+    CHECK(RetroChip::list_first(20, 0, RetroChip::kListRows) == 0);
+    CHECK(RetroChip::list_first(20, 3, RetroChip::kListRows) == 0);
+    CHECK(RetroChip::list_first(20, 4, RetroChip::kListRows) == 1);  // selection centred
+    CHECK(RetroChip::list_first(20, 10, RetroChip::kListRows) == 7);
+    CHECK(RetroChip::list_first(20, 19, RetroChip::kListRows) == 13);  // last window, no overrun
+    CHECK(RetroChip::list_first(8, 7, RetroChip::kListRows) == 1);
+    for (size_t sel = 0; sel < 20; ++sel) {
+        const size_t first = RetroChip::list_first(20, sel, RetroChip::kListRows);
+        CHECK(sel >= first && sel < first + RetroChip::kListRows);
+    }
+    CHECK(RetroChip::list_first(5, 4, 0) == 0);
+
+    // Single-line titles keep whole words; a long name is cut at a space, not mid-word.
+    const std::string one = RetroChip::wrap_title("Mega Man Battle Network 3", 12, 1);
+    CHECK(one.rfind("Mega Man", 0) == 0);
+    CHECK(one.find("Ba") == std::string::npos || one.find("Battle") != std::string::npos);
+    CHECK(RetroChip::wrap_title("Tetris", 12, 1) == "Tetris");
+}
+
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"wrap", test_wrap},
@@ -1202,6 +1225,7 @@ int main() {
         {"remote_chip_files_and_pad", test_remote_chip_files_and_pad},
         {"retro_parsing", test_retro_parsing},
         {"retro_scrolling_systems_and_names", test_retro_scrolling_systems_and_names},
+        {"retro_list_layout", test_retro_list_layout},
         {"retro_pagination_and_cache", test_retro_pagination_and_cache},
         {"retro_needs_server", test_retro_needs_server},
         {"retro_save_sync_helpers", test_retro_save_sync_helpers},

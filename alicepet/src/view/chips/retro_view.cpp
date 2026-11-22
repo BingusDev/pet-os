@@ -110,7 +110,7 @@ void RetroView::render_library(const RetroChip& retro) {
     // Screen 1: system tabs, four posters, the selected game's line.
     lv_label_set_text(frame_.title, "RETRO · ROMM");
     const auto& platforms = retro.platforms();
-    const auto games = retro.games();
+    const auto& games = retro.games();
     const std::string tab = retro.platform() < platforms.size() ? platforms[retro.platform()].label : "ALL";
     std::string count = std::to_string(games.size());
     if (retro.search().empty() && retro.has_more()) count += "/" + std::to_string(retro.total_games());
@@ -140,30 +140,41 @@ void RetroView::render_library(const RetroChip& retro) {
         wrapped(retro.search().empty() ? "No games on this system in RomM." : "Nothing matches \"" + retro.search() + "\".",
                 kRetroTheme.text, kLeft, 40, 304);
     } else {
-        // Three cards, the selected one in the middle once the list has moved on.
-        constexpr size_t kCards = 3;
-        constexpr int kCardW = 96;
-        constexpr int kCardGap = 8;
+        // Dense list: one row per game (system badge + whole-word title), the selected row filled gold.
+        // Rows scroll with the selection; each row is its own tap target.
+        constexpr int kRowTop = 18;
+        constexpr int kRowStep = 15;
+        constexpr int kRowH = 14;
+        constexpr int kBadgeW = 30;
         const size_t sel = retro.selected();
-        const size_t last_first = games.size() > kCards ? games.size() - kCards : 0;
-        const size_t first = sel >= 1 ? std::min(sel - 1, last_first) : 0;
-        lv_obj_t* selected = nullptr;
-        for (size_t i = first; i < games.size() && i < first + kCards; ++i) {
-            const int px = kLeft + static_cast<int>(i - first) * (kCardW + kCardGap);
-            tap_target(body_, px, 24, kCardW, 86, static_cast<int>(i) - static_cast<int>(sel), true);
-            lv_obj_t* p = poster(*games[i], px, 24, kCardW, 86, i == sel);
-            if (i == sel) selected = p;
+        const size_t first = RetroChip::list_first(games.size(), sel, RetroChip::kListRows);
+        lv_point_t glyph{};
+        lv_text_get_size(&glyph, "MMMMMMMMMM", fonts_.small, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        const int title_w = 304 - kBadgeW - 6;
+        const size_t cols = glyph.x > 0 ? static_cast<size_t>(title_w * 10 / glyph.x) : 30;
+        for (size_t row = 0; row < RetroChip::kListRows && first + row < games.size(); ++row) {
+            const size_t i = first + row;
+            const RetroChip::Game& game = *games[i];
+            const bool on = i == sel;
+            const int y = kRowTop + static_cast<int>(row) * kRowStep;
+            tap_target(body_, kLeft, y, 304, kRowH, static_cast<int>(i) - static_cast<int>(sel), true);
+            lv_obj_t* r = box(body_, kLeft, y, 304, kRowH, on ? kRetroTheme.text : kRetroTheme.bg_bottom);
+            set_border(r, 1, on ? kRetroTheme.text : 0x55555f);
+            lv_obj_set_style_radius(r, 3, 0);
+            lv_obj_t* badge = text(r, RetroChip::short_label(game.platform, game.platform), fonts_.small, on ? kInkDark : kGoldDim, 4, 1);
+            lv_obj_t* title = text(r, RetroChip::wrap_title(game.name, cols, 1), fonts_.small, on ? kInkDark : kWhite, kBadgeW + 2, 1);
+            lv_label_set_long_mode(title, LV_LABEL_LONG_CLIP);
+            lv_obj_set_width(title, title_w);
         }
-        if (selected) lv_obj_move_foreground(selected);
         const auto* g = games[sel];
         std::string line = g->name;
         if (g->year > 0) line += " · " + std::to_string(g->year);
         if (retro.downloaded(*g)) line += " · on PET";
         if (retro.loading_more() && sel + 1 >= games.size()) line = "loading more...";
-        text(body_, clip_cols(line, 43), fonts_.small, kWhite, kLeft, 116);
+        text(body_, clip_cols(line, 43), fonts_.small, kWhite, kLeft, 126);
     }
     if (retro.searching() || !retro.search().empty()) {
-        lv_obj_t* s = box(body_, 180, 116, 132, 14, kRetroTheme.bar);
+        lv_obj_t* s = box(body_, 180, 126, 132, 14, kRetroTheme.bar);
         set_border(s, 1, kRetroTheme.text);
         lv_obj_set_style_radius(s, 3, 0);
         text(s, clip_cols("/" + retro.search() + (retro.searching() ? "_" : ""), 17), fonts_.small, kRetroTheme.text, 4, 0);

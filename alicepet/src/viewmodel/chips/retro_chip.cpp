@@ -478,6 +478,7 @@ void RetroChip::load_platforms() {
 }
 
 void RetroChip::load_games() {
+    shown_valid_ = false;
     games_.clear();
     selected_ = 0;
     total_ = 0;
@@ -844,21 +845,38 @@ void RetroChip::stop_game() {
     }
 }
 
-std::vector<const RetroChip::Game*> RetroChip::games() const {
-    std::vector<const Game*> out;
+const std::vector<const RetroChip::Game*>& RetroChip::games() const {
+    // Rebuilt only when the list, the search text, or the list storage changed: keypresses and renders
+    // call this several times, and lowercasing every title each time made menu navigation laggy.
+    if (shown_valid_ && shown_search_ == search_ && shown_size_ == games_.size() && shown_data_ == games_.data()) {
+        return shown_;
+    }
+    shown_.clear();
     const std::string needle = lower(search_);
     for (const auto& g : games_) {
-        if (needle.empty() || lower(g.name).find(needle) != std::string::npos) out.push_back(&g);
+        if (needle.empty() || lower(g.name).find(needle) != std::string::npos) shown_.push_back(&g);
     }
-    return out;
+    shown_search_ = search_;
+    shown_size_ = games_.size();
+    shown_data_ = games_.data();
+    shown_valid_ = true;
+    return shown_;
+}
+
+size_t RetroChip::list_first(size_t count, size_t selected, size_t rows) {
+    if (rows == 0 || count <= rows) return 0;
+    if (selected < rows / 2) return 0;
+    const size_t first = selected - rows / 2;
+    return first + rows > count ? count - rows : first;
 }
 
 const RetroChip::Game* RetroChip::game() const {
-    const auto list = games();
+    const auto& list = games();
     return selected_ < list.size() ? list[selected_] : nullptr;
 }
 
 void RetroChip::on_result(Result result) {
+    shown_valid_ = false;  // results can merge into games_ in place
     if (result.what == Result::What::Saves) {
         if (result.rom_id != saves_rom_) return;  // the user moved on to another game
         saves_checking_ = false;

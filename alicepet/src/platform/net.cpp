@@ -272,6 +272,15 @@ HttpResponse https_via_curl(const std::string& method, const std::string& url, c
 
 } // namespace
 
+int parse_http_status(const std::string& raw) {
+    if (raw.rfind("HTTP/", 0) != 0) return 0;
+    const size_t line_end = raw.find_first_of("\r\n");
+    const size_t space = raw.find(' ');
+    // The space must sit on the status line; find(' ') alone can land in a later header or body.
+    if (space == std::string::npos || space > line_end) return 0;
+    return std::atoi(raw.c_str() + space + 1);
+}
+
 HttpResponse http_request(const std::string& method, const std::string& url, const std::string& body,
                           const std::vector<std::string>& headers, int timeout_ms, size_t max_reply) {
     if (url.rfind("https://", 0) == 0) {
@@ -349,8 +358,11 @@ HttpResponse http_request(const std::string& method, const std::string& url, con
         response.error = raw.empty() ? "empty reply" : "bad http reply";
         return response;
     }
-    const size_t space = raw.find(' ');
-    response.status = std::atoi(raw.c_str() + space + 1);
+    response.status = parse_http_status(raw);
+    if (response.status <= 0) {
+        response.error = "no http status";
+        return response;
+    }
     std::string reply_headers = raw.substr(0, header_end);
     for (char& c : reply_headers) {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

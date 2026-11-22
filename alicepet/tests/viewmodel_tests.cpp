@@ -18,6 +18,7 @@
 #include "viewmodel/chips/lan_tech_chip.h"
 #include "viewmodel/chips/jack_in_chip.h"
 #include "platform/jack_link.h"
+#include "platform/net.h"
 #include "platform/device_status.h"
 #include "viewmodel/chips/remote_chip.h"
 #include "viewmodel/chips/retro_chip.h"
@@ -1198,6 +1199,17 @@ void test_retro_list_layout() {
     CHECK(RetroChip::wrap_title("Tetris", 12, 1) == "Tetris");
 }
 
+void test_http_status_line() {
+    using platform::net::parse_http_status;
+    CHECK(parse_http_status("HTTP/1.1 200 OK\r\n\r\n") == 200);
+    CHECK(parse_http_status("HTTP/1.0 404 Not Found\r\n\r\n") == 404);
+    // No space on the status line: must not read the "HTTP/1.1" prefix as 0 or borrow a later space.
+    CHECK(parse_http_status("HTTP/1.1\r\nServer: a b\r\n\r\n") == 0);
+    CHECK(parse_http_status("HTTP/1.1\r\n\r\nbody with spaces 500") == 0);
+    CHECK(parse_http_status("garbage 200\r\n\r\n") == 0);
+    CHECK(parse_http_status("") == 0);
+}
+
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"wrap", test_wrap},
@@ -1237,6 +1249,7 @@ int main() {
         {"jack_session", test_jack_session},
         {"jack_line_server", test_jack_line_server},
         {"jack_relay", test_jack_relay},
+        {"http_status_line", test_http_status_line},
     };
     for (const auto& [name, fn] : tests) {
         const int before = g_failures;

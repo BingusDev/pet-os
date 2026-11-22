@@ -21,8 +21,9 @@
 #    ones) and its output goes back to her automatically; after 25 commands (8 in Read/Ask)
 #    for one message you are asked whether she keeps going.
 #  - Jellyfin video and Retro games picked on the PET's chip play HERE: video in a
-#    NOW PLAYING player in the chip area (Windows Media Player; Esc or STOP comes
-#    back to the chip), games in your browser (RomM's web player). Both come
+#    NOW PLAYING player in the chip area (Windows Media Player; Esc or STOP VIDEO
+#    comes back to the chip and tells Jellyfin where you stopped), games in your
+#    browser (RomM's web player, on http://127.0.0.1 so the browser treats it as secure). Both come
 #    through the PET's relay on 10.55.0.1, so no server passwords reach this PC.
 #  - Every command is shown in the live log. JACK OUT ends everything at once.
 # The app only dials out to the PET (10.55.0.1); it never listens. See PROTOCOL.md.
@@ -82,7 +83,7 @@ if ($env:JACKIN_SCALE) { $K = [double]$env:JACKIN_SCALE }
 $K = [Math]::Max(0.7, $K)
 [JackInUi]::K = $K
 
-$AppVersion = '0.8'
+$AppVersion = '0.9'
 $Here = Split-Path -Parent $PSCommandPath
 
 # Draws each PET frame: run-length RGB565 (count, hi, lo) to ARGB pixels.
@@ -111,6 +112,87 @@ Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @'
 public class JackInWmp : System.Windows.Forms.AxHost {
     public JackInWmp() : base("6bf52a52-394a-11d3-b153-00c04f79faa6") { }
     public object Player { get { return this.GetOcx(); } }
+}
+'@
+
+# Esc while a video plays: the player control eats keys before the form sees
+# them, so a message filter catches Esc first (the UI timer acts on Pressed).
+Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @'
+public class JackInEsc : System.Windows.Forms.IMessageFilter {
+    public bool Armed;
+    public bool Pressed;
+    public bool PreFilterMessage(ref System.Windows.Forms.Message m) {
+        if (Armed && m.Msg == 0x100 && m.WParam.ToInt64() == 0x1B) { Pressed = true; return true; }
+        return false;
+    }
+}
+'@
+
+# RomM's web player in the browser: a page from http://10.55.0.1 is not a
+# "secure context", so browsers give it no SharedArrayBuffer and RomM refuses
+# the threaded cores (DOS, PSP, 3DS) with "HTTPS required". http://127.0.0.1
+# counts as secure, so the app forwards a loopback port to the PET's web relay
+# and opens the game there. Plain bytes both ways; RomM's own COOP/COEP headers
+# come through the relay and make the page cross-origin isolated.
+Add-Type -TypeDefinition @'
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
+using System.Threading.Tasks;
+public class JackInLoopback {
+    TcpListener listener;
+    volatile string host = "";
+    volatile int port;
+    public int Port { get { return listener == null ? 0 : ((IPEndPoint)listener.LocalEndpoint).Port; } }
+    // Listens on 127.0.0.1 (the preferred port, else any free one); returns the port or 0.
+    public int Start(int preferred, string targetHost, int targetPort) {
+        host = targetHost;
+        port = targetPort;
+        if (listener != null) return Port;
+        foreach (int p in new int[] { preferred, 0 }) {
+            try {
+                TcpListener l = new TcpListener(IPAddress.Loopback, p);
+                l.Start();
+                listener = l;
+                break;
+            } catch { }
+        }
+        if (listener == null) return 0;
+        Thread t = new Thread(Accept);
+        t.IsBackground = true;
+        t.Start(listener);
+        return Port;
+    }
+    void Accept(object o) {
+        TcpListener l = (TcpListener)o;
+        while (true) {
+            TcpClient c;
+            try { c = l.AcceptTcpClient(); } catch { return; }
+            Thread t = new Thread(Pipe);
+            t.IsBackground = true;
+            t.Start(c);
+        }
+    }
+    void Pipe(object o) {
+        TcpClient c = (TcpClient)o;
+        TcpClient up = new TcpClient();
+        try {
+            up.Connect(host, port);
+            c.NoDelay = true;
+            up.NoDelay = true;
+            NetworkStream a = c.GetStream();
+            NetworkStream b = up.GetStream();
+            Task.WaitAny(a.CopyToAsync(b), b.CopyToAsync(a));
+        } catch { } finally {
+            try { c.Close(); } catch { }
+            try { up.Close(); } catch { }
+        }
+    }
+    public void Stop() {
+        if (listener == null) return;
+        try { listener.Stop(); } catch { }
+        listener = null;
+    }
 }
 '@
 
@@ -154,6 +236,9 @@ $Play = [ordered]@{
     Reported = [datetime]::MinValue
     Ax       = $null
 }
+$EscFilter = New-Object JackInEsc
+[System.Windows.Forms.Application]::AddMessageFilter($EscFilter)
+$Loop = New-Object JackInLoopback
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $S.Admin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
@@ -431,6 +516,11 @@ $viewMode = New-Label 'FULL' 972 86 54 24 (Pix 7) $cInk $cYellow
 $viewMode.TextAlign = 'MiddleCenter'
 $viewPet = New-Label 'PET' 1028 86 54 24 (Pix 7) $cText $cFrame
 $viewPet.TextAlign = 'MiddleCenter'
+$readHint = New-Label '' 548 86 348 24 (Vt 16) $cInk $cYellow
+$readHint.TextAlign = 'MiddleCenter'
+$readHint.AutoEllipsis = $true
+$readHint.Visible = $false
+$script:ReadHintUntil = [datetime]::MinValue
 $mirror = New-Object System.Windows.Forms.Panel
 [JackInUi]::B($mirror, 256, 116, 826, 466)
 $mirror.BackColor = $cScreen
@@ -442,10 +532,14 @@ $playPanel = New-Object System.Windows.Forms.Panel
 $playPanel.BackColor = [System.Drawing.Color]::Black
 $playPanel.Visible = $false
 $form.Controls.Add($playPanel)
-$nowLabel = New-Label 'NOW PLAYING' 0 0 826 28 (Vt 20) $cText $cEdge
+$nowLabel = New-Label 'NOW PLAYING' 0 0 650 28 (Vt 20) $cText $cEdge
 $nowLabel.TextAlign = 'MiddleLeft'
 $nowLabel.AutoEllipsis = $true
 $playPanel.Controls.Add($nowLabel)
+# The big one: always in the player's own bar, right of the title.
+$btnStopVideo = New-Button ([string][char]0x25A0 + ' STOP VIDEO (Esc)') 650 0 176 28 (RGB 0xd0 0x40 0x40) (RGB 0xff 0xff 0xff) (Pix 7)
+$form.Controls.Remove($btnStopVideo)
+$playPanel.Controls.Add($btnStopVideo)
 $btnBack10 = New-Button '-10s' 560 84 70 28 $cIdle (RGB 0xff 0xff 0xff) (Pix 7)
 $btnFwd10 = New-Button '+10s' 634 84 70 28 $cIdle (RGB 0xff 0xff 0xff) (Pix 7)
 $btnStop = New-Button 'STOP' 708 84 90 28 (RGB 0xd0 0x40 0x40) (RGB 0xff 0xff 0xff) (Pix 7)
@@ -500,6 +594,18 @@ $tips.SetToolTip($chatBox, 'Send mail to Alice (Enter)')
 
 $HomeCtl = @($hintLabel, $portrait, $aliceName, $aliceStatus, $chatLog, $statusHdr, $logBox, $btnLog, $btnShowLog, $btnVoice) + @($Stats.Values | ForEach-Object { $_.Box })
 $ChipCtl = @($btnHome, $viewKey, $viewMode, $viewPet, $mirror, $miniFace, $aliceWho, $aliceLine)
+
+# Input in the mirror without access: say so instead of ignoring it.
+function Show-ReadHint {
+    $why = $(if (-not $S.Linked) { 'not linked to the PET yet' } else { 'READ mode: pick ASK or FULL to control chips' })
+    $readHint.Text = $why
+    $tips.SetToolTip($readHint, $why)
+    $readHint.Visible = ($S.View -eq 'chip') -and -not $Play.On
+    $readHint.BringToFront()
+    $script:ReadHintUntil = (Get-Date).AddSeconds(4)
+    if ($script:ReadHintLogged -ne $why) { Add-Log "ignored input on the PET screen: $why"; $script:ReadHintLogged = $why }
+}
+$script:ReadHintLogged = ''
 
 # Shows HOME or the open chip in the centre.
 function Set-View([string]$view) {
@@ -645,7 +751,9 @@ function Update-Ui {
     $playPanel.Visible = $playing
     $mirror.Visible = ($S.View -eq 'chip') -and -not $playing
     foreach ($b in @($btnBack10, $btnFwd10, $btnStop)) { $b.Visible = $playing }
-    if ($playing) { $playPanel.BringToFront() }
+    if ($playing) { $playPanel.BringToFront(); foreach ($b in @($btnBack10, $btnFwd10, $btnStop)) { $b.BringToFront() } }
+    if ($playing -or $S.View -ne 'chip' -or (Input-Allowed)) { $readHint.Visible = $false }
+    $EscFilter.Armed = [bool]$Play.On
     $mirror.Invalidate()
 }
 
@@ -975,7 +1083,7 @@ $script:MouseDown = $false
 $mirror.Add_MouseDown({
     param($ctl, $e)
     $mirror.Focus() | Out-Null
-    if (-not (Input-Allowed)) { return }
+    if (-not (Input-Allowed)) { Show-ReadHint; return }
     if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) {
         $pt = Map-MirrorPoint $e.X $e.Y
         if ($null -eq $pt) { return }
@@ -1002,7 +1110,7 @@ $mirror.Add_MouseUp({
 $script:WheelAcc = 0
 $mirror.Add_MouseWheel({
     param($ctl, $e)
-    if (-not (Input-Allowed)) { return }
+    if (-not (Input-Allowed)) { Show-ReadHint; return }
     $script:WheelAcc += $e.Delta
     while ([Math]::Abs($script:WheelAcc) -ge 120) {
         if ($script:WheelAcc -gt 0) {
@@ -1020,7 +1128,11 @@ $mirror.Add_Click({ $mirror.Focus() | Out-Null })
 $mirror.Add_PreviewKeyDown({ param($ctl, $e) $e.IsInputKey = $true })
 $mirror.Add_KeyDown({
     param($ctl, $e)
-    if (-not (Input-Allowed)) { return }
+    if (-not (Input-Allowed)) {
+        # Esc still goes HOME (the form's handler); anything else gets the hint.
+        if ($e.KeyCode -ne 'Escape' -and $e.KeyCode -ne 'F9' -and (Map-Key $e.KeyCode)) { Show-ReadHint }
+        return
+    }
     $name = Map-Key $e.KeyCode
     if ($name) {
         Send-Pet ([ordered]@{ t = 'key'; k = $name })
@@ -1029,7 +1141,8 @@ $mirror.Add_KeyDown({
 })
 $mirror.Add_KeyPress({
     param($ctl, $e)
-    if (-not (Input-Allowed) -or [char]::IsControl($e.KeyChar)) { return }
+    if ([char]::IsControl($e.KeyChar)) { return }
+    if (-not (Input-Allowed)) { Show-ReadHint; return }
     Send-Pet ([ordered]@{ t = 'char'; c = [string]$e.KeyChar })
     $e.Handled = $true
 })
@@ -1444,9 +1557,19 @@ function Start-Play($msg) {
     $url = [string](Get-Field $msg 'url')
     if (-not $url) { return }
     if ($kind -eq 'game') {
-        # RomM's web player in the default browser, logged in through the PET's relay.
-        Start-Process $url | Out-Null
-        Add-Log "opened $title in your browser (RomM web player via the PET)"
+        # RomM's web player in the default browser, logged in through the PET's
+        # relay, opened on 127.0.0.1 so the browser treats it as secure (see JackInLoopback).
+        $open = $url
+        try {
+            $u = [Uri]$url
+            if (-not $u.IsLoopback) {
+                $lp = $Loop.Start(7345, $u.Host, $u.Port)
+                if ($lp -gt 0) { $open = 'http://127.0.0.1:' + $lp + $u.PathAndQuery }
+                else { Add-Log "couldn't open a local port for the game; trying the PET's address (some cores need HTTPS there)" }
+            }
+        } catch { Add-Log "game link: $($_.Exception.Message)" }
+        Start-Process $open | Out-Null
+        Add-Log "opened $title in your browser (RomM web player via the PET, $open)"
         $direct = [string](Get-Field $msg 'direct')
         if ($direct) { Add-Log "if it doesn't load, RomM itself: $direct" }
         return
@@ -1473,6 +1596,7 @@ function Start-Play($msg) {
         return
     }
     $Play.On = $true
+    $EscFilter.Armed = $true
     $nowLabel.Text = '  NOW PLAYING: ' + $title + $(if ($Play.Seekable) { '' } else { '   (converted on the server: use -10s/+10s to jump)' })
     $p.URL = $url
     $p.controls.play()
@@ -1485,6 +1609,8 @@ function Stop-Play([string]$state = 'stopped', [bool]$tell = $true, [string]$err
     if (-not $Play.On) { return }
     if ($tell) { Send-Progress $state $err }
     $Play.On = $false
+    $EscFilter.Armed = $false
+    $EscFilter.Pressed = $false
     try { $Play.Ax.Player.controls.stop(); $Play.Ax.Player.URL = '' } catch { }
     Add-Log $(switch ($state) { 'ended' { "$($Play.Title) finished" } 'error' { "couldn't play $($Play.Title): $err" } default { "stopped $($Play.Title)" } })
     Update-Ui
@@ -1526,6 +1652,7 @@ function Step-Play {
         if ($Play.StartAt -gt 1) { $p.controls.currentPosition = $Play.StartAt }
     }
     if ($ps -eq 8) { Stop-Play 'ended'; return }  # MediaEnded
+    if ($ps -eq 1 -and $Play.Started) { Stop-Play 'stopped'; return }  # the player's own stop button
     if (-not $Play.Started) {
         $err = ''
         try { if ($p.error.errorCount -gt 0) { $err = [string]$p.error.item(0).errorDescription } } catch { }
@@ -1538,6 +1665,7 @@ function Step-Play {
 }
 
 $btnStop.Add_Click({ Stop-Play })
+$btnStopVideo.Add_Click({ Stop-Play })
 $btnBack10.Add_Click({ Seek-Play -10 })
 $btnFwd10.Add_Click({ Seek-Play 10 })
 
@@ -1575,6 +1703,7 @@ function Jack-Out([string]$why) {
     $S.Full = $false
     Stop-Jobs
     Stop-Sharing
+    $Loop.Stop()
     if ($S.Client) { try { $S.Client.Close() } catch { } }
     $timer.Stop()
     $form.Close()
@@ -1833,7 +1962,9 @@ $timer.Add_Tick({
         if ($S.Client -or $S.Connecting -or ($script:tick % 20) -eq 1) { Step-Link }
         Step-Jobs
         Step-Tunnels
+        if ($EscFilter.Pressed) { $EscFilter.Pressed = $false; Stop-Play }
         Step-Play
+        if ($readHint.Visible -and (Get-Date) -gt $script:ReadHintUntil) { $readHint.Visible = $false }
         Sync-Mirror
         if (($script:tick % 30) -eq 0) { Refresh-LiveStats }
         if ($Mic.On -and ((Get-Date) - $Mic.Started).TotalSeconds -ge 15) { Stop-Mic }

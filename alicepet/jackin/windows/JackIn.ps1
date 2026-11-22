@@ -376,7 +376,7 @@ $statusHdr.TextAlign = 'MiddleCenter'
 $cPlate = RGB 0x04 0x12 0x2c
 $Stats = [ordered]@{}
 $statX = 256
-foreach ($k in @('CPU', 'RAM', 'C:', 'DEFENDER')) {
+foreach ($statName in @('CPU', 'RAM', 'C:', 'DEFENDER')) {
     $box = New-Object System.Windows.Forms.Panel
     [JackInUi]::B($box, $statX, 532, 200, 84)
     $box.BackColor = $cPlate
@@ -387,7 +387,7 @@ foreach ($k in @('CPU', 'RAM', 'C:', 'DEFENDER')) {
         $pen.Dispose()
     })
     $key = New-Object System.Windows.Forms.Label
-    $key.Text = $k
+    $key.Text = $statName
     [JackInUi]::B($key, 12, 8, 180, 20)
     $key.Font = Pix 8
     $key.ForeColor = RGB 0xc8 0xe0 0xff
@@ -403,7 +403,7 @@ foreach ($k in @('CPU', 'RAM', 'C:', 'DEFENDER')) {
     $box.Controls.Add($key)
     $box.Controls.Add($val)
     $form.Controls.Add($box)
-    $Stats[$k] = @{ Box = $box; Value = $val }
+    $Stats[$statName] = @{ Box = $box; Value = $val }
     $statX += 209
 }
 $logBox = New-Object System.Windows.Forms.RichTextBox
@@ -1088,7 +1088,7 @@ function Set-Stat([string]$key, [string]$text, [int]$level) {
 
 function Update-Stats($scan) {
     if ($null -eq $scan) {
-        foreach ($k in @($Stats.Keys)) { Set-Stat $k '--' -1 }
+        foreach ($statName in @($Stats.Keys)) { Set-Stat $statName '--' -1 }
         return
     }
     if ($scan.Contains('cpu')) { Set-Stat 'CPU' "$($scan.cpu)%" $(if ($scan.cpu -ge 90) { 2 } elseif ($scan.cpu -ge 60) { 1 } else { 0 }) }

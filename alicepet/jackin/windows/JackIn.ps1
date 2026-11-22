@@ -131,7 +131,7 @@ $S = [ordered]@{
     Closing    = $false
     Busy       = $false   # a scan or a confirm box is up (they pump UI events)
     Confirm    = ($StartMode -ne 'Full')  # Ask mode: OK each PET command first
-    Speak      = $true    # read Alice's answers aloud
+    Speak      = $false   # read Alice's answers aloud (muted until the speaker button)
     Linked     = $false
     Chips      = @()      # chips the PET can open: {id, name, number, code, desc, art}
     ChipId     = ''       # the chip the PC last asked the PET to open
@@ -388,13 +388,15 @@ foreach ($statName in @('CPU', 'RAM', 'C:', 'DEFENDER')) {
     })
     $key = New-Object System.Windows.Forms.Label
     $key.Text = $statName
-    [JackInUi]::B($key, 12, 8, 180, 20)
+    # Tall enough for the pixel font's ascent, clear of the 2 px border.
+    [JackInUi]::B($key, 12, 6, 180, 26)
     $key.Font = Pix 8
+    $key.TextAlign = 'MiddleLeft'
     $key.ForeColor = RGB 0xc8 0xe0 0xff
     $key.BackColor = $cPlate
     $val = New-Object System.Windows.Forms.Label
     $val.Text = '--'
-    [JackInUi]::B($val, 10, 30, 184, 48)
+    [JackInUi]::B($val, 10, 32, 184, 46)
     $val.Font = Vt 34
     $val.ForeColor = $cIdleInk
     $val.BackColor = $cPlate
@@ -462,7 +464,7 @@ $chatBox.Font = Vt 20
 $chatBox.BorderStyle = 'FixedSingle'
 $form.Controls.Add($chatBox)
 $btnMic = New-Button 'MIC' 0 0 68 30 (RGB 0xc0 0x50 0xf0) (RGB 0xff 0xff 0xff) (Pix 8)
-$btnVoice = New-Button '' 0 0 68 30 (RGB 0x40 0x80 0xd0) (RGB 0xff 0xff 0xff) (Pix 8)
+$btnVoice = New-Button '' 0 0 68 30 $cIdle (RGB 0xff 0xff 0xff) (Pix 8)
 $btnVoice.Add_Paint({
     param($ctl, $e)
     $g = $e.Graphics
@@ -490,7 +492,7 @@ $btnVoice.Add_Paint({
     $pen.Dispose()
 })
 $tips = New-Object System.Windows.Forms.ToolTip
-$tips.SetToolTip($btnVoice, 'Alice reads answers aloud (click to mute)')
+$tips.SetToolTip($btnVoice, 'Alice is muted (click to hear her)')
 $tips.SetToolTip($btnMic, 'Hold to talk (or hold F9)')
 $tips.SetToolTip($btnHome, 'Back to HOME (Esc; Shift+Esc while typing into the PET screen)')
 $tips.SetToolTip($chatBox, 'Send mail to Alice (Enter)')

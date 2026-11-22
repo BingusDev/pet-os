@@ -30,6 +30,7 @@ BRIDGE=br-jack
 PET_IP=10.55.0.1
 PC_IP=10.55.0.2
 PIDFILE=/run/alicepet-jackin-dnsmasq.pid
+DNSMASQ_UNIT=alicepet-jackin-dnsmasq
 LOCKFILE=/run/alicepet-jackin.lock
 
 say() { echo "usb-gadget: $*" >&2; }
@@ -179,9 +180,20 @@ up() {
 
     if command -v dnsmasq >/dev/null; then
         # DHCP only: no DNS (port 0), no router, no DNS server option.
-        dnsmasq --conf-file=/dev/null --interface="$BRIDGE" --bind-interfaces --except-interface=lo \
+        set -- --conf-file=/dev/null --interface="$BRIDGE" --bind-interfaces --except-interface=lo \
             --port=0 --dhcp-range="$PC_IP,$PC_IP,255.255.255.252,10m" --dhcp-option=3 --dhcp-option=6 \
-            --dhcp-authoritative --leasefile-ro --pid-file="$PIDFILE" 9>&-  # don't hand dnsmasq the lock
+            --dhcp-authoritative --leasefile-ro
+        if command -v systemd-run >/dev/null && [ -d /run/systemd/system ]; then
+            # A transient unit makes dnsmasq a child of PID 1. Daemonized from here it
+            # was orphaned onto APPLaunch (a child subreaper that never reaps), leaving
+            # two <defunct> dnsmasq per Jack In.
+            systemctl stop "$DNSMASQ_UNIT" 2>/dev/null || true
+            systemctl reset-failed "$DNSMASQ_UNIT" 2>/dev/null || true
+            systemd-run --quiet --collect --unit="$DNSMASQ_UNIT" \
+                dnsmasq --keep-in-foreground "$@" 9>&- || say "dnsmasq failed to start"
+        else
+            dnsmasq "$@" --pid-file="$PIDFILE" 9>&-  # don't hand dnsmasq the lock
+        fi
     else
         say "dnsmasq missing: set the PC's address to $PC_IP/30 by hand (apt install dnsmasq-base)"
     fi
@@ -193,6 +205,7 @@ up() {
 down() {
     need_root
     lock
+    systemctl stop "$DNSMASQ_UNIT" 2>/dev/null || true
     if [ -f "$PIDFILE" ]; then
         kill "$(cat "$PIDFILE")" 2>/dev/null || true
         rm -f "$PIDFILE"

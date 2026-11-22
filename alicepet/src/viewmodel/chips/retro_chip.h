@@ -98,6 +98,9 @@ public:
     // False when the PET's clock can't be right (never set, or behind a RomM save's
     // stamp): "newest wins" would then pick the wrong side, so sync is paused.
     static bool clock_trusted(const std::vector<Save>& saves, long long now);
+    // A server-supplied name made safe for a path component or a quoted header value:
+    // no separators, "..", quotes, or control bytes; `fallback` when nothing is left.
+    static std::string safe_name(const std::string& raw, const std::string& fallback);
     static std::string multipart_body(const std::string& boundary, const std::string& field,
                                       const std::string& file_name, const std::string& bytes);
 

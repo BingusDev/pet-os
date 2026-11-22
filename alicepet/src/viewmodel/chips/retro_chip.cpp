@@ -174,10 +174,27 @@ const RetroChip::Save* RetroChip::pick_save(const std::vector<Save>& saves, cons
     return named ? named : newest;
 }
 
+std::string RetroChip::safe_name(const std::string& raw, const std::string& fallback) {
+    // Drop anything that could change a path or break out of a quoted header value.
+    std::string out;
+    for (unsigned char c : raw) {
+        if (c < 0x20 || c == 0x7f || c == '/' || c == '\\' || c == '"') continue;
+        out += static_cast<char>(c);
+    }
+    // ".." and leading dots would name a parent or hidden entry; spaces at the edges are noise.
+    for (size_t at; (at = out.find("..")) != std::string::npos;) out.erase(at, 2);
+    size_t first = out.find_first_not_of(" .");
+    if (first == std::string::npos) return fallback;
+    out = out.substr(first);
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    if (out.size() > 200) out.resize(200);
+    return out.empty() ? fallback : out;
+}
+
 std::string RetroChip::multipart_body(const std::string& boundary, const std::string& field,
                                       const std::string& file_name, const std::string& bytes) {
     std::string body = "--" + boundary + "\r\n";
-    body += "Content-Disposition: form-data; name=\"" + field + "\"; filename=\"" + file_name + "\"\r\n";
+    body += "Content-Disposition: form-data; name=\"" + field + "\"; filename=\"" + safe_name(file_name, "save.srm") + "\"\r\n";
     body += "Content-Type: application/octet-stream\r\n\r\n";
     body += bytes;
     body += "\r\n--" + boundary + "--\r\n";
@@ -529,7 +546,7 @@ void RetroChip::maybe_load_more() {
 }
 
 std::string RetroChip::local_path(const Game& game) const {
-    return dir_ + "/" + (game.platform.empty() ? "other" : game.platform) + "/" + game.file;
+    return dir_ + "/" + safe_name(game.platform, "other") + "/" + safe_name(game.file, "game");
 }
 
 bool RetroChip::downloaded(const Game& game) const {
@@ -538,8 +555,8 @@ bool RetroChip::downloaded(const Game& game) const {
 }
 
 std::string RetroChip::local_save_path(const Game& game) const {
-    const std::string stem = fs::path(game.file).stem().string();
-    return dir_ + "/" + (game.platform.empty() ? "other" : game.platform) + "/saves/" + stem + ".srm";
+    const std::string stem = fs::path(safe_name(game.file, "game")).stem().string();
+    return dir_ + "/" + safe_name(game.platform, "other") + "/saves/" + safe_name(stem, "game") + ".srm";
 }
 
 namespace {
@@ -1009,11 +1026,16 @@ void RetroChip::on_result(Result result) {
         }
         for (auto& p : shown) platforms_.push_back(std::move(p));
         platform_ = 0;
+        bool tab_kept = false;
         for (size_t i = 0; i < platforms_.size(); ++i) {
-            if (platforms_[i].id == current_id) platform_ = i;
+            if (platforms_[i].id == current_id) {
+                platform_ = i;
+                tab_kept = true;
+            }
         }
-        // Fresh systems after cached ones: the tab's list is already loading.
-        if (first) {
+        // Fresh systems after cached ones: the tab's list is already loading. If the
+        // tab we were on is gone, games_ still holds its roms: reload the first tab.
+        if (first || !tab_kept) {
             load_games();
             return;
         }

@@ -1210,6 +1210,30 @@ void test_http_status_line() {
     CHECK(parse_http_status("") == 0);
 }
 
+// Server strings can carry separators, quotes, CR/LF, or ".."; none may reach a path or header.
+void test_retro_safe_names() {
+    using viewmodel::chips::RetroChip;
+    const std::string traversal = RetroChip::safe_name("../../etc/passwd", "fallback");
+    CHECK(traversal == "etcpasswd");
+    CHECK(traversal.find('/') == std::string::npos);
+    CHECK(traversal.find("..") == std::string::npos);
+
+    const std::string injected = RetroChip::safe_name("Game\"\r\nX-Evil: 1", "fallback");
+    CHECK(injected == "GameX-Evil: 1");
+    CHECK(injected.find_first_of("\r\n\"") == std::string::npos);
+
+    CHECK(RetroChip::safe_name("", "other") == "other");
+    CHECK(RetroChip::safe_name("..", "other") == "other");
+    CHECK(RetroChip::safe_name("/\\", "other") == "other");
+    CHECK(RetroChip::safe_name(std::string("\0", 1), "other") == "other");
+    CHECK(RetroChip::safe_name("Zelda (USA).sfc", "x") == "Zelda (USA).sfc");
+
+    // The multipart filename header keeps its two quote delimiters and nothing else.
+    const std::string body = RetroChip::multipart_body("B", "saveFile", "a\"\r\nEvil: 1", "x");
+    CHECK(body.find("filename=\"aEvil: 1\"\r\n") != std::string::npos);
+    CHECK(body.find("\r\nEvil: 1") == std::string::npos);
+}
+
 int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"wrap", test_wrap},
@@ -1242,6 +1266,7 @@ int main() {
         {"retro_needs_server", test_retro_needs_server},
         {"retro_save_sync_helpers", test_retro_save_sync_helpers},
         {"retro_failed_pull_keeps_both_saves", test_retro_failed_pull_keeps_both_saves},
+        {"retro_safe_names", test_retro_safe_names},
         {"run_capture_cap", test_run_capture_cap},
         {"lan_who_is_new", test_lan_who_is_new},
         {"lan_helpers", test_lan_helpers},

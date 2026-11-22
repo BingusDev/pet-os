@@ -6,6 +6,7 @@
 
 #include "model/pet_config.h"
 #include "viewmodel/chip_module.h"
+#include "viewmodel/chips/list_nav.h"
 
 #include <sys/types.h>
 
@@ -72,7 +73,7 @@ public:
     // Games of the current tab, filtered by the search text (cached until the list or search changes).
     const std::vector<const Game*>& games() const;
     // Library rows that fit on the panel at once.
-    static constexpr size_t kListRows = 7;
+    static constexpr size_t kListRows = kMediaListRows;
     // The first row shown so `selected` stays in a `rows`-high window of `count` games.
     static size_t list_first(size_t count, size_t selected, size_t rows);
     size_t selected() const { return selected_; }
@@ -142,7 +143,7 @@ public:
     bool loading_more() const { return loading_more_; }
     bool has_more() const { return next_offset_ < total_; }
     // Games one Up/Down (or PC mouse-wheel notch) moves by.
-    static constexpr size_t kPageStep = 3;
+    static constexpr size_t kPageStep = kMediaPageStep;
 
 private:
     void load_platforms();

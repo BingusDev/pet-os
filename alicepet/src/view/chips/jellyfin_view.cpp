@@ -14,19 +14,16 @@ namespace view {
 namespace {
 
 using viewmodel::chips::JellyfinChip;
+using viewmodel::chips::kMediaListRows;
+using viewmodel::chips::media_list_first;
 
 constexpr ChipTheme kJfTheme{0x3a1a5e, 0x0d0618, 0x1a0d2e, 0xaa5cc3, 0xe0b8ff};
 constexpr uint32_t kSel = 0xaa5cc3;
 constexpr uint32_t kText = 0xe8dcff;
-// Poster tiles cycle through the mockup's colours (top, bottom).
-constexpr uint32_t kTiles[][2] = {
-    {0x2f7de0, 0x123a8a}, {0x2fa35a, 0x145230}, {0x8a3ad8, 0x3e1470}, {0xe0484f, 0x7a1a20}, {0xe0a21a, 0x7a520a},
-};
-constexpr int kTileW = 58;
-constexpr int kTileH = 84;
-constexpr int kTileGap = 4;
-constexpr size_t kTileCount = 5;
-constexpr size_t kEpisodeRows = 8;
+// Same dense list as RETRO's library: seven rows, 15px apart.
+constexpr int kRowTop = 18;
+constexpr int kRowStep = 15;
+constexpr int kRowH = 14;
 
 std::string episode_label(const JellyfinChip::Item& item) {
     char head[24];
@@ -73,7 +70,7 @@ void JellyfinView::render_library(const JellyfinChip& jf) {
     const bool shows = jf.kind() == JellyfinChip::Kind::Shows;
     lv_label_set_text(frame_.title, shows ? "JELLYFIN · TV SHOWS" : "JELLYFIN · MOVIES");
     lv_label_set_text_fmt(frame_.tag, "%zu %s", jf.library_total(), shows ? "shows" : "movies");
-    lv_label_set_text(frame_.footer, shows ? "[←→]browse [↵]open [/]search [TAB]movies" : "[←→]browse [↵]play [/]search [TAB]shows");
+    lv_label_set_text(frame_.footer, shows ? "[↑↓]page [←→]pick [↵]open [/]find [TAB]movies" : "[↑↓]page [←→]pick [↵]play [/]find [TAB]shows");
 
     const auto items = jf.library();
     if (items.empty()) {
@@ -81,45 +78,30 @@ void JellyfinView::render_library(const JellyfinChip& jf) {
              kText, 8, 40);
     }
     const size_t sel = std::min(jf.selected(), items.empty() ? 0 : items.size() - 1);
-    size_t first = sel >= 2 ? sel - 2 : 0;
-    if (items.size() > kTileCount) first = std::min(first, items.size() - kTileCount);
-    else first = 0;
-    for (size_t slot = 0; slot < kTileCount && first + slot < items.size(); ++slot) {
-        const size_t i = first + slot;
+    const size_t first = media_list_first(items.size(), sel, kMediaListRows);
+    for (size_t i = first; i < items.size() && i < first + kMediaListRows; ++i) {
         const auto* item = items[i];
-        const int x = 6 + static_cast<int>(slot) * (kTileW + kTileGap);
-        const auto& colors = kTiles[i % 5];
-        tap_target(frame_.body, x, 4, kTileW, kTileH, static_cast<int>(i) - static_cast<int>(sel), true);
-        lv_obj_t* tile = box(frame_.body, x, 4, kTileW, kTileH, colors[0]);
-        set_gradient(tile, colors[1]);
-        lv_obj_set_style_radius(tile, 4, 0);
-        set_border(tile, i == sel ? 2 : 1, i == sel ? kGold : 0x5a4a7a);
-        if (i == sel) {
-            lv_obj_set_style_shadow_width(tile, 8, 0);
-            lv_obj_set_style_shadow_color(tile, lv_color_hex(kGold), 0);
-            lv_obj_set_style_shadow_opa(tile, LV_OPA_60, 0);
+        const int y = kRowTop + static_cast<int>(i - first) * kRowStep;
+        const bool selected = i == sel;
+        tap_target(frame_.body, 4, y, 312, kRowH, static_cast<int>(i) - static_cast<int>(sel), false);
+        if (selected) {
+            lv_obj_t* hl = box(frame_.body, 4, y, 312, kRowH, kSel);
+            lv_obj_set_style_radius(hl, 3, 0);
         }
-        // Title, word-wrapped to the tile (8 glyphs), bottom-aligned like a poster caption.
-        const auto lines = viewmodel::AliceViewModel::wrap(item->name, 8);
-        std::string caption;
-        for (size_t l = 0; l < lines.size() && l < 4; ++l) caption += (l ? "\n" : "") + lines[l];
-        lv_obj_t* label = text(tile, caption, fonts_.small, kWhite, 0, 0);
-        lv_obj_set_width(label, 8 * kGlyphW + 1);
-        lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
-        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -3);
-    }
-    if (!items.empty()) {
-        const auto* item = items[sel];
-        std::string line = item->name;
-        if (item->year) line += " · " + std::to_string(item->year);
-        if (shows && item->child_count) line += " · " + std::to_string(item->child_count) + (item->child_count == 1 ? " season" : " seasons");
-        text(frame_.body, clip_cols(line, 44), fonts_.small, kWhite, 6, 96);
+        // Right-aligned meta: the season count for a show, else the year.
+        std::string meta;
+        if (shows && item->child_count) meta = std::to_string(item->child_count) + (item->child_count == 1 ? " season" : " seasons");
+        else if (item->year) meta = std::to_string(item->year);
+        text(frame_.body, clip_cols(item->name, meta.empty() ? 40 : 30), fonts_.small, selected ? kWhite : kText, 8, y + 1);
+        if (!meta.empty()) {
+            lv_obj_t* at = text(frame_.body, meta, fonts_.small, kGold, 0, y + 1);
+            lv_obj_align(at, LV_ALIGN_TOP_RIGHT, -8, y + 1);
+        }
     }
     if (jf.searching() || !jf.search().empty()) {
-        text(frame_.body, "/ " + jf.search() + (jf.searching() ? "_" : ""), fonts_.small, kGold, 6, 114);
+        text(frame_.body, "/ " + jf.search() + (jf.searching() ? "_" : ""), fonts_.small, kGold, 6, 126);
     } else if (!items.empty()) {
-        text(frame_.body, std::to_string(sel + 1) + "/" + std::to_string(items.size()), fonts_.small, kJfTheme.edge, 6, 114);
+        text(frame_.body, std::to_string(sel + 1) + "/" + std::to_string(items.size()), fonts_.small, kJfTheme.edge, 6, 126);
     }
 }
 
@@ -127,21 +109,21 @@ void JellyfinView::render_episodes(const JellyfinChip& jf) {
     const auto* series = jf.series();
     lv_label_set_text(frame_.title, clip_cols(series ? series->name : "", 28).c_str());
     const auto& seasons = jf.seasons();
-    lv_label_set_text(frame_.tag, jf.season() < seasons.size() ? ("< " + clip_cols(seasons[jf.season()].name, 12) + " >").c_str() : "");
-    lv_label_set_text(frame_.footer, "[↑↓]episode [←→]season [↵]play [ESC]back");
+    lv_label_set_text(frame_.tag, jf.season() < seasons.size() ? clip_cols(seasons[jf.season()].name, 12).c_str() : "");
+    lv_label_set_text(frame_.footer, "[↑↓]page [←→]pick [TAB]season [↵]play [ESC]back");
 
     const auto& eps = jf.episodes();
     if (eps.empty()) {
         text(frame_.body, jf.status().empty() ? "No episodes." : jf.status(), fonts_.small, kText, 8, 6);
         return;
     }
-    const size_t first = jf.episode() >= kEpisodeRows ? jf.episode() - kEpisodeRows + 1 : 0;
-    for (size_t i = first; i < eps.size() && i < first + kEpisodeRows; ++i) {
-        const int y = 2 + static_cast<int>(i - first) * 15;
+    const size_t first = media_list_first(eps.size(), jf.episode(), kMediaListRows);
+    for (size_t i = first; i < eps.size() && i < first + kMediaListRows; ++i) {
+        const int y = kRowTop + static_cast<int>(i - first) * kRowStep;
         const bool selected = i == jf.episode();
-        tap_target(frame_.body, 4, y, 312, 14, static_cast<int>(i) - static_cast<int>(jf.episode()), false);
+        tap_target(frame_.body, 4, y, 312, kRowH, static_cast<int>(i) - static_cast<int>(jf.episode()), false);
         if (selected) {
-            lv_obj_t* hl = box(frame_.body, 4, y, 312, 14, kSel);
+            lv_obj_t* hl = box(frame_.body, 4, y, 312, kRowH, kSel);
             lv_obj_set_style_radius(hl, 3, 0);
         }
         if (eps[i].played) image(frame_.body, check_, 9, y + 4);

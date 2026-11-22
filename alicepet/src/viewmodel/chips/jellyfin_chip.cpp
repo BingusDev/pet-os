@@ -376,16 +376,25 @@ bool JellyfinChip::handle_key(Key key) {
             } else if (key == Key::Enter) {
                 searching_ = false;
             } else if (key == Key::Backspace && !search_.empty()) {
-                search_.pop_back();
+                utf8_drop_last(search_);
                 selected_ = 0;
             }
             touch();
             return true;
         }
-        if (key == Key::Escape) return false;
-        if (key == Key::Left && count) selected_ = (selected_ + count - 1) % count;
-        else if (key == Key::Right && count) selected_ = (selected_ + 1) % count;
-        else if (key == Key::Enter && count) open_series();
+        if (key == Key::Escape) {
+            if (search_.empty()) return false;
+            search_.clear();  // Esc clears a filter before it leaves the chip
+            selected_ = 0;
+        } else if (key == Key::Left && selected_ > 0) {
+            --selected_;
+        } else if (key == Key::Right && selected_ + 1 < count) {
+            ++selected_;
+        } else if (key == Key::Up && count) {
+            selected_ = selected_ >= kMediaPageStep ? selected_ - kMediaPageStep : 0;
+        } else if (key == Key::Down && count) {
+            selected_ = std::min(selected_ + kMediaPageStep, count - 1);
+        } else if (key == Key::Enter && count) open_series();
         else if (key == Key::Tab) {
             kind_ = kind_ == Kind::Shows ? Kind::Movies : Kind::Shows;
             library_.clear();
@@ -401,11 +410,16 @@ bool JellyfinChip::handle_key(Key key) {
         if (key == Key::Escape) {
             view_ = View::Library;
         } else if (key == Key::Up && !episodes_.empty()) {
-            episode_ = (episode_ + episodes_.size() - 1) % episodes_.size();
+            episode_ = episode_ >= kMediaPageStep ? episode_ - kMediaPageStep : 0;
         } else if (key == Key::Down && !episodes_.empty()) {
-            episode_ = (episode_ + 1) % episodes_.size();
-        } else if ((key == Key::Left || key == Key::Right) && seasons_.size() > 1) {
-            season_ = key == Key::Left ? (season_ + seasons_.size() - 1) % seasons_.size() : (season_ + 1) % seasons_.size();
+            episode_ = std::min(episode_ + kMediaPageStep, episodes_.size() - 1);
+        } else if (key == Key::Left && episode_ > 0) {
+            --episode_;
+        } else if (key == Key::Right && episode_ + 1 < episodes_.size()) {
+            ++episode_;
+        } else if (key == Key::Tab && seasons_.size() > 1) {
+            // Season switch lives on TAB (as RETRO's TAB switches system), not Left/Right.
+            season_ = (season_ + 1) % seasons_.size();
             load_episodes();
         } else if (key == Key::Enter && episode_ < episodes_.size()) {
             return_view_ = View::Episodes;
@@ -469,18 +483,16 @@ void JellyfinChip::handle_char(const std::string& utf8) {
     }
 }
 
-void JellyfinChip::tick(uint32_t elapsed_ms) {
-    Result result;
-    while (results_.poll(result)) {
-        if (result.what == Result::What::Position) {
-            if (result.seconds >= 0 && view_ == View::Playing) {
-                position_ticks_ = start_ticks_ + static_cast<long long>(result.seconds * kTicksPerSecond);
-                touch();
-            }
-            continue;
+void JellyfinChip::on_result(Result result) {
+    if (result.what == Result::What::Position) {
+        if (result.seconds >= 0 && view_ == View::Playing) {
+            position_ticks_ = start_ticks_ + static_cast<long long>(result.seconds * kTicksPerSecond);
+            touch();
         }
-        if (result.generation != generation_) continue;  // stale
-        switch (result.what) {
+        return;
+    }
+    if (result.generation != generation_) return;  // stale
+    switch (result.what) {
         case Result::What::Library:
             user_id_ = result.text;
             library_ = std::move(result.items);
@@ -555,8 +567,12 @@ void JellyfinChip::tick(uint32_t elapsed_ms) {
         case Result::What::Position:
             break;
         }
-        touch();
-    }
+    touch();
+}
+
+void JellyfinChip::tick(uint32_t elapsed_ms) {
+    Result result;
+    while (results_.poll(result)) on_result(std::move(result));
 
     if (pc_playing_) {
         pc_tick();

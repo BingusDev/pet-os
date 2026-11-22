@@ -83,7 +83,7 @@ if ($env:JACKIN_SCALE) { $K = [double]$env:JACKIN_SCALE }
 $K = [Math]::Max(0.7, $K)
 [JackInUi]::K = $K
 
-$AppVersion = '0.9.2'
+$AppVersion = '0.9.3'
 $Here = Split-Path -Parent $PSCommandPath
 
 # Draws each PET frame: run-length RGB565 (count, hi, lo) to ARGB pixels.
@@ -1575,6 +1575,26 @@ function Send-Progress([string]$state, [string]$err = '') {
     $Play.Reported = Get-Date
 }
 
+# Can this PC fetch the first byte of the stream itself within 2 s?
+function Test-DirectUrl([string]$link) {
+    $resp = $null
+    try {
+        $req = [System.Net.HttpWebRequest]::Create($link)
+        $req.Method = 'GET'
+        $req.AddRange(0, 0)
+        $req.Timeout = 2000
+        $req.ReadWriteTimeout = 2000
+        $req.AllowAutoRedirect = $false
+        $resp = $req.GetResponse()
+        $code = [int]$resp.StatusCode
+        return ($code -eq 200 -or $code -eq 206)
+    } catch {
+        return $false
+    } finally {
+        if ($resp) { $resp.Close() }
+    }
+}
+
 function Start-Play($msg) {
     $kind = [string](Get-Field $msg 'kind')
     $title = [string](Get-Field $msg 'title')
@@ -1625,12 +1645,17 @@ function Start-Play($msg) {
         $Play.On = $false
         return
     }
+    # Straight from Jellyfin when this PC can reach it (the PET hands a key made
+    # for this one play and deletes it on stop); otherwise through the PET's relay.
+    $via = 'the PET'
+    $directUrl = [string](Get-Field $msg 'direct_url')
+    if ($directUrl -and (Test-DirectUrl $directUrl)) { $url = $directUrl; $via = 'Jellyfin directly' }
     $Play.On = $true
     $EscFilter.Armed = $true
     $nowLabel.Text = '  NOW PLAYING: ' + $title + $(if ($Play.Seekable) { '' } else { '   (converted on the server: use -10s/+10s to jump)' })
     $p.URL = $url
     $p.controls.play()
-    if (-not $same) { Add-Log "playing $title here (from the PET's Jellyfin)" }
+    if (-not $same) { Add-Log "playing $title here (from the PET's Jellyfin, via $via)" }
     if ($S.View -ne 'chip') { Set-View 'chip' } else { Update-Ui }
 }
 

@@ -23,6 +23,10 @@
 #endif
 
 namespace viewmodel::chips {
+
+namespace {
+constexpr const char* kPcKeyApp = "AlicePET-JackIn-";
+}
 namespace {
 
 constexpr long long kTicksPerSecond = 10000000LL;
@@ -68,6 +72,9 @@ JellyfinChip::JellyfinChip(model::PetConfig config) : config_(std::move(config))
 
 JellyfinChip::~JellyfinChip() {
     if (player_ > 0) platform::proc::stop(player_, SIGTERM, 500);
+    if (!pc_key_.empty()) {
+        platform::net::http_request("DELETE", base_ + "/Auth/Keys/" + pc_key_, "", {auth_header()}, 1500);
+    }
     std::remove(mpv_conf_path_.c_str());
 }
 
@@ -518,6 +525,9 @@ void JellyfinChip::tick(uint32_t elapsed_ms) {
                 break;
             }
             pc_direct_ = result.direct;
+            pc_key_ = result.key;
+            const std::string direct_url =
+                result.key.empty() ? std::string() : result.text + "&api_key=" + platform::net::url_encode(result.key);
             play_method_ = result.direct ? "DirectPlay" : "Transcode";
             const double start = static_cast<double>(start_ticks_) / kTicksPerSecond;
             char nums[96];
@@ -528,7 +538,8 @@ void JellyfinChip::tick(uint32_t elapsed_ms) {
             char len[40];
             std::snprintf(len, sizeof(len), "\"length\":%.1f", length);
             pc_link::send("{\"t\":\"play\",\"kind\":\"video\",\"title\":\"" + platform::net::json_escape(pc_title()) +
-                          "\",\"url\":\"" + platform::net::json_escape(url) + "\"," + nums + "," + len +
+                          "\",\"url\":\"" + platform::net::json_escape(url) + "\",\"direct_url\":\"" +
+                          platform::net::json_escape(direct_url) + "\"," + nums + "," + len +
                           ",\"seekable\":" + (result.direct ? "true" : "false") + ",\"item\":\"" +
                           platform::net::json_escape(playing_.id) + "\"}");
             stream_info_ = std::string(result.direct ? "direct play" : "transcoding") + " on " + pc_link::host();
@@ -628,6 +639,32 @@ void JellyfinChip::start_pc_playback(long long start_ticks) {
         const std::string ids = "MediaSourceId=" + source_id + "&DeviceId=" + device + "&PlaySessionId=" + session;
         result.what = Result::What::PcStream;
         result.direct = direct;
+        // A key just for this play, so the PC can stream from Jellyfin itself
+        // without ever seeing the PET's own key. Jellyfin keys can't be scoped,
+        // so it lives only while the video plays: the PET deletes it on stop, and
+        // any left over from a crash (same app-name prefix) is deleted here first.
+        const auto keys = platform::net::http_get(base + "/Auth/Keys", {auth}, kTimeoutMs);
+        platform::json::Value list;
+        if (keys.ok && keys.status == 200 && platform::json::parse(keys.body, list)) {
+            for (const auto& k : list["Items"].items()) {
+                if (k["AppName"].str().rfind(kPcKeyApp, 0) == 0 && !k["AccessToken"].str().empty()) {
+                    platform::net::http_request("DELETE", base + "/Auth/Keys/" + k["AccessToken"].str(), "", {auth},
+                                                kTimeoutMs);
+                }
+            }
+            const std::string app = std::string(kPcKeyApp) + session;
+            const auto made = platform::net::http_request(
+                "POST", base + "/Auth/Keys?app=" + platform::net::url_encode(app), "", {auth}, kTimeoutMs);
+            const auto again =
+                made.ok && made.status / 100 == 2 ? platform::net::http_get(base + "/Auth/Keys", {auth}, kTimeoutMs)
+                                                  : platform::net::HttpResponse{};
+            platform::json::Value now;
+            if (again.ok && again.status == 200 && platform::json::parse(again.body, now)) {
+                for (const auto& k : now["Items"].items()) {
+                    if (k["AppName"].str() == app) result.key = k["AccessToken"].str();
+                }
+            }
+        }
         if (direct) {
             result.text = base + "/Videos/" + item + "/stream." + ext + "?Static=true&" + ids;
             result.name = "video." + ext;
@@ -666,8 +703,18 @@ void JellyfinChip::pc_tick() {
     if (pc_playing_ && !pc_link::connected()) finish_pc_playback();  // the PC went away
 }
 
+void JellyfinChip::revoke_pc_key() {
+    if (pc_key_.empty()) return;
+    results_.run([url = base_ + "/Auth/Keys/" + pc_key_, auth = auth_header()]() {
+        platform::net::http_request("DELETE", url, "", {auth}, kTimeoutMs);
+        return Result{Result::What::Position, {}, {}, "", -1, 0};  // ignored
+    });
+    pc_key_.clear();
+}
+
 void JellyfinChip::finish_pc_playback() {
     pc_playing_ = false;
+    revoke_pc_key();
     report("/Sessions/Playing/Stopped", position_ticks_, false);
     playing_.position_ticks = position_ticks_;
     for (auto& e : episodes_) {

@@ -106,6 +106,7 @@ private:
         size_t generation{0};
         bool direct{false};  // PcStream: the file itself (seekable) rather than a transcode
         std::string name{};  // PcStream: file name for the relay URL
+        std::string key{};   // PcStream: short-lived Jellyfin key for the PC's direct URL ("" = relay only)
     };
 
     void load_library();
@@ -116,6 +117,7 @@ private:
     void stop_playback();
     void start_pc_playback(long long start_ticks);
     void finish_pc_playback();
+    void revoke_pc_key();
     void pc_tick();
     std::string pc_title() const;
     void report(const char* endpoint, long long ticks, bool paused);
@@ -163,6 +165,7 @@ private:
     uint32_t report_ms_{0};
     std::string stream_info_;
     std::string play_method_{"Transcode"};
+    std::string pc_key_;  // Jellyfin key the PC streams with directly; revoked when the play ends
     bool pc_playing_{false};
     bool pc_direct_{false};
 

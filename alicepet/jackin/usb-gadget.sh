@@ -3,9 +3,10 @@
 #
 # JACK IN: turn the PET's USB-C port into a composite USB device for a PC:
 #   - a read-only drive "ALICEPET" holding the Jack In app (jackin.img)
-#   - a USB network link: RNDIS for Windows (config 1, with Microsoft OS
-#     descriptors so Windows binds its built-in driver), ECM for macOS/Linux
-#     (config 2). Both sit on bridge br-jack at 10.55.0.1/30; dnsmasq hands the
+#   - a USB network link in the single configuration c.1: RNDIS for Windows
+#     (with Microsoft OS descriptors so Windows binds its built-in driver) and
+#     ECM for macOS/Linux (native drivers, no install). Both sit on bridge
+#     br-jack at 10.55.0.1/30; dnsmasq hands the
 #     PC 10.55.0.2 with no gateway and no DNS, so the PC never routes through
 #     the PET. The PC app dials 10.55.0.1:7341.
 #
@@ -24,9 +25,12 @@ set -euo pipefail
 
 G=/sys/kernel/config/usb_gadget/alicepet
 APP_DIR=${ALICEPET_JACKIN_APP:-/usr/share/alicepet/jackin/windows}
+UNIX_APP_DIR=${ALICEPET_JACKIN_UNIX_APP:-/usr/share/alicepet/jackin/unix}
 IMAGE=${ALICEPET_JACKIN_IMAGE:-/var/lib/alicepet/jackin.img}
 IMAGE_MB=16
 BRIDGE=br-jack
+# USB-C mux LED: 1 = port acts as a device (gadget), 0 = hub/host. Written only if this sysfs LED exists.
+USB_MUX_LED=/sys/class/leds/ext_usb_gpio_fun/brightness
 PET_IP=10.55.0.1
 PC_IP=10.55.0.2
 PIDFILE=/run/alicepet-jackin-dnsmasq.pid
@@ -42,6 +46,7 @@ make_image() {
     command -v mkfs.vfat >/dev/null || die "mkfs.vfat missing (apt install dosfstools)"
     command -v mcopy >/dev/null || die "mcopy missing (apt install mtools)"
     [ -d "$APP_DIR" ] || die "no app folder at $APP_DIR"
+    [ -d "$UNIX_APP_DIR" ] || die "no mac/linux app folder at $UNIX_APP_DIR"
     mkdir -p "$(dirname "$IMAGE")"
     local tmp="$IMAGE.new"
     rm -f "$tmp"
@@ -49,8 +54,12 @@ make_image() {
     mkfs.vfat -n ALICEPET "$tmp" >/dev/null
     # Copy the app folder's contents to the root of the drive.
     MTOOLS_SKIP_CHECK=1 mcopy -s -i "$tmp" "$APP_DIR"/* ::/
+    # Mac/Linux launchers at the root too; the README is renamed so it does not
+    # replace the Windows one.
+    MTOOLS_SKIP_CHECK=1 mcopy -i "$tmp" "$UNIX_APP_DIR/JackIn.command" "$UNIX_APP_DIR/JackIn.sh" "$UNIX_APP_DIR/jackin-client.sh" ::/
+    MTOOLS_SKIP_CHECK=1 mcopy -i "$tmp" "$UNIX_APP_DIR/README.txt" ::/README-MAC-LINUX.txt
     mv "$tmp" "$IMAGE"
-    say "image $IMAGE from $APP_DIR"
+    say "image $IMAGE from $APP_DIR and $UNIX_APP_DIR"
 }
 
 # One up/down/image at a time: the app starts `up` and `down` from separate
@@ -69,6 +78,13 @@ gadget_ready() {
 }
 
 udc_name() { ls /sys/class/udc 2>/dev/null | head -n1 || true; }
+
+# 1 = USB-C mux to device, 0 = to hub. Skipped quietly when the LED is not on this board.
+set_usb_mux() {
+    if [ -e "$USB_MUX_LED" ]; then
+        echo "$1" >"$USB_MUX_LED" 2>/dev/null || say "could not set $USB_MUX_LED to $1"
+    fi
+}
 
 UP_UNFINISHED=0
 undo_failed_up() {
@@ -103,7 +119,7 @@ up() {
     udc=$(udc_name)
     [ -n "$udc" ] || die "no USB device controller (add dtoverlay=dwc2,dr_mode=peripheral to config.txt and reboot)"
     # A new package puts a newer app in $APP_DIR: rebuild the drive so the PC gets it.
-    if [ ! -f "$IMAGE" ] || [ -n "$(find "$APP_DIR" -newer "$IMAGE" -print -quit 2>/dev/null)" ]; then
+    if [ ! -f "$IMAGE" ] || [ -n "$(find "$APP_DIR" "$UNIX_APP_DIR" -newer "$IMAGE" -print -quit 2>/dev/null)" ]; then
         make_image
     fi
     modprobe libcomposite 2>/dev/null || true
@@ -161,7 +177,7 @@ up() {
     ln -s functions/mass_storage.0 configs/c.1/
     ln -s configs/c.1 os_desc/
 
-    echo 1 >/sys/class/leds/ext_usb_gpio_fun/brightness 2>/dev/null || true  # USB-C mux -> device
+    set_usb_mux 1
     echo "$udc" >UDC
     cd /
 
@@ -214,7 +230,7 @@ down() {
     [ -d "$G" ] || { say "already down"; return 0; }
     cd "$G"
     echo "" >UDC 2>/dev/null || true
-    echo 0 >/sys/class/leds/ext_usb_gpio_fun/brightness 2>/dev/null || true  # USB-C mux -> hub
+    set_usb_mux 0
     rm -f os_desc/c.1
     rm -f configs/c.1/rndis.usb0 configs/c.1/ecm.usb1 configs/c.1/mass_storage.0 configs/c.2/ecm.usb1 configs/c.2/mass_storage.0
     rmdir configs/c.1/strings/0x409 configs/c.2/strings/0x409 2>/dev/null || true

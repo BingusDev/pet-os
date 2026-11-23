@@ -142,7 +142,7 @@ public:
     int total_games() const { return total_; }
     bool loading_more() const { return loading_more_; }
     bool has_more() const { return next_offset_ < total_; }
-    // Games one Up/Down (or PC mouse-wheel notch) moves by.
+    // Games one Left/Right (a page) moves by.
     static constexpr size_t kPageStep = kMediaPageStep;
 
 private:

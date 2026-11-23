@@ -400,13 +400,13 @@ bool JellyfinChip::handle_key(Key key) {
             if (search_.empty()) return false;
             search_.clear();  // Esc clears a filter before it leaves the chip
             selected_ = 0;
-        } else if (key == Key::Left && selected_ > 0) {
+        } else if (key == Key::Up && selected_ > 0) {
             --selected_;
-        } else if (key == Key::Right && selected_ + 1 < count) {
+        } else if (key == Key::Down && selected_ + 1 < count) {
             ++selected_;
-        } else if (key == Key::Up && count) {
+        } else if (key == Key::Left && count) {
             selected_ = selected_ >= kMediaPageStep ? selected_ - kMediaPageStep : 0;
-        } else if (key == Key::Down && count) {
+        } else if (key == Key::Right && count) {
             selected_ = std::min(selected_ + kMediaPageStep, count - 1);
         } else if (key == Key::Enter && count) open_series();
         else if (key == Key::Tab) {
@@ -423,14 +423,14 @@ bool JellyfinChip::handle_key(Key key) {
     case View::Episodes:
         if (key == Key::Escape) {
             view_ = View::Library;
-        } else if (key == Key::Up && !episodes_.empty()) {
-            episode_ = episode_ >= kMediaPageStep ? episode_ - kMediaPageStep : 0;
-        } else if (key == Key::Down && !episodes_.empty()) {
-            episode_ = std::min(episode_ + kMediaPageStep, episodes_.size() - 1);
-        } else if (key == Key::Left && episode_ > 0) {
+        } else if (key == Key::Up && episode_ > 0) {
             --episode_;
-        } else if (key == Key::Right && episode_ + 1 < episodes_.size()) {
+        } else if (key == Key::Down && episode_ + 1 < episodes_.size()) {
             ++episode_;
+        } else if (key == Key::Left && !episodes_.empty()) {
+            episode_ = episode_ >= kMediaPageStep ? episode_ - kMediaPageStep : 0;
+        } else if (key == Key::Right && !episodes_.empty()) {
+            episode_ = std::min(episode_ + kMediaPageStep, episodes_.size() - 1);
         } else if (key == Key::Tab && seasons_.size() > 1) {
             // Season switch lives on TAB (as RETRO's TAB switches system), not Left/Right.
             season_ = (season_ + 1) % seasons_.size();

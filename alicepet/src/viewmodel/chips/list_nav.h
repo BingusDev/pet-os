@@ -10,13 +10,13 @@
 namespace viewmodel::chips {
 
 // List rules shared by the media chips (RETRO, JELLYFIN), so the same keys do the same
-// thing on both: Left/Right step one row, Up/Down move a page, Esc clears a filter
+// thing on both: Up/Down step one row, Left/Right move a page, Esc clears a filter
 // before it leaves the chip, Backspace drops a whole UTF-8 character.
 
 // Rows that fit under the chip header on the 320x170 panel.
 constexpr size_t kMediaListRows = 7;
-// Rows one Up/Down (or PC mouse-wheel notch) moves by.
-constexpr size_t kMediaPageStep = 3;
+// Rows one Left/Right moves by: a page, as many rows as the list shows.
+constexpr size_t kMediaPageStep = kMediaListRows;
 
 // The first row shown so `selected` stays in a `rows`-high window of `count` rows (centred, no overrun).
 inline size_t media_list_first(size_t count, size_t selected, size_t rows) {

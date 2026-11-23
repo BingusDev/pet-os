@@ -1088,10 +1088,14 @@ bool RetroChip::handle_key(Key key) {
             } else if (key == Key::Backspace && !search_.empty()) {
                 utf8_drop_last(search_);
                 selected_ = 0;
-            } else if (key == Key::Left && selected_ > 0) {
+            } else if (key == Key::Up && selected_ > 0) {
                 --selected_;
-            } else if (key == Key::Right && selected_ + 1 < count) {
+            } else if (key == Key::Down && selected_ + 1 < count) {
                 ++selected_;
+            } else if (key == Key::Left && count) {
+                selected_ = selected_ > kPageStep ? selected_ - kPageStep : 0;
+            } else if (key == Key::Right && count) {
+                selected_ = std::min(selected_ + kPageStep, count - 1);
             }
             maybe_load_more();
             break;
@@ -1104,11 +1108,11 @@ bool RetroChip::handle_key(Key key) {
             }
             return false;
         }
-        // Left/Right step one game; Up/Down (and the PC's mouse wheel) a screenful.
-        if (key == Key::Left && selected_ > 0) --selected_;
-        if (key == Key::Right && selected_ + 1 < count) ++selected_;
-        if (key == Key::Up) selected_ = selected_ > kPageStep ? selected_ - kPageStep : 0;
-        if (key == Key::Down && count > 0) selected_ = std::min(selected_ + kPageStep, count - 1);
+        // Up/Down step one game (and the PC's mouse wheel, one notch); Left/Right a page.
+        if (key == Key::Up && selected_ > 0) --selected_;
+        if (key == Key::Down && selected_ + 1 < count) ++selected_;
+        if (key == Key::Left) selected_ = selected_ > kPageStep ? selected_ - kPageStep : 0;
+        if (key == Key::Right && count > 0) selected_ = std::min(selected_ + kPageStep, count - 1);
         if (key == Key::Right || key == Key::Down) maybe_load_more();
         if (key == Key::Tab && !platforms_.empty()) {
             platform_ = (platform_ + 1) % platforms_.size();

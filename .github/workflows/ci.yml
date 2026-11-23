@@ -24,7 +24,7 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build libsdl2-dev libfmt-dev libjpeg-dev shellcheck netcat-openbsd
+          sudo apt-get install -y --no-install-recommends ninja-build libsdl2-dev libfmt-dev libjpeg-dev libpng-dev libfreetype-dev zlib1g-dev shellcheck netcat-openbsd
           pipx install 'cmake>=3.31'
       - name: Cache fetched dependencies
         uses: actions/cache@v4

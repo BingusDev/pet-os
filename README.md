@@ -31,7 +31,7 @@ the Mac mini. You can chat with her, run quick network checks, and slot
 | **LAN TECH** chip | Wall-jack tester: link, DHCP, gateway, DNS, speed, switch port; static-IP fallback, saved reports, device list with "who's new", ping and open ports | ✅ (not yet on hardware) |
 | **JACK IN** chip | PC sidekick over USB: read-only scan, Alice's fix, Full Access / admin / Share PC Internet clicked on the PC, live log, JACK OUT. The macOS/Linux client is read-only: scan, chat, and PC playback requests | 🚧 Windows: ran on the PC in earlier revs; the latest JackIn.ps1 STOP/timeout/handover fixes are read-verified only. macOS/Linux: verified only against a local stand-in, not on a real Mac or Linux PC |
 | **REMOTE** chip | IR learn and replay with LIRC `ir-ctl`, remotes and macros as text files | ✅ (not yet on hardware) |
-| **RETRO** chip | RomM library, download, RetroArch with per-platform cores, save sync | ✅ (not yet on hardware) |
+| **RETRO** chip | RomM library, download, RetroArch with per-platform cores, save sync | ✅ runs on the PET (rev23, no-desktop boot); save sync not yet checked against live RomM |
 
 <p align="center">
   <img src="alicepet/screenshots/netscan@3x.png" width="32%" alt="NET SCAN">

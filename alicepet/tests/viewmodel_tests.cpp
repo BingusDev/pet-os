@@ -110,8 +110,12 @@ void test_boot_and_hotkeys() {
     vm.tick(AliceViewModel::kBootDurationMs);
     CHECK(vm.screen() == Screen::Home);
 
-    vm.handle_char("2");
+    vm.handle_char("1");
     CHECK(vm.screen() == Screen::Folder);
+    vm.handle_key(Key::Escape);
+    CHECK(vm.screen() == Screen::Home);
+    vm.handle_char("2");
+    CHECK(vm.screen() == Screen::NetScan);
     vm.handle_key(Key::Escape);
     CHECK(vm.screen() == Screen::Home);
 }
@@ -119,7 +123,7 @@ void test_boot_and_hotkeys() {
 void test_folder_wraps() {
     AliceViewModel vm;
     booted(vm);
-    vm.handle_key(Key::Digit2);
+    vm.handle_key(Key::Digit1);
     const size_t count = model::chip_count();
     CHECK(vm.selected_chip() == 0);
     vm.handle_key(Key::Left);

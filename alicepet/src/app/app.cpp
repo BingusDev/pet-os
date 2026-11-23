@@ -472,7 +472,7 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
     advance(viewmodel::AliceViewModel::kBootDurationMs + 200);
     capture("home.png");
 
-    vm.handle_key(viewmodel::Key::Digit2);
+    vm.handle_key(viewmodel::Key::Digit1);
     advance(virtual_now + kStepMs);
     capture("folder.png");
 
@@ -493,7 +493,7 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
     vm.handle_char("q");
     advance(virtual_now + kStepMs);
     capture("sleep-woke.png");
-    vm.handle_key(viewmodel::Key::Digit2);
+    vm.handle_key(viewmodel::Key::Digit1);
     vm.handle_key(viewmodel::Key::Enter);
     advance(virtual_now + kStepMs);
 
@@ -536,7 +536,7 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         while (vm.screen() != viewmodel::Screen::Home) {
             vm.handle_key(viewmodel::Key::Escape);
         }
-        vm.handle_key(viewmodel::Key::Digit1);
+        vm.handle_key(viewmodel::Key::Digit2);
         pump_services(vm, chat, scanner);
         advance(virtual_now + kStepMs);
         capture("netscan-scanning.png");
@@ -887,7 +887,7 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         vm.handle_key(viewmodel::Key::Escape);
     }
     go_home();
-    vm.handle_key(viewmodel::Key::Digit2);
+    vm.handle_key(viewmodel::Key::Digit1);
     vm.handle_key(viewmodel::Key::Enter);
 
     // Optional: every chip in the folder and slotted, for review sheets.

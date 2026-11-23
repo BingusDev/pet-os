@@ -22,8 +22,8 @@ the Mac mini. You can chat with her, run quick network checks, and slot
 |---|---|---|
 | **Boot** | P.E.T. splash, connects to the Navi over Tailscale | ✅ |
 | **Navi Home** | Alice portrait, status bar (signal, battery, clock); type to chat with Alice | ✅ |
-| **[1] NET SCAN** | Checks home/store hosts in parallel; OK / REST / OFFLINE | ✅ |
-| **[2] Chip Folder** | MMBN cartridge carousel; ENTER slots a chip | ✅ |
+| **[1] Chip Folder** | MMBN cartridge carousel; ENTER slots a chip | ✅ |
+| **[2] NET SCAN** | Checks home/store hosts in parallel; OK / REST / OFFLINE | ✅ |
 | **Sleep** | ESC or idle turns the backlight off; any key wakes | ✅ |
 | **VOICE** chip | Push-to-talk → local Whisper on the Mac → Alice replies | ✅ |
 | **TERMINAL** chip | SSH bookmarks, built-in VT100 view, "Ask Alice" command suggestions (run only on Enter) | ✅ |

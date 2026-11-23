@@ -240,10 +240,10 @@ void AliceViewModel::handle_key(Key key) {
         } else if (input_.empty()) {
             // Digits are hotkeys only while the prompt is empty; once typing they are text.
             if (key == Key::Digit1) {
+                show(Screen::Folder);
+            } else if (key == Key::Digit2) {
                 show(Screen::NetScan);
                 if (!scanned_once_) request_scan();
-            } else if (key == Key::Digit2) {
-                show(Screen::Folder);
             } else if (key == Key::Digit3) {
                 open_chip(model::chip_index("voice"));
             }

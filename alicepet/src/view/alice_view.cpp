@@ -174,7 +174,7 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     lv_obj_t* home_footer = box(home_, 0, 154, 320, 16, kPanelBlue);
     set_border(home_footer, 1, kEdgeBlue);
     lv_obj_set_style_border_side(home_footer, LV_BORDER_SIDE_TOP, 0);
-    text(home_footer, "[1]NET [2]CHIP FOLDER [3]VOICE [ESC]sleep", fonts_.tiny, kHintBlue, 6, 1);
+    text(home_footer, "[1]CHIP FOLDER [2]NET [3]VOICE [ESC]sleep", fonts_.tiny, kHintBlue, 6, 1);
 
     // Bar + footer layout for the two chip screens follows mockups/chips.html:
     // 16px top bar, 14px footer, 11px Departure Mono text.

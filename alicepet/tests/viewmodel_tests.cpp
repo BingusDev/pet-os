@@ -769,7 +769,7 @@ void test_jack_session() {
     jack.on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk"})");
     CHECK(jack.connected() && jack.view() == JackInChip::View::Session);
     // The PET names its operator (never the Windows user) right after hello.
-    CHECK(!jack.sent.empty() && jack.sent[0] == R"({"t":"pet","operator":"Holden"})");
+    CHECK(!jack.sent.empty() && jack.sent[0] == R"({"t":"pet","operator":"Holden","control":false,"terminal":false})");
     jack.sent.clear();
     CHECK(!jack.full() && !jack.admin());
     CHECK(jack.keep_awake());
@@ -1004,7 +1004,9 @@ void test_pc_input_reaches_open_chip() {
         // The lines JackIn.ps1 sends (ConvertTo-Json -Compress of its ordered hashtables).
         jack.on_line(R"({"t":"hello","host":"HK-DESKTOP","os":"Windows 11","user":"hkrip","admin":false,"full":true,"input":true,"mode":"ask","app":"0.8"})");
         jack.on_line(R"({"t":"state","full":true,"admin":false,"net":false,"input":true,"mode":"ask"})");
+        jack.handle_char("k");  // the PET lets this PC open and drive chips
         jack.on_line(std::string(R"({"t":"open","chip":")") + id + "\"}");
+        if (std::string(id) == "terminal") jack.handle_char("k");  // Terminal needs its own [K]
         jack.on_line(R"({"t":"mirror","on":true})");
         viewmodel::drain_pc_requests(vm, nullptr);
         CHECK(vm.active_chip() == &probe);
@@ -1034,6 +1036,212 @@ void test_pc_input_reaches_open_chip() {
         viewmodel::drain_pc_requests(vm, pointer);
         CHECK(vm.active_chip() == &probe && probe.keys.size() == 9 && probe.entered == 2);
     }
+}
+
+// The PC can't give itself the PET: opening chips and typing into them need [K]
+// on the PET, Terminal needs its own [K], and both end with the session.
+void test_jack_pc_control_is_granted_on_the_pet() {
+    using viewmodel::chips::JackInChip;
+    model::PetConfig config;
+    config.jack_gadget_up.clear();
+    config.jack_gadget_down.clear();
+    config.bridge_url.clear();
+    JackInChip jack(config);
+    jack.capture_sent = true;
+    std::string id;
+    JackInChip::Input input;
+    // What any program on the PC can send: it says it has input, then opens Terminal and types.
+    jack.on_line(R"({"t":"hello","host":"STORE-PC","os":"Windows 11","user":"x","full":true,"input":true,"mode":"full"})");
+    CHECK(!jack.pc_control() && !jack.pc_terminal());
+    jack.on_line(R"({"t":"open","chip":"terminal"})");
+    jack.on_line(R"({"t":"key","k":"Enter"})");
+    jack.on_line(R"({"t":"char","c":"x"})");
+    jack.on_line(R"({"t":"pointer","x":1,"y":1,"b":"down"})");
+    CHECK(!jack.take_open(id) && !jack.take_input(input));
+    CHECK(jack.sent.back() == R"({"t":"denied","what":"control","chip":"terminal"})");
+    CHECK(jack.pc_wants() == "control" && jack.take_attention() && !jack.take_attention());
+    CHECK(jack.status().find("[K]") != std::string::npos);
+    // First [K]: chips, but never Terminal along with it.
+    jack.handle_char("k");
+    CHECK(jack.pc_control() && !jack.pc_terminal() && !jack.take_open(id));
+    CHECK(jack.sent[jack.sent.size() - 2] == R"({"t":"pet","operator":"Holden","control":true,"terminal":false})");
+    CHECK(jack.sent.back() == R"({"t":"denied","what":"terminal","chip":"terminal"})" && jack.pc_wants() == "terminal");
+    jack.on_line(R"({"t":"open","chip":"jellyfin"})");
+    CHECK(jack.take_open(id) && id == "jellyfin");
+    jack.on_line(R"({"t":"key","k":"Down"})");
+    CHECK(jack.take_input(input) && input.key == viewmodel::Key::Down);
+    jack.on_line(R"({"t":"open","chip":"terminal"})");
+    CHECK(!jack.take_open(id) && jack.pc_wants() == "terminal");
+    CHECK(jack.sent.back() == R"({"t":"denied","what":"terminal","chip":"terminal"})");
+    // Second [K]: Terminal, and the chip the PC was waiting for opens.
+    jack.handle_char("k");
+    CHECK(jack.pc_terminal() && jack.take_open(id) && id == "terminal" && jack.pc_wants().empty());
+    // [K] with nothing waiting takes it all back.
+    jack.handle_char("K");
+    CHECK(!jack.pc_control() && !jack.pc_terminal());
+    jack.on_line(R"({"t":"key","k":"Down"})");
+    CHECK(!jack.take_input(input));
+    // A PC that only reads still gets nothing typed, even with [K].
+    jack.handle_char("k");
+    jack.on_line(R"({"t":"state","full":false,"input":false,"mode":"read"})");
+    jack.on_line(R"({"t":"key","k":"Down"})");
+    CHECK(!jack.take_input(input));
+    // A new link (another program dialing in) starts without any grant.
+    jack.on_line(R"({"t":"state","full":true,"input":true,"mode":"full"})");
+    jack.on_line(R"({"t":"open","chip":"terminal"})");
+    jack.handle_char("k");
+    CHECK(jack.pc_terminal());
+    jack.on_line(R"({"t":"hello","host":"STORE-PC","os":"Windows 11","user":"x","full":true,"input":true,"mode":"full"})");
+    CHECK(!jack.pc_control() && !jack.pc_terminal() && jack.pc_wants().empty());
+    // [jackin] pc_control=on: chips from the start, Terminal still asks every session.
+    config.jack_pc_control = true;
+    JackInChip trusted(config);
+    trusted.capture_sent = true;
+    trusted.on_line(R"({"t":"hello","host":"HK-DESKTOP","os":"Windows 11","user":"hk","full":true,"input":true,"mode":"ask"})");
+    CHECK(trusted.pc_control() && !trusted.pc_terminal());
+    trusted.on_line(R"({"t":"open","chip":"retro"})");
+    CHECK(trusted.take_open(id) && id == "retro");
+    trusted.on_line(R"({"t":"open","chip":"terminal"})");
+    CHECK(!trusted.take_open(id) && trusted.pc_wants() == "terminal");
+    trusted.handle_char("k");
+    CHECK(trusted.take_open(id) && id == "terminal");
+    // The chat header leaves most of the bridge's 600 characters to the message.
+    const std::string asked(380, 'q');
+    const std::string prompt = JackInChip::chat_prompt("LAPTOP-FRONT", "full", asked);
+    CHECK(prompt.size() <= viewmodel::chips::kBridgeMaxInput);
+    CHECK(prompt.find(asked) != std::string::npos);
+}
+
+// A PC that stops reading (a Yes/No box is open there) must not freeze the PET
+// or lose the link: frames are skipped, other lines wait and arrive in order.
+void test_jack_link_send_never_blocks() {
+    using platform::jack::LineServer;
+    LineServer server;
+    int port = 0;
+    for (int p = 47400 + static_cast<int>(::getpid() % 500); p < 48400 && port == 0; ++p) {
+        if (server.listen("127.0.0.1", p).empty()) port = p;
+    }
+    CHECK(port != 0);
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    CHECK(::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+    for (int i = 0; i < 50 && !server.connected(); ++i) {
+        server.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    CHECK(server.connected());
+    const std::string frame = "F" + std::string(8000, 'f');
+    const auto start = std::chrono::steady_clock::now();
+    int sent_frames = 0;
+    int refused = 0;
+    for (int i = 0; i < 2000; ++i) {
+        if (server.send(frame, true)) ++sent_frames;
+        else ++refused;
+    }
+    CHECK(server.send("LAST", false));  // a control line still queues behind the frames
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    CHECK(ms < 1500.0);                 // 16 MB offered to a reader that reads nothing: no 2 s waits
+    CHECK(refused > 0 && sent_frames > 0);
+    CHECK(server.connected());
+    CHECK(server.backlog() <= LineServer::kDropBacklog + 2 * frame.size());
+    // The PC reads again: every line that was accepted arrives whole and in order.
+    std::string got;
+    char buf[65536];
+    for (int i = 0; i < 4000 && got.find("LAST\n") == std::string::npos; ++i) {
+        server.poll();
+        const ssize_t n = ::recv(fd, buf, sizeof(buf), MSG_DONTWAIT);
+        if (n > 0) got.append(buf, static_cast<size_t>(n));
+        else std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    CHECK(got.size() == static_cast<size_t>(sent_frames) * (frame.size() + 1) + 5);
+    CHECK(got.compare(got.size() - 5, 5, "LAST\n") == 0);
+    CHECK(server.backlog() == 0);
+    ::close(fd);
+}
+
+void test_decode_chunked_bounds() {
+    using platform::net::decode_chunked;
+    CHECK(decode_chunked("5\r\nhello\r\n3\r\nabc\r\n0\r\n\r\n") == "helloabc");
+    // A chunk size that wraps the position (it used to loop forever, growing the body).
+    const std::string evil = "ffffffffffffffec\r\n" + std::string(4000, 'x');
+    CHECK(decode_chunked(evil).size() <= evil.size());
+    CHECK(decode_chunked("ffffffffffffffff\r\nabc") == "abc");
+    CHECK(decode_chunked("10\r\nshort") == "short");  // cut-off reply: what arrived is kept
+    CHECK(decode_chunked("zz\r\nabc").empty());
+}
+
+// A game started before RomM said which saves it has: the PET's save is not
+// uploaded over whatever RomM holds until a fresh check allows it.
+void test_retro_unknown_saves_are_not_overwritten() {
+    using viewmodel::chips::RetroChip;
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("alicepet-retro-unknown-" + std::to_string(::getpid()));
+    fs::remove_all(dir);
+    fs::create_directories(dir / "gba" / "saves");
+    const fs::path save = dir / "gba" / "saves" / "G.srm";
+    const fs::path marker = dir / "gba" / "saves" / "G.srm.conflict";
+    std::ofstream(dir / "gba" / "G.gba") << "rom";
+    std::ofstream(save) << "old";
+    fs::last_write_time(save, fs::file_time_type::clock::now() - std::chrono::hours(1));
+    const fs::path player = dir / "player.sh";
+    std::ofstream(player) << "#!/bin/sh\nsleep 0.2\necho played > \"$1/G.srm\"\n";
+    fs::permissions(player, fs::perms::owner_all);
+
+    model::PetConfig config;
+    config.romm_url = "http://127.0.0.1:9";  // nothing listens: every request fails at once
+    config.retro_dir = dir.string();
+    config.retro_cores["gba"] = "core";
+    config.retro_player = player.string() + " {savedir}";
+    RetroChip retro(config);
+    const auto wait_until = [&](const std::function<bool()>& done) {
+        for (int i = 0; i < 400 && !done(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            retro.tick(10);
+        }
+        return done();
+    };
+    RetroChip::Result games;
+    games.what = RetroChip::Result::What::Games;
+    RetroChip::Game game;
+    game.id = 1;
+    game.name = "G";
+    game.file = "G.gba";
+    game.platform = "gba";
+    games.games.push_back(game);
+    retro.on_result(games);
+    retro.handle_key(Key::Enter);  // details: asks RomM for its saves
+    retro.handle_key(Key::Enter);  // play at once, before (or just as) the answer comes
+    // It either waited for the check or started after it failed; never on a guess.
+    CHECK(wait_until([&] { return retro.view() == RetroChip::View::Playing; }));
+    CHECK(wait_until([&] { return retro.view() != RetroChip::View::Playing; }));
+    // RomM couldn't be asked afterwards either: the changed save stays on the PET.
+    CHECK(wait_until([&] { return retro.status() == "save kept on the PET: couldn't check RomM"; }));
+    CHECK(!fs::exists(marker));
+
+    // Same again, but this time the check after the play answers: RomM holds a
+    // save newer than the one the PET started from, so both are kept.
+    fs::last_write_time(save, fs::file_time_type::clock::now() - std::chrono::hours(1));
+    retro.handle_key(Key::Enter);
+    CHECK(wait_until([&] { return retro.view() == RetroChip::View::Playing; }));
+    CHECK(wait_until([&] { return retro.view() != RetroChip::View::Playing; }));
+    CHECK(wait_until([&] { return retro.status() == "save kept on the PET: couldn't check RomM"; }));
+    RetroChip::Result check;
+    check.what = RetroChip::Result::What::Saves;
+    check.rom_id = 1;
+    check.then_push = true;
+    RetroChip::Save remote;
+    remote.id = 7;
+    remote.file_name = "G.srm";
+    remote.updated = static_cast<long long>(std::time(nullptr)) - 600;  // ten minutes ago, PET started from an hour-old save
+    check.saves.push_back(remote);
+    retro.on_result(check);
+    CHECK(retro.status() == "save kept on the PET: RomM has a different one");
+    CHECK(fs::exists(marker));
+    retro.leave();
+    fs::remove_all(dir);
 }
 
 void test_retro_pagination_and_cache() {
@@ -1386,6 +1594,10 @@ int main() {
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"wrap", test_wrap},
         {"pc_input_reaches_open_chip", test_pc_input_reaches_open_chip},
+        {"jack_pc_control_is_granted_on_the_pet", test_jack_pc_control_is_granted_on_the_pet},
+        {"jack_link_send_never_blocks", test_jack_link_send_never_blocks},
+        {"decode_chunked_bounds", test_decode_chunked_bounds},
+        {"retro_unknown_saves_are_not_overwritten", test_retro_unknown_saves_are_not_overwritten},
         {"screen_text", test_screen_text},
         {"clip_for_bridge", test_clip_for_bridge},
         {"boot_and_hotkeys", test_boot_and_hotkeys},

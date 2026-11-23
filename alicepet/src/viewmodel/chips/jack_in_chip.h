@@ -19,6 +19,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -43,7 +44,9 @@ struct Progress {
     std::string item;
     double pos{0};
     bool paused{false};
-    std::string state;  // "playing", "stopped", "ended", "error"
+    // "playing", "stopped", "ended", "error", or "handoff": the PC gave the stream
+    // to a player that reports nothing back (playback goes on, unwatched).
+    std::string state;
     std::string error;
 };
 bool take_progress(Progress& progress);
@@ -56,7 +59,10 @@ bool take_progress(Progress& progress);
 // PowerShell fix, which [↵] sends to the PC. Everything that can change the PC
 // is decided on the PC: Full Access, admin (UAC) and Share PC Internet are
 // clicked there. The PET can only ask ([F] [A] [N]), take access away again,
-// or [X] JACK OUT, which closes the PC app. Protocol: alicepet/jackin/PROTOCOL.md.
+// or [X] JACK OUT, which closes the PC app. Everything that lets the PC use the
+// PET is decided on the PET: [K] lets the PC open and drive chips, and Terminal
+// (the PET's SSH keys) needs its own [K] in every session.
+// Protocol: alicepet/jackin/PROTOCOL.md.
 class JackInChip : public ChipModule {
 public:
     enum class View { Waiting, Session, Log };
@@ -129,6 +135,18 @@ public:
     static int agent_cap(const std::string& mode) { return mode == "full" ? kAgentMaxStepsFull : kAgentMaxSteps; }
     bool agent_holding() const { return !agent_held_.empty(); }
     int relay_active() const { return relay_.active(); }
+    // PET-side grants (never taken from the PC's word): the PC may open and
+    // drive chips / may open Terminal. Both end with the session.
+    bool pc_control() const { return pc_control_; }
+    bool pc_terminal() const { return pc_terminal_; }
+    // What the PC is waiting for Holden to allow with [K]: "", "control" or "terminal".
+    const std::string& pc_wants() const { return pc_wants_; }
+    // True once after something on the PET screen needs Holden (the app lights the panel).
+    bool take_attention() {
+        const bool a = attention_;
+        attention_ = false;
+        return a;
+    }
 
     // One control line from the PC (public for tests and snapshots).
     void on_line(const std::string& line);
@@ -199,7 +217,11 @@ public:
     void send_line(const std::string& json) { send(json); }
 
 private:
-    void send(const std::string& json);
+    bool send(const std::string& json, bool droppable = false);
+    void send_pet();
+    void grant_key();
+    void deny_open(const std::string& chip, const char* what);
+    void submit_gadget(bool up);
     void note(const std::string& text, LogLine::Kind kind = LogLine::Kind::Note);
     void ask(const char* what);
     void drop(const char* what);
@@ -213,7 +235,7 @@ private:
     void set_sharing(bool on);
     void try_listen();
     void send_chips();
-    void send_frame_band(const std::string& screen, int w, int h, const std::vector<uint16_t>& px, int y0, int y1);
+    bool send_frame_band(const std::string& screen, int w, int h, const std::vector<uint16_t>& px, int y0, int y1);
 
     model::PetConfig config_;
     View view_{View::Waiting};
@@ -239,7 +261,8 @@ private:
     std::string status_;
 
     bool usb_ok_{false};
-    bool usb_busy_{false};
+    bool usb_want_up_{false};      // the last gadget job asked for: up (the chip is slotted) or down
+    size_t usb_up_seq_{0};         // the newest "up" job; older results are ignored
     bool usb_no_pc_{false};        // gadget up but no PC on the cable for a while
     uint32_t udc_check_ms_{0};
     uint32_t unattached_ms_{0};
@@ -247,10 +270,24 @@ private:
     std::string usb_status_;
     struct GadgetResult {
         bool up{false};
+        size_t seq{0};
         int code{0};
         std::string text;
     };
-    Mailbox<GadgetResult> gadget_;
+    // usb-gadget.sh up/down run one at a time, in the order asked, on one worker.
+    // (One detached thread per job let a "down" overtake the "up" before it.)
+    struct GadgetQueue {
+        struct Job {
+            bool up{false};
+            size_t seq{0};
+            std::string cmd;
+        };
+        std::mutex mutex;
+        std::deque<Job> jobs;
+        std::deque<GadgetResult> done;
+        bool running{false};
+    };
+    std::shared_ptr<GadgetQueue> gadget_;
 
     bool alice_waiting_{false};
     bool alice_asked_{false};
@@ -261,7 +298,8 @@ private:
 
     // Chat from the PC app ({"t":"chat"} / {"t":"voice"}), relayed to Alice by the PET.
     bool chat_waiting_{false};
-    Mailbox<BridgeReply> chat_;
+    size_t chat_generation_{0};  // a reply asked in an earlier session is dropped
+    Mailbox<std::pair<size_t, BridgeReply>> chat_;
     std::string mode_{"read"};
     bool agent_running_{false};   // a chat message's command loop is going
     int agent_steps_{0};          // commands sent for the current chat message
@@ -279,7 +317,12 @@ private:
 
     std::filesystem::path art_dir_;
     bool switching_{false};
-    bool input_ok_{false};          // PC mode is Ask or Full (never Read)
+    bool input_ok_{false};          // PC mode is Ask or Full (never Read); the PC's own word
+    bool pc_control_{false};        // Holden allowed this PC to open and drive chips ([K])
+    bool pc_terminal_{false};       // ... and to open Terminal ([K] again, every session)
+    std::string pc_wants_;          // "control" / "terminal": the PC asked, [K] decides
+    std::string pc_wants_chip_;     // the chip that request was for
+    bool attention_{false};
     bool mirror_on_{false};         // the PC window is visible and wants frames
     std::deque<std::string> opening_;
     std::deque<Input> inputs_;

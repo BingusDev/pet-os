@@ -194,7 +194,7 @@ bool JackInChip::pc_capable(const std::string& chip_id) {
 }
 
 JackInChip::JackInChip(model::PetConfig config)
-    : config_(std::move(config)), opens_(std::make_shared<Opens>()) {
+    : config_(std::move(config)), gadget_(std::make_shared<GadgetQueue>()), opens_(std::make_shared<Opens>()) {
     g_jack = this;
 }
 
@@ -220,16 +220,10 @@ void JackInChip::enter() {
     if (config_.jack_gadget_up.empty()) {
         usb_ok_ = true;
         usb_status_ = "USB not managed";
-    } else if (!usb_busy_) {
-        usb_busy_ = true;
+    } else if (!usb_want_up_) {
         usb_ok_ = false;
         usb_status_ = "switching USB to device mode...";
-        gadget_.run([cmd = config_.jack_gadget_up]() {
-            GadgetResult r;
-            r.up = true;
-            r.code = platform::proc::run_capture(platform::proc::split_command(cmd), r.text, kGadgetTimeoutMs);
-            return r;
-        });
+        submit_gadget(true);
     }
     listen_retry_ms_ = 0;
     try_listen();
@@ -242,15 +236,47 @@ void JackInChip::leave() {
     // Leaving the chip ends the session and gives the USB port back.
     if (connected_) jack_out("PET left JACK IN");
     server_.close();
-    if (!config_.jack_gadget_down.empty()) {
-        gadget_.run([cmd = config_.jack_gadget_down]() {
-            GadgetResult r;
-            r.code = platform::proc::run_capture(platform::proc::split_command(cmd), r.text, kGadgetTimeoutMs);
-            return r;
-        });
-    }
+    submit_gadget(false);
     usb_ok_ = false;
     usb_status_.clear();
+}
+
+// Queues a gadget job behind any that is running. A re-enter while the last
+// "down" is still waiting simply runs "up" after it, so the screen never says
+// ready for a port that was just taken down.
+void JackInChip::submit_gadget(bool up) {
+    usb_want_up_ = up;
+    GadgetQueue::Job job;
+    job.up = up;
+    job.cmd = up ? config_.jack_gadget_up : config_.jack_gadget_down;
+    if (job.cmd.empty()) return;
+    std::lock_guard<std::mutex> lock(gadget_->mutex);
+    static size_t next_seq = 0;
+    job.seq = ++next_seq;
+    if (up) usb_up_seq_ = job.seq;
+    gadget_->jobs.push_back(std::move(job));
+    if (gadget_->running) return;
+    gadget_->running = true;
+    std::thread([queue = gadget_]() {
+        for (;;) {
+            GadgetQueue::Job next;
+            {
+                std::lock_guard<std::mutex> inner(queue->mutex);
+                if (queue->jobs.empty()) {
+                    queue->running = false;
+                    return;
+                }
+                next = std::move(queue->jobs.front());
+                queue->jobs.pop_front();
+            }
+            GadgetResult r;
+            r.up = next.up;
+            r.seq = next.seq;
+            r.code = platform::proc::run_capture(platform::proc::split_command(next.cmd), r.text, kGadgetTimeoutMs);
+            std::lock_guard<std::mutex> inner(queue->mutex);
+            queue->done.push_back(std::move(r));
+        }
+    }).detach();
 }
 
 void JackInChip::try_listen() {
@@ -276,7 +302,7 @@ void JackInChip::on_line(const std::string& line) {
         mode_ = msg["mode"].str(full_ ? "full" : "read");
         view_ = View::Session;
         note("linked to " + host_ + (admin_ ? " (admin)" : "") + (full_ ? ", full access" : ", read-only"));
-        send("{\"t\":\"pet\",\"operator\":\"" + json_escape(config_.jack_operator) + "\"}");
+        send_pet();
         send_chips();
     } else if (t == "scan") {
         scan_ = Scan{};
@@ -331,11 +357,17 @@ void JackInChip::on_line(const std::string& line) {
             }
         }
     } else if (t == "open") {
+        // Opening a chip uses the PET's own logins (SSH keys, Jellyfin, RomM), so
+        // the PET decides, not the PC: [K] allows chips, and Terminal needs its own.
         const std::string id = msg["chip"].str();
-        if (pc_capable(id)) {
-            opening_.push_back(id);
-        } else {
+        if (!pc_capable(id)) {
             note("PC asked for a chip that stays on the PET", LogLine::Kind::Fail);
+        } else if (!pc_control_) {
+            deny_open(id, "control");
+        } else if (id == "terminal" && !pc_terminal_) {
+            deny_open(id, "terminal");
+        } else {
+            opening_.push_back(id);
         }
     } else if (t == "home") {
         // The PC app's HOME: leave the PC-opened chip (stopping its player) and
@@ -347,12 +379,12 @@ void JackInChip::on_line(const std::string& line) {
         mirror_on_ = on;
     } else if (t == "key") {
         Key key{Key::Enter};
-        if (input_ok_ && key_from_name(msg["k"].str(), key) && inputs_.size() < 256) {
+        if (input_ok_ && pc_control_ && key_from_name(msg["k"].str(), key) && inputs_.size() < 256) {
             inputs_.push_back({false, key, ""});
         }
     } else if (t == "pointer") {
         const std::string b = msg["b"].str();
-        if (input_ok_ && (b == "down" || b == "up") && inputs_.size() < 256) {
+        if (input_ok_ && pc_control_ && (b == "down" || b == "up") && inputs_.size() < 256) {
             Input in;
             in.pointer = true;
             in.down = b == "down";
@@ -364,7 +396,7 @@ void JackInChip::on_line(const std::string& line) {
         }
     } else if (t == "char") {
         const std::string c = msg["c"].str();
-        if (input_ok_ && !c.empty() && c.size() <= 4 && inputs_.size() < 256) {
+        if (input_ok_ && pc_control_ && !c.empty() && c.size() <= 4 && inputs_.size() < 256) {
             inputs_.push_back({true, Key::Enter, c});
         }
     } else if (t == "log") {
@@ -397,6 +429,11 @@ void JackInChip::on_line(const std::string& line) {
             const std::string text = trim(msg["text"].str());
             if (!text.empty()) {
                 note(config_.jack_operator + ": " + AliceViewModel::screen_text(text));
+                // Say so when the bridge's 600 characters won't hold all of it.
+                const std::string prompt = chat_prompt(host_, mode_, text);
+                if (clip_for_bridge(prompt).size() < prompt.size()) {
+                    note("that message was too long: Alice only got the start of it", LogLine::Kind::Fail);
+                }
                 agent_running_ = true;
                 agent_steps_ = 0;
                 agent_id_ = 0;
@@ -415,7 +452,9 @@ void JackInChip::on_line(const std::string& line) {
                 agent_held_.clear();
                 chat_waiting_ = true;
                 alice_waiting_ = true;
-                chat_.run([config = config_, wav = std::move(wav)]() { return bridge_voice(config, wav); });
+                chat_.run([config = config_, wav = std::move(wav), gen = chat_generation_]() {
+                    return std::make_pair(gen, bridge_voice(config, wav));
+                });
             } else {
                 send(R"({"t":"alice","ok":false,"text":"That recording didn't come through. Try again?","heard":"","cmd":""})");
             }
@@ -456,6 +495,11 @@ void JackInChip::reset_session() {
     agent_held_.clear();
     mode_ = "read";
     input_ok_ = false;
+    pc_control_ = config_.jack_pc_control;
+    pc_terminal_ = false;
+    pc_wants_.clear();
+    pc_wants_chip_.clear();
+    ++chat_generation_;  // an answer still on its way belongs to the session that just ended
     mirror_on_ = false;
     pc_chip_.clear();
     media_.stop();
@@ -502,9 +546,65 @@ void JackInChip::set_sharing(bool on) {
 
 // --- PET -> PC -------------------------------------------------------------------
 
-void JackInChip::send(const std::string& json) {
-    if (capture_sent) sent.push_back(json);
-    server_.send(json);
+bool JackInChip::send(const std::string& json, bool droppable) {
+    if (capture_sent) {
+        sent.push_back(json);
+        return true;
+    }
+    return server_.send(json, droppable);
+}
+
+// Who runs the PET and what this PC may do with it (sent at link and on every change).
+void JackInChip::send_pet() {
+    send("{\"t\":\"pet\",\"operator\":\"" + json_escape(config_.jack_operator) + "\",\"control\":" +
+         (pc_control_ ? "true" : "false") + ",\"terminal\":" + (pc_terminal_ ? "true" : "false") + "}");
+}
+
+void JackInChip::deny_open(const std::string& chip, const char* what) {
+    pc_wants_ = what;
+    pc_wants_chip_ = chip;
+    attention_ = true;
+    const bool terminal = std::string(what) == "terminal";
+    note(terminal ? "PC asked for TERMINAL (your SSH keys): waiting for [K] here"
+                  : "PC asked to open a chip: waiting for [K] here",
+         LogLine::Kind::Fail);
+    status_ = terminal ? "PC wants TERMINAL (your SSH keys): [K] allows" : "PC wants to open chips: [K] allows it";
+    send(std::string("{\"t\":\"denied\",\"what\":\"") + what + "\",\"chip\":\"" + json_escape(chip) + "\"}");
+}
+
+// [K] on the PET: allow what the PC is waiting for, or switch PC control on/off.
+void JackInChip::grant_key() {
+    if (pc_wants_ == "terminal" && pc_control_) {
+        pc_terminal_ = true;
+        note("you let the PC open TERMINAL for this session");
+    } else if (!pc_control_) {
+        pc_control_ = true;
+        note("you let the PC open and drive chips");
+        // Terminal is never part of the first [K]: it is asked for by name.
+        if (pc_wants_chip_ == "terminal") {
+            pc_wants_ = "terminal";
+            status_ = "PC wants TERMINAL (your SSH keys): [K] allows";
+            attention_ = true;
+            send_pet();
+            send(R"({"t":"denied","what":"terminal","chip":"terminal"})");
+            return;
+        }
+    } else {
+        pc_control_ = false;
+        pc_terminal_ = false;
+        inputs_.clear();
+        note("you took chip control back from the PC");
+        status_ = "PC can no longer open or drive chips";
+        pc_wants_.clear();
+        pc_wants_chip_.clear();
+        send_pet();
+        return;
+    }
+    status_.clear();
+    send_pet();
+    if (!pc_wants_chip_.empty() && (pc_wants_chip_ != "terminal" || pc_terminal_)) opening_.push_back(pc_wants_chip_);
+    pc_wants_.clear();
+    pc_wants_chip_.clear();
 }
 
 void JackInChip::note(const std::string& text, LogLine::Kind kind) {
@@ -588,7 +688,9 @@ void JackInChip::on_chat_reply(const BridgeReply& reply) {
 void JackInChip::ask_chat(const std::string& prompt) {
     chat_waiting_ = true;
     alice_waiting_ = true;
-    chat_.run([config = config_, prompt = clip_for_bridge(prompt)]() { return bridge_ask(config, prompt); });
+    chat_.run([config = config_, prompt = clip_for_bridge(prompt), gen = chat_generation_]() {
+        return std::make_pair(gen, bridge_ask(config, prompt));
+    });
 }
 
 void JackInChip::agent_run(const std::string& command) {
@@ -627,11 +729,12 @@ void JackInChip::run_suggestion() {
 
 void JackInChip::jack_out(const std::string& why) {
     send("{\"t\":\"jackout\",\"why\":\"" + json_escape(why) + "\"}");
+    server_.flush(300);  // the PC has to see this line before the socket closes
     server_.drop_client();
     reset_session();
     note("jacked out");
     view_ = View::Waiting;
-    status_ = "Jacked out. The PC app closed and left nothing behind.";
+    status_ = "Jacked out. The PC app closed.";
     touch();
 }
 
@@ -697,6 +800,8 @@ void JackInChip::handle_char(const std::string& utf8) {
         status_ = "rescanning the PC...";
     } else if (c == '?' && !alice_waiting_ && scan_.have) {
         ask_alice();
+    } else if (c == 'k') {
+        grant_key();
     } else if (c == 'x') {
         jack_out("JACK OUT on the PET");
         return;
@@ -709,10 +814,14 @@ void JackInChip::handle_char(const std::string& utf8) {
 // --- tick ------------------------------------------------------------------------
 
 void JackInChip::tick(uint32_t elapsed_ms) {
-    GadgetResult g;
-    while (gadget_.poll(g)) {
-        if (!g.up) continue;
-        usb_busy_ = false;
+    std::deque<GadgetResult> gadget_done;
+    {
+        std::lock_guard<std::mutex> lock(gadget_->mutex);
+        gadget_done.swap(gadget_->done);
+    }
+    for (const auto& g : gadget_done) {
+        // Only the newest "up" counts, and only while the chip still wants the port up.
+        if (!g.up || !usb_want_up_ || g.seq != usb_up_seq_) continue;
         usb_ok_ = g.code == 0;
         usb_status_ = usb_ok_ ? "USB: drive + network ready" : "USB: " + first_line(g.text.empty() ? "gadget setup failed" : g.text);
         listen_retry_ms_ = 0;
@@ -747,9 +856,9 @@ void JackInChip::tick(uint32_t elapsed_ms) {
     while (alice_.poll(reply)) {
         if (reply.first == alice_generation_) on_alice_reply(reply.second);
     }
-    BridgeReply chat;
+    std::pair<size_t, BridgeReply> chat;
     while (chat_.poll(chat)) {
-        if (connected_) on_chat_reply(chat);
+        if (connected_ && chat.first == chat_generation_) on_chat_reply(chat.second);
     }
 }
 
@@ -822,11 +931,10 @@ std::string JackInChip::alice_prompt(const std::string& host, const std::string&
 
 namespace {
 const char* mode_rule(const std::string& mode) {
-    if (mode == "full") return "FULL: commands run at once, except destructive ones (delete, kill, uninstall, "
-                               "registry/boot/user/policy changes), which Holden must OK on the PC";
-    if (mode == "ask") return "ASK: Holden OKs each command on the PC before it runs";
-    return "READ: only read-only commands run (Get-*, Test-*, sort/select/format, ipconfig, whoami, "
-           "systeminfo, tasklist...); anything else is refused";
+    // Kept short: the bridge takes 600 characters and the rest is Holden's message.
+    if (mode == "full") return "FULL: commands run at once; destructive ones need Holden's OK";
+    if (mode == "ask") return "ASK: Holden OKs each command";
+    return "READ: only read-only commands run (Get-*, Test-*, ipconfig...)";
 }
 std::string upper(std::string v) {
     std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return std::toupper(c); });
@@ -835,9 +943,9 @@ std::string upper(std::string v) {
 }  // namespace
 
 std::string JackInChip::chat_prompt(const std::string& host, const std::string& mode, const std::string& text) {
-    return "[PET JACK IN on " + host + ", mode " + mode_rule(mode) +
-           ". You can run PowerShell on that PC: put ONE line 'CMD: <command>' FIRST in your reply. Its output comes "
-           "back to you automatically; then continue. Reply with no CMD when done. Brief plain text, no markdown.] " +
+    return "[JACK IN on " + host + ", " + mode_rule(mode) +
+           ". To run PowerShell there put ONE line 'CMD: <command>' first; its output comes back to you. "
+           "No CMD when done. Brief, no markdown.] " +
            text;
 }
 
@@ -961,7 +1069,12 @@ void JackInChip::offer_frame(const uint8_t* argb, uint32_t stride, int w, int h,
             }
             ++end;
         }
-        send_frame_band(screen, w, h, px, y, end);
+        if (!send_frame_band(screen, w, h, px, y, end)) {
+            // The PC isn't reading (a Yes/No box is up there): skip the rest and
+            // start from a whole picture once it reads again.
+            px.clear();
+            break;
+        }
         y = end;
     }
     last_px_ = std::move(px);
@@ -986,13 +1099,14 @@ bool JackInChip::timing_log_due(std::chrono::steady_clock::time_point& next, dou
     return true;
 }
 
-void JackInChip::send_frame_band(const std::string& screen, int w, int h, const std::vector<uint16_t>& px, int y0,
+bool JackInChip::send_frame_band(const std::string& screen, int w, int h, const std::vector<uint16_t>& px, int y0,
                                  int y1) {
     const size_t from = static_cast<size_t>(y0) * w;
     const std::string rle = rle_rgb565(px, from, static_cast<size_t>(y1 - y0) * w);
-    send("{\"t\":\"frame\",\"screen\":\"" + json_escape(screen) + "\",\"w\":" + std::to_string(w) +
-         ",\"h\":" + std::to_string(h) + ",\"y\":" + std::to_string(y0) + ",\"n\":" +
-         std::to_string(y1 - y0) + ",\"rle\":\"" + base64_encode(rle) + "\"}");
+    return send("{\"t\":\"frame\",\"screen\":\"" + json_escape(screen) + "\",\"w\":" + std::to_string(w) +
+                ",\"h\":" + std::to_string(h) + ",\"y\":" + std::to_string(y0) + ",\"n\":" +
+                std::to_string(y1 - y0) + ",\"rle\":\"" + base64_encode(rle) + "\"}",
+                true);
 }
 
 } // namespace viewmodel::chips

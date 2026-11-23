@@ -220,8 +220,11 @@ void JackInView::render_session(const JackInChip& jack) {
     if (!jack.status().empty()) {
         text(body_, clip_cols(jack.status(), kCols), fonts_.small, kYellow, kLeft, 139 - kRowH + 1);
     }
-    lv_label_set_text(frame_.footer, has_fix ? "[↵]run fix [F]full [A]admin [L]log [X]OUT"
-                                             : "[F]full [A]admin [N]net [L]log [X]JACK OUT");
+    // [K] is shown as what it would do next: allow the PC to drive chips, or take that back.
+    const char* k = jack.pc_control() && jack.pc_wants().empty() ? "[K]pc off" : "[K]pc on";
+    const std::string footer = has_fix ? std::string("[↵]fix [F]full [A]adm ") + k + " [L]log [X]OUT"
+                                       : std::string("[F]full [A]adm [N]net ") + k + " [L]log [X]OUT";
+    lv_label_set_text(frame_.footer, footer.c_str());
 }
 
 void JackInView::render_log(const JackInChip& jack) {

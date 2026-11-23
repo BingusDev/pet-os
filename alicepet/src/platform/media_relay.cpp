@@ -389,7 +389,9 @@ void MediaRelay::State::handle(int fd) {
 
 void MediaRelay::State::forward(int fd, const Request& req, const std::string& url,
                                 const std::vector<std::string>& extra, bool site, const std::string& origin) {
-    std::string config = config_line("url", url);
+    // globoff: [ ] { } in the PC's URL (ROM file names such as "Game [!].zip")
+    // are part of the name, not curl ranges ("bad range specification", a 502).
+    std::string config = "globoff\n" + config_line("url", url);
     if (req.method != "GET" && req.method != "HEAD") config += config_line("request", req.method);
     for (const auto& h : extra) config += config_line("header", h);
     config += config_line("header", "Expect:");

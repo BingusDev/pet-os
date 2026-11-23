@@ -1,15 +1,19 @@
 ﻿# SPDX-License-Identifier: MIT
 #
 # AlicePET Jack In for Windows. Runs from the PET's USB drive with the
-# PowerShell 5.1 that ships with Windows 10/11; nothing is installed and nothing
-# is written to the PC (the session log is only saved if you click Save Log).
+# PowerShell 5.1 that ships with Windows 10/11; nothing is installed. The only
+# files it writes are small diagnostics in %TEMP% (JackIn-ready.txt,
+# JackIn-launch.txt, JackIn-error.txt, JackIn-timing.log, capped at 256 KB); the
+# session log is only saved if you click Save Log.
 #
 #  - Starts READ-ONLY: a scan (CPU, RAM, disk, startup items, Defender, top RAM users).
 #  - Access: READ (look only), ASK (PET commands run as you after you OK each one),
 #    FULL (PET commands run as you without asking). Typing into the PET's screen
 #    works in ASK and FULL only; every mode can watch it.
 #  - FOLDER: HOME (Alice, chat and PC status) or one chip at a time: Terminal,
-#    Jellyfin, Retro or LAN Tech. The PET closes the open chip (and its player or
+#    Jellyfin, Retro or LAN Tech. The PET decides whether this PC may open chips:
+#    [K] on the PET allows it, and Terminal needs its own [K] every session (this
+#    window says so when it is waiting). The PET closes the open chip (and its player or
 #    game) before it opens the next. The chip's screen is mirrored here while it
 #    is open and this window is up and not minimized. < HOME or Esc comes back.
 #    (Esc goes to the chip while you type into its screen; use Shift+Esc there.)
@@ -17,14 +21,15 @@
 #  - NET: the PET borrows this PC's internet (outbound connections only).
 #  - Chat with Alice: type (Enter sends), or hold MIC (or F9) to talk; her answers can be read aloud.
 #    Alice can run PowerShell here to answer you: each command she sends goes through the access
-#    mode (READ: read-only commands only; ASK: Yes/No for each; FULL: Yes/No only for destructive
+#    mode (READ: read-only commands only, run in a locked-down session; ASK: Yes/No for each; FULL: Yes/No only for destructive
 #    ones) and its output goes back to her automatically; after 25 commands (8 in Read/Ask)
 #    for one message you are asked whether she keeps going.
 #  - Jellyfin video and Retro games picked on the PET's chip play HERE: video in a
 #    NOW PLAYING player in the chip area (Windows Media Player; Esc or STOP
 #    comes back to the chip and tells Jellyfin where you stopped), games in your
 #    browser (RomM's web player, on http://127.0.0.1 so the browser treats it as secure). Both come
-#    through the PET's relay on 10.55.0.1, so no server passwords reach this PC.
+#    through the PET's relay on 10.55.0.1, so no server passwords reach this PC. (Only if the PET
+#    is set to [jellyfin] pc_direct=on does it also offer a direct Jellyfin link with a key for that play.)
 #  - Every command is shown in the live log. JACK OUT ends everything at once.
 # The app only dials out to the PET (10.55.0.1); it never listens. See PROTOCOL.md.
 
@@ -83,7 +88,7 @@ if ($env:JACKIN_SCALE) { $K = [double]$env:JACKIN_SCALE }
 $K = [Math]::Max(0.7, $K)
 [JackInUi]::K = $K
 
-$AppVersion = '0.9.3'
+$AppVersion = '0.9.4'
 $Here = Split-Path -Parent $PSCommandPath
 
 # Draws each PET frame: run-length RGB565 (count, hi, lo) to ARGB pixels.
@@ -224,6 +229,10 @@ $S = [ordered]@{
     Operator   = 'Holden' # who runs the PET (the PET's [jackin] operator=), never the Windows user
     ShowLog    = $false   # HOME shows the live log instead of the chat
     Agent      = $false   # Alice's command loop is running for the last chat message
+    AskStale   = $false   # the PET took access back (or jacked out) while a Yes/No box was open
+    WantChip   = ''       # the chip waiting for [K] on the PET
+    PetControl = $false   # the PET lets this PC open and drive chips ([K] there)
+    PetTerminal = $false  # ... and open Terminal
 }
 # Video from the PET (Jellyfin chip) playing in this window.
 $Play = [ordered]@{
@@ -600,7 +609,7 @@ $ChipCtl = @($btnHome, $viewKey, $viewMode, $viewPet, $mirror, $miniFace, $alice
 
 # Input in the mirror without access: say so instead of ignoring it.
 function Show-ReadHint {
-    $why = $(if (-not $S.Linked) { 'not linked to the PET yet' } else { 'READ mode: pick ASK or FULL to control chips' })
+    $why = $(if (-not $S.Linked) { 'not linked to the PET yet' } elseif (-not $S.PetControl) { 'press [K] on the PET to let this PC control chips' } else { 'READ mode: pick ASK or FULL to control chips' })
     $readHint.Text = $why
     $tips.SetToolTip($readHint, $why)
     $readHint.Visible = ($S.View -eq 'chip') -and -not $Play.On
@@ -694,6 +703,8 @@ function Add-ChatResult([bool]$ok, [string]$out) {
 
 # Timing diagnostics go to a file, not the UI: %TEMP%\JackIn-timing.log (new in rev26).
 $script:TimingLog = Join-Path $env:TEMP 'JackIn-timing.log'
+# It only ever grows while the app runs: start over once it passes 256 KB.
+try { if ((Test-Path -LiteralPath $script:TimingLog) -and (Get-Item -LiteralPath $script:TimingLog).Length -gt 262144) { Remove-Item -LiteralPath $script:TimingLog -Force } } catch { }
 $script:TimingNext = [DateTime]::MinValue
 $script:InputSentAt = $null
 
@@ -725,7 +736,7 @@ function Get-Mode {
 
 # Keys and typing go to the PET only in Ask or Full, and only while linked.
 function Input-Allowed {
-    return [bool]($S.Linked -and $S.Full)
+    return [bool]($S.Linked -and $S.Full -and $S.PetControl)
 }
 
 function Update-Ui {
@@ -800,8 +811,9 @@ function Set-Mode([string]$mode) {
             default { 'you set access to Full: the PET can run commands as you without asking, and take keys' }
         })
     if ($S.Linked) { Send-State }
-    # Read stops Alice's command loop (the PET stops it when it sees mode read).
-    if ($mode -eq 'Read') { $S.Agent = $false }
+    # Read stops Alice's command loop (the PET stops it when it sees mode read),
+    # and anything a command is still doing.
+    if ($mode -eq 'Read') { $S.Agent = $false; Stop-Jobs 'stopped: access went back to Read' }
     Update-Ui
 }
 
@@ -1057,6 +1069,9 @@ $script:FrameBmp = $null
 $script:Pixels = $null
 $script:FrameW = 0
 $script:FrameH = 0
+# Read by Flush-Frame on the first link pass, before any frame has set it: under
+# Set-StrictMode an unset variable throws, which was taken for a broken link (rev26).
+$script:FramePending = $false
 
 $mirror.Add_Paint({
     param($sender, $e)
@@ -1267,9 +1282,13 @@ function Get-CmdCalls($ast) {
     $calls = @()
     foreach ($c in @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true))) {
         $name = $c.GetCommandName()
-        $argv = @($c.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.Extent.Text.Trim([char]39, [char]34).ToLower() })
+        $rest = @($c.CommandElements | Select-Object -Skip 1)
+        $argv = @($rest | ForEach-Object { $_.Extent.Text.Trim([char]39, [char]34).ToLower() })
+        # Parameter names without the dash, and with any ":value" cut off (-MemberName:Kill -> membername).
+        $params = @($rest | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] } |
+            ForEach-Object { $_.ParameterName.ToLower() })
         $raw = $(if ($name) { $name.ToLower() } else { '' })
-        $calls += [pscustomobject]@{ Name = ($raw -replace '\.exe$', ''); Raw = $raw; Args = $argv }
+        $calls += [pscustomobject]@{ Name = ($raw -replace '\.exe$', ''); Raw = $raw; Args = $argv; Params = $params; Elems = $rest }
     }
     return $calls
 }
@@ -1279,62 +1298,164 @@ function Get-CmdMethods($ast) {
         ForEach-Object { $_.Member.Extent.Text.Trim([char]39, [char]34).ToLower() })
 }
 
-# READ mode runs only these: look-only cmdlet verbs, the pipeline helpers, and
-# native tools that only report (with their changing switches refused).
-$ReadVerbs = '^((get|test|measure|select|sort|where|group|compare|convertto|convertfrom|resolve|join|split)-|format-(table|list|wide|custom)$)'
-$ReadNames = @('foreach-object', 'where-object', 'write-output', 'out-string', 'out-null', '%', '?', 'foreach', 'where', 'sort', 'select', 'measure',
-    'group', 'ft', 'fl', 'fw', 'gps', 'ps', 'gci', 'ls', 'dir', 'gc', 'cat', 'type', 'gsv', 'gcim', 'gwmi', 'gp', 'gi', 'gl', 'pwd', 'echo', 'write', 'gm',
-    'whoami', 'ipconfig', 'systeminfo', 'tasklist', 'hostname', 'ping', 'tracert', 'pathping', 'nslookup', 'netstat', 'getmac', 'driverquery',
-    'gpresult', 'quser', 'qwinsta', 'ver', 'arp', 'nbtstat', 'route', 'w32tm', 'powercfg', 'manage-bde', 'dsregcmd', 'winver', 'chcp')
-$ReadMethods = @('tostring', 'trim', 'trimend', 'trimstart', 'split', 'tolower', 'toupper', 'substring', 'replace', 'contains', 'startswith',
-    'endswith', 'indexof', 'padleft', 'padright', 'gettype', 'equals', 'tostring', 'join', 'format', 'round', 'floor', 'ceiling', 'count')
+# "[type]::Method(...)" calls as "type::method", lower case, without "system.".
+function Get-CmdStaticCalls($ast) {
+    return @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Static }, $true) |
+        ForEach-Object {
+            $type = $(if ($_.Expression -is [System.Management.Automation.Language.TypeExpressionAst]) { $_.Expression.TypeName.FullName.ToLower() -replace '^system\.', '' } else { '?' })
+            $type + '::' + $_.Member.Extent.Text.Trim([char]39, [char]34).ToLower()
+        })
+}
+
+# Every type a command names ([IO.File], [int]$x, [xml]...), lower case, without "system." and "[]".
+function Get-CmdTypes($ast) {
+    return @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.TypeExpressionAst] -or
+                $n -is [System.Management.Automation.Language.TypeConstraintAst] }, $true) |
+        ForEach-Object { (($_.TypeName.FullName.ToLower() -replace '^system\.', '') -replace '(\[\])+$', '') })
+}
+
+# What a ForEach-Object call would run by name instead of by script block:
+# "% Kill", "% -MemberName Kill", "% -MemberName:Kill". Script blocks are judged
+# by what is inside them; anything else here is a member (or can't be told).
+function Get-ForEachMembers($call) {
+    $members = @()
+    $skipBlock = $false
+    foreach ($e in $call.Elems) {
+        if ($e -is [System.Management.Automation.Language.ScriptBlockExpressionAst]) { continue }
+        if ($e -is [System.Management.Automation.Language.CommandParameterAst]) {
+            $p = $e.ParameterName.ToLower()
+            # -Begin / -Process / -End take script blocks; nothing else is expected here.
+            if ('begin'.StartsWith($p) -or 'process'.StartsWith($p) -or 'end'.StartsWith($p)) {
+                if ($e.Argument -and $e.Argument -isnot [System.Management.Automation.Language.ScriptBlockExpressionAst]) { $members += '?' }
+                continue
+            }
+            if ($e.Argument) { $members += $e.Argument.Extent.Text.Trim([char]39, [char]34).ToLower() } else { $members += '-' + $p }
+            continue
+        }
+        $members += $e.Extent.Text.Trim([char]39, [char]34).ToLower()
+    }
+    return $members
+}
+
+# READ mode runs only these: look-only cmdlets, the pipeline helpers, and native
+# tools that only report (with their changing switches refused). The command is
+# parsed and every part of it must be on a list; then it runs in a constrained
+# runspace (New-ReadRunspace) as a second lock.
+$ReadVerbs = '^(get-|test-|(measure|select|sort|where|group|compare|foreach)-object$|measure-command$|select-(string|xml)$|convertto-(json|csv|html|xml)$|convertfrom-(json|csv|stringdata|string)$|resolve-(path|dnsname)$|(join|split)-path$|join-string$|format-(table|list|wide|custom|hex)$|out-(string|null|host)$|write-(output|host)$)'
+$ReadNames = @('%', '?', 'foreach', 'where', 'sort', 'select', 'measure', 'group', 'ft', 'fl', 'fw', 'gps', 'ps', 'gci', 'ls', 'dir', 'gc', 'cat',
+    'type', 'gsv', 'gcim', 'gwmi', 'gp', 'gi', 'gl', 'pwd', 'echo', 'write', 'gm', 'sls', 'gcm', 'gdr', 'gal', 'gv', 'gmo')
+# Programs (not PowerShell commands). A name ending in .exe must be one of these.
+$ReadNative = @('whoami', 'ipconfig', 'systeminfo', 'tasklist', 'hostname', 'ping', 'tracert', 'pathping', 'nslookup', 'netstat', 'getmac',
+    'driverquery', 'gpresult', 'quser', 'qwinsta', 'arp', 'nbtstat', 'route', 'w32tm', 'powercfg', 'manage-bde', 'dsregcmd')
+# Get-/Test- commands that change or reveal more than "look": refused by name.
+$ReadRefused = @('get-credential', 'get-clipboard', 'get-windowsupdatelog', 'get-wuinstall', 'get-windowsupdate', 'get-wulist')
+$ReadMethods = @('tostring', 'trim', 'trimend', 'trimstart', 'split', 'tolower', 'toupper', 'substring', 'contains', 'startswith',
+    'endswith', 'indexof', 'padleft', 'padright', 'gettype', 'equals', 'join', 'round', 'floor', 'ceiling', 'count')
+# Types a READ command may name. Anything else ([IO.File], [IO.StreamWriter]'path', [scriptblock], [wmi]...) is refused.
+$ReadTypes = @('string', 'char', 'int', 'int16', 'int32', 'int64', 'long', 'uint16', 'uint32', 'uint64', 'double', 'single', 'float', 'decimal',
+    'bool', 'boolean', 'byte', 'datetime', 'timespan', 'math', 'version', 'guid', 'array', 'object', 'hashtable', 'pscustomobject', 'ordered', 'void')
 function Test-ReadOnly([string]$cmd) {
     $ast = Get-CmdAst $cmd
     if ($null -eq $ast) { return $false }
     if (@($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FileRedirectionAst] }, $true)).Count -gt 0) { return $false }
+    # New commands under harmless names (function Get-X { ... }), classes, attributes, "using".
+    if (@($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -or
+                    $n -is [System.Management.Automation.Language.TypeDefinitionAst] -or
+                    $n -is [System.Management.Automation.Language.AttributeAst] -or
+                    $n -is [System.Management.Automation.Language.UsingStatementAst] }, $true)).Count -gt 0) { return $false }
     foreach ($m in (Get-CmdMethods $ast)) { if ($ReadMethods -notcontains $m) { return $false } }
-    # Setting a property changes things too: (Get-Item x).Attributes = 'Hidden'.
-    if (@($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and
-                    $n.Left -isnot [System.Management.Automation.Language.VariableExpressionAst] }, $true)).Count -gt 0) { return $false }
+    foreach ($t in (Get-CmdTypes $ast)) { if ($ReadTypes -notcontains $t) { return $false } }
+    # ${function:Get-X} = '...', ${alias:x}, ${C:\file} = '...' are writes dressed as variables:
+    # only $env:NAME may name a drive, and only to read it.
+    foreach ($v in @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true))) {
+        if ($v.VariablePath.IsDriveQualified -and $v.VariablePath.DriveName -ne 'env') { return $false }
+    }
+    foreach ($asg in @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true))) {
+        # Setting a property changes things too: (Get-Item x).Attributes = 'Hidden'.
+        if ($asg.Left -isnot [System.Management.Automation.Language.VariableExpressionAst]) { return $false }
+        if ($asg.Left.VariablePath.IsDriveQualified) { return $false }
+    }
+    foreach ($u in @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.UnaryExpressionAst] }, $true))) {
+        if ($u.Child -is [System.Management.Automation.Language.VariableExpressionAst] -and $u.Child.VariablePath.IsDriveQualified) { return $false }
+    }
     foreach ($c in (Get-CmdCalls $ast)) {
         $n = $c.Name
         $a = ' ' + ($c.Args -join ' ') + ' '
         if (-not $n) { return $false }   # & $something: can't tell what it runs
-        # ForEach-Object's member form runs a method: gps notepad | % Kill
+        # ForEach-Object's member form runs a method: gps notepad | % Kill, % -MemberName:Kill
         if (@('foreach-object', '%', 'foreach') -contains $n) {
-            foreach ($x in $c.Args) { if ($x -notmatch '^[-{]' -and $ReadMethods -notcontains $x) { return $false } }
+            foreach ($x in (Get-ForEachMembers $c)) { if ($ReadMethods -notcontains $x) { return $false } }
         }
-        if ($a -match ' -repair') { return $false }   # Test-ComputerSecureChannel -Repair
-        if ($n -like 'get-credential') { return $false }
+        if ($ReadRefused -contains $n) { return $false }
+        # Parameters that write a file, install, repair or ask for a password, in full or shortened
+        # (-Repair, -Rep, -OutFile, -LogPath, -Install, -AcceptAll, -Credential...).
+        foreach ($p in $c.Params) { if ($p -match '^(rep|inst|downl|accepta|autor|outf|outp|logp|cred)') { return $false } }
         if ($n -eq 'ipconfig' -and $a -match ' /(release|renew|flushdns|registerdns|setclassid)') { return $false }
         if ($n -eq 'route' -and $a -notmatch '^\s*print\s') { return $false }
         if ($n -eq 'arp' -and $a -match ' -(d|s) ') { return $false }
+        if ($n -eq 'nbtstat' -and $a -match ' -rr? ') { return $false }
         if ($n -eq 'w32tm' -and $a -match ' /(resync|config|register|unregister)') { return $false }
-        if ($n -eq 'powercfg' -and $a -notmatch ' /(l|list|q|query|a|availablesleepstates|batteryreport|getactivescheme|requests)( |$)') { return $false }
+        if ($n -eq 'powercfg' -and ($a -notmatch ' /(l|list|q|query|a|availablesleepstates|getactivescheme|requests)( |$)' -or $a -match ' /output')) { return $false }
         if ($n -eq 'manage-bde' -and $a -notmatch ' -status ') { return $false }
+        if ($n -eq 'dsregcmd' -and $a -notmatch '^\s*/status\s*$') { return $false }
+        if ($n -eq 'gpresult' -and $a -match ' /(h|x|f)( |$)') { return $false }
         if ($c.Raw -eq 'sc') { return $false }  # sc is Set-Content in PowerShell
         if ($c.Raw -eq 'sc.exe') { if ($a -match '^\s*(query|queryex|qc|qdescription)\s') { continue }; return $false }
+        if ($ReadNative -contains $n) { continue }
+        # sort.exe /o file, where.exe ...: an .exe that isn't a known reporting tool.
+        if ($c.Raw -like '*.exe') { return $false }
         if ($n -match $ReadVerbs -or $ReadNames -contains $n) { continue }
         return $false
     }
     return $true
 }
 
+# READ commands run in their own runspace in ConstrainedLanguage mode: even if a
+# command slipped past Test-ReadOnly, it can't call .NET methods on files,
+# processes or the registry, create COM objects or add types there.
+function New-ReadRunspace {
+    $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
+    $iss.LanguageMode = [System.Management.Automation.PSLanguageMode]::ConstrainedLanguage
+    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace($iss)
+    $rs.Open()
+    return $rs
+}
+
 # FULL mode still asks Yes/No for these: anything that deletes, kills, uninstalls,
 # changes accounts, security, registry, boot or services, or that we can't read.
+$DangerMembers = '^(delete|kill|remove|format|uninstall|terminate|clear|stop|shutdown|reboot|setacl|setaccesscontrol|invoke|create$|createsubkey|start$|setvalue|moveto|encrypt|decrypt|change$)'
 function Test-Destructive([string]$cmd) {
     $ast = Get-CmdAst $cmd
     if ($null -eq $ast) { return $true }
-    foreach ($m in (Get-CmdMethods $ast)) { if ($m -match '^(delete|kill|remove|format|uninstall|terminate|clear|stop|shutdown|reboot|setacl)') { return $true } }
+    foreach ($m in (Get-CmdMethods $ast)) { if ($m -match $DangerMembers) { return $true } }
+    # [IO.File]::Replace / ::Move / ::WriteAllText, [scriptblock]::Create, [Diagnostics.Process]::Start ...
+    foreach ($sc in (Get-CmdStaticCalls $ast)) {
+        if ($sc -match '^(string|regex|text\.regularexpressions\.regex|math|convert|datetime|timespan|array|char|guid|int|int32|int64|double|decimal|version|io\.path)::') { continue }
+        if ($sc -match '::(replace|move|copy|write|append|create|start|delete|kill|set|encrypt|decrypt|open|load|exit)') { return $true }
+    }
+    # ${function:x} = '...' / ${alias:x} / ${C:\file} = '...': code or a file written through a variable.
+    foreach ($asg in @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true))) {
+        if ($asg.Left -is [System.Management.Automation.Language.VariableExpressionAst] -and $asg.Left.VariablePath.IsDriveQualified -and
+            $asg.Left.VariablePath.DriveName -ne 'env') { return $true }
+    }
     foreach ($c in (Get-CmdCalls $ast)) {
         $n = $c.Name
         $a = ' ' + ($c.Args -join ' ') + ' '
         if (-not $n) { return $true }
         if ($n -eq 'clear-host' -or $n -eq 'cls') { continue }
-        if ($n -match '^(remove|uninstall|disable|clear|reset|stop|unregister|dismount|suspend|revoke|block|restart|initialize|repair|format-volume|set-mppreference|add-mppreference|set-executionpolicy|set-acl|set-service|set-localuser|new-localuser|add-localgroupmember|set-itemproperty|new-itemproperty|rename-computer|add-computer|set-netfirewall|set-bitlocker|enable-bitlocker|invoke-expression|invoke-command|invoke-wmimethod|invoke-cimmethod|set-date|set-tpm|set-processmitigation)') { return $true }
+        # gci x | % Delete, gps x | % -MemberName:Kill, % $name
+        if (@('foreach-object', '%', 'foreach') -contains $n) {
+            foreach ($x in (Get-ForEachMembers $c)) { if ($x -match $DangerMembers -or $x -match '^[$?(-]') { return $true } }
+        }
+        if ($n -match '^(remove|uninstall|disable|clear|reset|stop|unregister|dismount|suspend|revoke|block|restart|initialize|repair|format-volume|set-mppreference|add-mppreference|set-executionpolicy|set-acl|set-service|set-localuser|new-localuser|add-localgroupmember|set-itemproperty|new-itemproperty|rename-computer|add-computer|set-netfirewall|set-bitlocker|enable-bitlocker|invoke-expression|invoke-command|invoke-wmimethod|invoke-cimmethod|set-date|set-tpm|set-processmitigation|set-alias|new-alias)') { return $true }
         if (@('rm', 'del', 'erase', 'rd', 'rmdir', 'ri', 'rp', 'rv', 'kill', 'spps', 'spsv', 'iex', 'icm', 'sc', 'format', 'diskpart', 'taskkill', 'shutdown',
                 'bcdedit', 'takeown', 'icacls', 'cacls', 'cipher', 'vssadmin', 'wbadmin', 'fsutil', 'mountvol', 'bootrec', 'reagentc', 'cmd', 'powershell',
-                'pwsh', 'wmic', 'logoff', 'bcdboot', 'diskmgmt', 'sdelete', 'clear-recyclebin', 'net1') -contains $n) { return $true }
+                'pwsh', 'wmic', 'logoff', 'bcdboot', 'diskmgmt', 'sdelete', 'clear-recyclebin', 'net1', 'clc', 'cli', 'clp', 'clv', 'sp', 'sal', 'nal',
+                'wscript', 'cscript', 'mshta', 'rundll32', 'regsvr32') -contains $n) { return $true }
+        # Start-Process is fine for an app, not as a way round this list (Start-Process cmd '/c del ...') or to elevate.
+        if (@('start-process', 'saps', 'start') -contains $n -and
+            ($a -match '[ \\/](cmd|powershell|pwsh|wscript|cscript|mshta|rundll32|regsvr32|reg|sc|net|net1|msiexec|schtasks|wmic|diskpart|format|bcdedit|takeown|icacls|shutdown|taskkill|certutil|bitsadmin)(\.exe)? ' -or
+             @($c.Params | Where-Object { $_ -match '^v' }).Count -gt 0)) { return $true }
         if ($n -eq 'manage-bde' -and $a -notmatch ' -status ') { return $true }
         if ($n -eq 'reg' -and $a -match ' (delete|add|import|restore|load|unload|copy) ') { return $true }
         if ($n -eq 'net' -and $a -match ' (user|localgroup|group|stop|share|accounts|use) ') { return $true }
@@ -1364,6 +1485,7 @@ function Start-PetCommand($id, [string]$cmd, [bool]$agent = $false) {
     $danger = ($mode -ne 'Read') -and (Test-Destructive $cmd)
     if ($agent) { Add-ChatCmd $cmd $(if ($danger) { 'destructive: waiting for your Yes/No' } elseif ($mode -eq 'Ask') { 'waiting for your Yes/No' } else { '' }) }
     if ($mode -eq 'Ask' -or $danger) {
+        $S.AskStale = $false
         $S.Busy = $true
         $runsAs = "$env:USERNAME$(if ($S.Admin) { ' (admin)' })"
         $warn = $(if ($danger) { "This looks DESTRUCTIVE (it can delete, stop, uninstall or change settings).`r`n`r`n" } else { '' })
@@ -1380,16 +1502,38 @@ function Start-PetCommand($id, [string]$cmd, [bool]$agent = $false) {
             Send-Pet ([ordered]@{ t = 'result'; id = $id; ok = $false; out = 'declined on the PC'; reason = 'declined' })
             return
         }
+        # The box can sit there for minutes. A Yes only counts if nothing changed
+        # behind it: still linked, same access mode, and the PET didn't take access
+        # back or jack out meanwhile (those messages are read while the box is up).
+        if ($S.AskStale -or -not $S.Linked -or (Get-Mode) -ne $mode) {
+            Add-Log "not run (the link or the access mode changed while the question was open): $cmd"
+            if ($agent) { Add-ChatResult $false 'not run: access changed while you were deciding' }
+            Send-Pet ([ordered]@{ t = 'result'; id = $id; ok = $false; out = 'not run: access changed on the PC'; reason = 'declined' })
+            return
+        }
     }
     Add-Log "$(if ($agent) { 'Alice' } else { 'PET' }) > $cmd   ($mode)"
     $ps = [PowerShell]::Create()
+    $rs = $null
+    if ($mode -eq 'Read') {
+        # Second lock behind Test-ReadOnly: a session that can't call .NET on files or processes.
+        try {
+            $rs = New-ReadRunspace
+            $ps.Runspace = $rs
+        } catch {
+            try { $ps.Dispose() } catch { }
+            Add-Log "couldn't open the read-only session: $($_.Exception.Message)"
+            Send-Pet ([ordered]@{ t = 'result'; id = $id; ok = $false; out = 'refused: the read-only session could not start'; reason = 'read-only' })
+            return
+        }
+    }
     [void]$ps.AddScript($cmd).AddCommand('Out-String').AddParameter('Width', 120)
     # Output goes into our own collection, so what a command printed is still readable if it times out.
     $output = New-Object System.Management.Automation.PSDataCollection[psobject]
     $feed = New-Object System.Management.Automation.PSDataCollection[psobject]
     $feed.Complete()
     $handle = $ps.BeginInvoke($feed, $output)
-    $S.Jobs += @{ Id = $id; Ps = $ps; Handle = $handle; Output = $output; Started = Get-Date; Cmd = $cmd; Agent = $agent }
+    $S.Jobs += @{ Id = $id; Ps = $ps; Rs = $rs; Handle = $handle; Output = $output; Started = Get-Date; Cmd = $cmd; Agent = $agent }
 }
 
 # Text a job has printed so far.
@@ -1398,12 +1542,13 @@ function Get-JobText($job) {
 }
 
 # Stop a pipeline without blocking the UI thread. Reap-Stopping disposes it once the stop has finished.
-function Stop-PsAsync($ps) {
+function Stop-PsAsync($ps, $rs = $null) {
     try {
         $ar = $ps.BeginStop($null, $null)
-        $S.Stopping += ,@{ Ps = $ps; Ar = $ar }
+        $S.Stopping += ,@{ Ps = $ps; Rs = $rs; Ar = $ar }
     } catch {
         try { $ps.Dispose() } catch { }
+        if ($rs) { try { $rs.Dispose() } catch { } }
     }
 }
 
@@ -1413,6 +1558,7 @@ function Reap-Stopping {
         if ($st.Ar.IsCompleted) {
             try { $st.Ps.EndStop($st.Ar) } catch { }
             try { $st.Ps.Dispose() } catch { }
+            if ($st.Rs) { try { $st.Rs.Dispose() } catch { } }
         } else {
             $left += $st
         }
@@ -1441,7 +1587,7 @@ function Step-Jobs {
                 $stopped = $true
                 $ok = $false
                 $out = Get-JobText $job
-                Stop-PsAsync $job.Ps
+                Stop-PsAsync $job.Ps $job.Rs
                 $out = (($out + "`r`n" + 'stopped after 2 minutes').Trim())
             } else {
                 $job.Ps.EndInvoke($job.Handle) | Out-Null
@@ -1455,7 +1601,10 @@ function Step-Jobs {
             $ok = $false
             $out = $_.Exception.Message
         }
-        if (-not $stopped) { $job.Ps.Dispose() }
+        if (-not $stopped) {
+            $job.Ps.Dispose()
+            if ($job.Rs) { try { $job.Rs.Dispose() } catch { } }
+        }
         if ($out.Length -gt 4000) { $out = $out.Substring(0, 4000) + '...' }
         Add-Log ($(if ($ok) { '  ok' } else { '  failed' }) + $(if ($out) { ': ' + ($out -split "`n")[0] } else { '' }))
         if ($job.Agent) { Add-ChatResult $ok $out }
@@ -1466,38 +1615,105 @@ function Step-Jobs {
     $S.Jobs = @($S.Jobs | Where-Object { $finished -notcontains $_.Id })
 }
 
-function Stop-Jobs {
-    foreach ($job in @($S.Jobs)) { Stop-PsAsync $job.Ps }
+# Stops every running command. With $why (access went back to Read) the PET is
+# told what happened to each; without it the link is going away anyway.
+function Stop-Jobs([string]$why = '') {
+    $jobs = @($S.Jobs)
     $S.Jobs = @()
+    foreach ($job in $jobs) {
+        Stop-PsAsync $job.Ps $job.Rs
+        if ($why) {
+            Add-Log "  stopped: $($job.Cmd)"
+            if ($job.Agent) { Add-ChatResult $false $why }
+            Send-Pet ([ordered]@{ t = 'result'; id = $job.Id; ok = $false; out = $why; reason = 'declined' })
+        }
+    }
+}
+
+# Before the app exits: give the stops up to 2 s to finish, so a program a
+# command started (ping -t, robocopy...) is not left running after JACK OUT.
+function Wait-Stopping {
+    $until = (Get-Date).AddSeconds(2)
+    while ($S.Stopping.Count -and (Get-Date) -lt $until) {
+        Reap-Stopping
+        if ($S.Stopping.Count) { Start-Sleep -Milliseconds 50 }
+    }
 }
 
 # --- NET: Share PC Internet (the PC dials both ends; nothing listens here) --------
 
+# Addresses that are this PC itself: loopback, "any", and every address of its own adapters.
+function Test-OwnAddress($ip) {
+    if ($null -eq $ip) { return $true }
+    if ($ip.IsIPv4MappedToIPv6) { $ip = $ip.MapToIPv4() }
+    if ([System.Net.IPAddress]::IsLoopback($ip) -or $ip.Equals([System.Net.IPAddress]::Any) -or $ip.Equals([System.Net.IPAddress]::IPv6Any)) { return $true }
+    try {
+        foreach ($nic in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+            foreach ($ua in $nic.GetIPProperties().UnicastAddresses) {
+                if ($ua.Address.Equals($ip)) { return $true }
+            }
+        }
+    } catch { }
+    return $false
+}
+
+function Start-TunnelConnect($t, $ip) {
+    $t.Target = New-Object System.Net.Sockets.TcpClient -ArgumentList $ip.AddressFamily
+    $t.Pet = New-Object System.Net.Sockets.TcpClient   # back to the PET's tunnel port
+    $t.Phase = 'connect'
+    $t.Tasks = @($t.Target.ConnectAsync($ip, $t.Port), $t.Pet.ConnectAsync($script:Pet, $TunnelPort))
+}
+
 function Open-Tunnel($id, [string]$targetHost, [int]$targetPort) {
     if (-not $S.Net) { Send-Pet ([ordered]@{ t = 'net_fail'; id = $id }); return }
     # Sharing the internet never opens this PC's own local services to the PET.
+    # The name is resolved here first and the tunnel dials that address, so a
+    # name that points back at this PC (localhost, its own name, a DNS record for
+    # 127.0.0.1 or its LAN address) is refused like the address itself.
+    $tunnel = @{ Id = $id; Host = $targetHost; Port = $targetPort; Target = $null; Pet = $null; Phase = 'resolve'; Started = Get-Date; Tasks = @() }
     $ip = $null
-    if ($targetHost -eq 'localhost' -or $targetHost -like '*.localhost' -or
-        ([System.Net.IPAddress]::TryParse($targetHost.Trim('[', ']'), [ref]$ip) -and ([System.Net.IPAddress]::IsLoopback($ip) -or $ip.ToString() -eq '0.0.0.0' -or $ip.ToString() -eq '::'))) {
+    if ([System.Net.IPAddress]::TryParse($targetHost.Trim('[', ']'), [ref]$ip)) {
+        if (Test-OwnAddress $ip) {
+            Add-Log "PET asked to reach $targetHost on this PC; refused"
+            Send-Pet ([ordered]@{ t = 'net_fail'; id = $id }); return
+        }
+        Start-TunnelConnect $tunnel $ip
+    } elseif ($targetHost -eq 'localhost' -or $targetHost -like '*.localhost') {
         Add-Log "PET asked to reach $targetHost on this PC; refused"
         Send-Pet ([ordered]@{ t = 'net_fail'; id = $id }); return
+    } else {
+        $tunnel.Tasks = @([System.Net.Dns]::GetHostAddressesAsync($targetHost))
     }
-    $target = New-Object System.Net.Sockets.TcpClient
-    $back = New-Object System.Net.Sockets.TcpClient   # back to the PET's tunnel port
-    $S.Tunnels += @{
-        Id = $id; Target = $target; Pet = $back; Phase = 'connect'; Started = Get-Date
-        Tasks = @($target.ConnectAsync($targetHost, $targetPort), $back.ConnectAsync($script:Pet, $TunnelPort))
-    }
+    $S.Tunnels += $tunnel
 }
 
 function Close-Tunnel($t) {
-    try { $t.Target.Close() } catch { }
-    try { $t.Pet.Close() } catch { }
+    if ($t.Target) { try { $t.Target.Close() } catch { } }
+    if ($t.Pet) { try { $t.Pet.Close() } catch { } }
 }
 
 function Step-Tunnels {
     $left = @()
     foreach ($t in $S.Tunnels) {
+        if ($t.Phase -eq 'resolve') {
+            $lookup = $t.Tasks[0]
+            if ($lookup.IsFaulted -or $lookup.IsCanceled -or ((Get-Date) - $t.Started).TotalSeconds -gt 12) {
+                Send-Pet ([ordered]@{ t = 'net_fail'; id = $t.Id })
+                continue
+            }
+            if (-not $lookup.IsCompleted) { $left += $t; continue }
+            $found = @($lookup.Result)
+            $own = @($found | Where-Object { Test-OwnAddress $_ }).Count -gt 0
+            if ($found.Count -eq 0 -or $own) {
+                if ($own) { Add-Log "PET asked to reach $($t.Host), which is this PC; refused" }
+                Send-Pet ([ordered]@{ t = 'net_fail'; id = $t.Id })
+                continue
+            }
+            $pick = @($found | Where-Object { $_.AddressFamily -eq 'InterNetwork' }) + @($found) | Select-Object -First 1
+            try { Start-TunnelConnect $t $pick } catch { Close-Tunnel $t; Send-Pet ([ordered]@{ t = 'net_fail'; id = $t.Id }); continue }
+            $left += $t
+            continue
+        }
         if ($t.Phase -eq 'connect') {
             $failed = @($t.Tasks | Where-Object { $_.IsFaulted -or $_.IsCanceled }).Count -gt 0
             $slow = ((Get-Date) - $t.Started).TotalSeconds -gt 12
@@ -1533,7 +1749,7 @@ function Step-Tunnels {
 function Stop-Sharing {
     foreach ($t in $S.Tunnels) {
         # A tunnel still connecting never reached the PET, which is waiting on it: say the host could not be reached.
-        if ($t.Phase -eq 'connect') { Send-Pet ([ordered]@{ t = 'net_fail'; id = $t.Id }) }
+        if ($t.Phase -ne 'open') { Send-Pet ([ordered]@{ t = 'net_fail'; id = $t.Id }) }
         Close-Tunnel $t
     }
     $S.Tunnels = @()
@@ -1740,12 +1956,16 @@ function Start-Play($msg) {
         Start-Process $url | Out-Null
         Add-Log "playing $title in your default player"
         $Play.On = $true
-        Send-Progress 'stopped'  # nothing reports back from there; the PET goes back to its list
+        # Nothing reports back from there. 'handoff' sends the PET back to its list
+        # without telling Jellyfin the play stopped ('stopped' ended the transcode
+        # the player had just started reading).
+        Send-Progress 'handoff'
         $Play.On = $false
         return
     }
-    # Straight from Jellyfin when this PC can reach it (the PET hands a key made
-    # for this one play and deletes it on stop); otherwise through the PET's relay.
+    # Through the PET's relay, unless the PET is set to [jellyfin] pc_direct=on and
+    # this PC can reach Jellyfin itself (then the PET hands over a key made for
+    # this one play and deletes it on stop).
     $via = 'the PET'
     $directUrl = [string](Get-Field $msg 'direct_url')
     if ($directUrl -and (Test-DirectUrl $directUrl)) { $url = $directUrl; $via = 'Jellyfin directly' }
@@ -1843,6 +2063,10 @@ function Drop-Link([string]$why) {
         $S.Full = $false
         $S.Chips = @()
         $S.ChipId = ''
+        $S.WantChip = ''
+        $S.PetControl = $false
+        $S.PetTerminal = $false
+        Hide-Ask
         Stop-Play 'stopped' $false
         Stop-Mic $false
         Stop-Jobs
@@ -1869,6 +2093,7 @@ function Jack-Out([string]$why) {
     $Loop.Stop()
     if ($S.Client) { try { $S.Client.Close() } catch { } }
     $timer.Stop()
+    Wait-Stopping
     $form.Close()
 }
 
@@ -1888,19 +2113,63 @@ function On-Line([string]$line) {
     switch ([string](Get-Field $msg 't')) {
         'ask' { Show-Ask $what }
         'drop' {
-            if ($what -eq 'full' -and $S.Full) { $S.Full = $false; Add-Log 'PET set access back to Read'; Send-State }
+            if ($what -eq 'full' -and $S.Full) {
+                $S.Full = $false; $S.Agent = $false
+                Add-Log 'PET set access back to Read'
+                Send-State
+                Stop-Jobs 'stopped: the PET set access back to Read'
+            }
             if ($what -eq 'net' -and $S.Net) { Stop-Sharing; Add-Log 'PET stopped sharing'; Send-State }
             Update-Ui
         }
         'run' { Start-PetCommand (Get-Field $msg 'id') ([string](Get-Field $msg 'cmd')) ([bool](Get-Field $msg 'agent')) }
         'pet' {
             $op = [string](Get-Field $msg 'operator')
-            if ($op) { $S.Operator = $op; Update-Ui }
+            if ($op) { $S.Operator = $op }
+            # What the PET lets this PC do with it ([K] there); an older PET sends neither and allows both.
+            $ctl = Get-Field $msg 'control'
+            $term = Get-Field $msg 'terminal'
+            $S.PetControl = ($null -eq $ctl) -or [bool]$ctl
+            $S.PetTerminal = ($null -eq $term) -or [bool]$term
+            if (-not $S.PetControl -and $S.View -eq 'chip') {
+                Add-Log 'the PET took chip control back'
+                Stop-Play
+                $S.ChipId = ''
+                Restart-Mirror
+                Set-View 'home'
+                Update-Folder
+            }
+            # [K] was pressed for the chip this PC was waiting on: the PET opens it itself.
+            if ($S.WantChip -and $S.PetControl -and ($S.WantChip -ne 'terminal' -or $S.PetTerminal)) {
+                $S.ChipId = $S.WantChip
+                $S.WantChip = ''
+                Hide-Ask
+                Add-Log "the PET allowed it: $(Chip-Name $S.ChipId) is open"
+                Set-View 'chip'
+                Update-Folder
+                $mirror.Focus() | Out-Null
+            }
+            Update-Ui
+        }
+        'denied' {
+            # The PET (not this PC) decides who opens chips. Say what to press there.
+            $chipAsked = [string](Get-Field $msg 'chip')
+            $S.WantChip = $chipAsked
+            $S.ChipId = ''
+            Restart-Mirror
+            Set-View 'home'
+            Update-Folder
+            $askBanner.Text = $(if ($what -eq 'terminal') { '  TERMINAL uses the PET''s SSH keys: press [K] on the PET to allow it for this session.' }
+                else { '  Press [K] on the PET to let this PC open and control chips.' })
+            $askBanner.Visible = $true
+            $askBanner.BringToFront()
+            Add-Log "the PET is waiting for [K] before it opens $(Chip-Name $chipAsked)"
         }
         'agent_more' {
             # Alice hit her step cap (25 in Full, 8 otherwise): Holden decides.
             $steps = [string](Get-Field $msg 'steps')
             $next = [string](Get-Field $msg 'next')
+            $S.AskStale = $false
             $S.Busy = $true
             try {
                 $answer = [System.Windows.Forms.MessageBox]::Show($form,
@@ -1909,7 +2178,7 @@ function On-Line([string]$line) {
             } finally {
                 $S.Busy = $false
             }
-            $yes = ($answer -eq 'Yes')
+            $yes = ($answer -eq 'Yes') -and $S.Linked -and -not $S.AskStale
             Add-Log $(if ($yes) { "you let Alice keep going after $steps commands" } else { "you stopped Alice after $steps commands" })
             if (-not $yes) { $S.Agent = $false; Add-ChatResult $false "stopped after $steps commands" }
             Send-Pet ([ordered]@{ t = 'agent_more'; yes = $yes })
@@ -1937,6 +2206,46 @@ function On-Line([string]$line) {
             $S.Agent = [bool]$cmd
             if ($cmd) { Add-Log "Alice step $([string](Get-Field $msg 'step')): $cmd" }
         }
+    }
+}
+
+# While a Yes/No box is open (or the scan runs) the app can't act on PET
+# messages, but it has to keep reading them: an unread socket fills up and the
+# PET would end up dropping the link. Mirror frames are applied right away;
+# everything else waits, in order, for Step-Link. If the PET takes access back
+# or jacks out meanwhile, the open question no longer counts (AskStale).
+function Read-LinkBusy {
+    if (-not $S.Linked -or $null -eq $S.Stream) { return }
+    try {
+        if (-not $S.Client.Connected -or ($S.Client.Client.Poll(0, 'SelectRead') -and $S.Client.Available -eq 0)) { $S.AskStale = $true; return }
+        if (-not $S.Stream.DataAvailable) { return }
+        $bytes = New-Object byte[] 65536
+        $chars = New-Object char[] 65536
+        if (-not $S.Decoder) { $S.Decoder = [System.Text.Encoding]::UTF8.GetDecoder() }
+        $text = New-Object System.Text.StringBuilder
+        while ($S.Stream.DataAvailable) {
+            $got = $S.Stream.Read($bytes, 0, $bytes.Length)
+            if ($got -le 0) { break }
+            $count = $S.Decoder.GetChars($bytes, 0, $got, $chars, 0)
+            [void]$text.Append($chars, 0, $count)
+        }
+        $all = $S.Buffer + $text.ToString()
+        $keep = New-Object System.Text.StringBuilder
+        $at = 0
+        while (($nl = $all.IndexOf("`n", $at)) -ge 0) {
+            $line = $all.Substring($at, $nl - $at)
+            $at = $nl + 1
+            if ($line.StartsWith('{"t":"frame"')) {
+                try { Apply-Frame ($line | ConvertFrom-Json) } catch { }
+                continue
+            }
+            if ($line -match '^\s*\{"t":"(jackout|drop|bye)"') { $S.AskStale = $true }
+            [void]$keep.Append($line).Append("`n")
+        }
+        $S.Buffer = $keep.ToString() + $all.Substring($at)
+        Flush-Frame
+    } catch {
+        $S.AskStale = $true
     }
 }
 
@@ -2019,6 +2328,7 @@ $adminLink.Add_LinkClicked({
     Stop-Jobs
     Stop-Sharing
     $timer.Stop()
+    Wait-Stopping
     $form.Close()
 })
 
@@ -2130,7 +2440,7 @@ $Clock = [System.Diagnostics.Stopwatch]::StartNew()
 $script:NextDialMs = 0
 $script:NextStatsMs = 3000
 $timer.Add_Tick({
-    if ($S.Busy) { return }
+    if ($S.Busy) { Read-LinkBusy; return }
     try {
         $nowMs = $Clock.ElapsedMilliseconds
         # Dial the PET about every 2 s until it answers.

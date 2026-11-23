@@ -7,7 +7,7 @@
 # What it does (each step says what it changed; nothing secret is written):
 #   1. installs the AlicePET .deb (if given) and the tools the chips use
 #   2. lets the app user read keys and set the backlight (input, video groups)
-#   3. installs the JACK IN sudo rule (only usb-gadget.sh up|down|status, as root)
+#   3. installs the JACK IN sudo rule (only usb-gadget.sh up|down|status and set-clock.sh, as root)
 #   4. builds the JACK IN drive image (/var/lib/alicepet/jackin.img)
 #   5. starts /etc/alicepet.local.conf for your bridge URL and token (you type them)
 #   6. with --usb-otg: adds dtoverlay=dwc2,dr_mode=peripheral so JACK IN can work (reboot after;
@@ -73,11 +73,14 @@ step "3. JACK IN sudo rule"
 GADGET=/usr/libexec/alicepet/usb-gadget.sh
 RULE=/etc/sudoers.d/alicepet-jackin
 TMP_RULE="$(mktemp)"
+CLOCK=/usr/libexec/alicepet/set-clock.sh
 printf '# AlicePET JACK IN: switch the USB-C port to device mode and back.\n%s ALL=(root) NOPASSWD: %s up, %s down, %s status\n' \
     "$APP_USER" "$GADGET" "$GADGET" "$GADGET" >"$TMP_RULE"
+# The PET has no battery clock: the app may set it from a trusted Jack In PC or RomM.
+printf '%s ALL=(root) NOPASSWD: %s [0-9]*\n' "$APP_USER" "$CLOCK" >>"$TMP_RULE"
 if visudo -cf "$TMP_RULE" >/dev/null; then
     install -m 0440 "$TMP_RULE" "$RULE"
-    done_ "$RULE (only usb-gadget.sh up/down/status)"
+    done_ "$RULE (only usb-gadget.sh up/down/status and set-clock.sh)"
 else
     note "visudo rejected the rule; nothing installed"
 fi

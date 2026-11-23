@@ -7,6 +7,9 @@
 #include "platform/json.h"
 #include "platform/net.h"
 
+#include <algorithm>
+#include <atomic>
+
 namespace viewmodel::chips {
 namespace {
 
@@ -31,6 +34,7 @@ BridgeReply decode(const platform::net::HttpResponse& response) {
         out.error = "Navi bridge answered HTTP " + std::to_string(response.status) + " (not JSON).";
         return out;
     }
+    if (const long long limit = json["max_input"].integer(); limit > 0) set_bridge_max_input(static_cast<size_t>(limit));
     out.transcript = json["transcript"].str();
     out.reply = json["reply"].str();
     out.ok = json["ok"].boolean() && !out.reply.empty();
@@ -42,9 +46,18 @@ BridgeReply decode(const platform::net::HttpResponse& response) {
     return out;
 }
 
+std::atomic<size_t> g_max_input{kBridgeMaxInput};
+
 } // namespace
 
+size_t bridge_max_input() { return g_max_input.load(); }
+
+void set_bridge_max_input(size_t chars) {
+    g_max_input.store(std::min<size_t>(std::max<size_t>(chars, kBridgeMaxInput), 16000));
+}
+
 std::string clip_for_bridge(const std::string& text, size_t max_chars) {
+    if (max_chars == 0) max_chars = bridge_max_input();
     // JavaScript counts UTF-16 units; a code point above U+FFFF is two of them.
     size_t units = 0;
     size_t i = 0;
@@ -68,12 +81,13 @@ BridgeReply bridge_ask(const model::PetConfig& config, const std::string& text) 
                                                 config.bridge_token, config.bridge_timeout_s * 1000));
 }
 
-BridgeReply bridge_voice(const model::PetConfig& config, const std::string& wav) {
+BridgeReply bridge_voice(const model::PetConfig& config, const std::string& wav, const std::string& prefix) {
     if (config.bridge_url.empty()) {
         return {false, "", "", "No bridge set. Add [bridge] url= to /etc/alicepet.conf."};
     }
     std::vector<std::string> headers{"Content-Type: audio/wav"};
     if (!config.bridge_token.empty()) headers.push_back("Authorization: Bearer " + config.bridge_token);
+    if (!prefix.empty()) headers.push_back("X-Pet-Prefix: " + platform::net::url_encode(prefix));
     // Transcription adds up to ~30 s on top of the normal ask timeout.
     return decode(platform::net::http_request("POST", base_url(config) + "/api/pet/voice", wav, headers,
                                               (config.bridge_timeout_s + 60) * 1000));

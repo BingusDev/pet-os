@@ -39,7 +39,9 @@ param(
     [int]$TunnelPort = 7342,
     [switch]$Elevated,
     [switch]$StartFull,
-    [ValidateSet('', 'Read', 'Ask', 'Full')][string]$StartMode = ''
+    [ValidateSet('', 'Read', 'Ask', 'Full')][string]$StartMode = '',
+    # Where the PET's trust token is kept (tests point this somewhere else).
+    [string]$TrustFile = ''
 )
 
 Set-StrictMode -Version 2
@@ -88,8 +90,40 @@ if ($env:JACKIN_SCALE) { $K = [double]$env:JACKIN_SCALE }
 $K = [Math]::Max(0.7, $K)
 [JackInUi]::K = $K
 
-$AppVersion = '0.9.4'
+$AppVersion = '0.9.5'
 $Here = Split-Path -Parent $PSCommandPath
+
+# --- trusted PC ----------------------------------------------------------------------
+# [T] twice on the PET trusts this PC: the PET makes a token, sends it here, and
+# this app shows it back in every hello. It is kept for this Windows user only
+# (DPAPI), so another account on this PC is not trusted along with it. The PET
+# keeps the list and can forget this PC at any time; the token then stops working.
+$TrustPath = $(if ($TrustFile) { $TrustFile } else { Join-Path $env:APPDATA 'AlicePET\jackin-trust.dat' })
+$TrustSalt = [System.Text.Encoding]::ASCII.GetBytes('AlicePET Jack In trust')
+function Get-TrustToken {
+    try {
+        if (-not (Test-Path -LiteralPath $TrustPath)) { return '' }
+        Add-Type -AssemblyName System.Security
+        $plain = [System.Security.Cryptography.ProtectedData]::Unprotect([System.IO.File]::ReadAllBytes($TrustPath), $TrustSalt, 'CurrentUser')
+        $token = [System.Text.Encoding]::ASCII.GetString($plain)
+        if ($token -match '^[0-9a-f]{64}$') { return $token }
+    } catch { }
+    return ''
+}
+function Set-TrustToken([string]$token) {
+    try {
+        if ($token -notmatch '^[0-9a-f]{64}$') {
+            if (Test-Path -LiteralPath $TrustPath) { Remove-Item -LiteralPath $TrustPath -Force }
+            return $true
+        }
+        Add-Type -AssemblyName System.Security
+        $dir = Split-Path -Parent $TrustPath
+        if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $sealed = [System.Security.Cryptography.ProtectedData]::Protect([System.Text.Encoding]::ASCII.GetBytes($token), $TrustSalt, 'CurrentUser')
+        [System.IO.File]::WriteAllBytes($TrustPath, $sealed)
+        return $true
+    } catch { return $false }
+}
 
 # Draws each PET frame: run-length RGB565 (count, hi, lo) to ARGB pixels.
 Add-Type -TypeDefinition @'
@@ -233,6 +267,7 @@ $S = [ordered]@{
     WantChip   = ''       # the chip waiting for [K] on the PET
     PetControl = $false   # the PET lets this PC open and drive chips ([K] there)
     PetTerminal = $false  # ... and open Terminal
+    PetTrusted = $false   # the PET knows this PC's trust token ([T] twice there)
 }
 # Video from the PET (Jellyfin chip) playing in this window.
 $Play = [ordered]@{
@@ -2067,6 +2102,7 @@ function Drop-Link([string]$why) {
         $S.WantChip = ''
         $S.PetControl = $false
         $S.PetTerminal = $false
+        $S.PetTrusted = $false
         Hide-Ask
         Stop-Play 'stopped' $false
         Stop-Mic $false
@@ -2132,6 +2168,7 @@ function On-Line([string]$line) {
             $term = Get-Field $msg 'terminal'
             $S.PetControl = ($null -eq $ctl) -or [bool]$ctl
             $S.PetTerminal = ($null -eq $term) -or [bool]$term
+            $S.PetTrusted = [bool](Get-Field $msg 'trusted')
             if (-not $S.PetControl -and $S.View -eq 'chip') {
                 Add-Log 'the PET took chip control back'
                 Stop-Play
@@ -2151,6 +2188,15 @@ function On-Line([string]$line) {
                 $mirror.Focus() | Out-Null
             }
             Update-Ui
+        }
+        'trust' {
+            # [T] twice on the PET: keep its token for the next link, or forget it.
+            $token = [string](Get-Field $msg 'token')
+            if (Set-TrustToken $token) {
+                Add-Log $(if ($token -match '^[0-9a-f]{64}$') { 'the PET trusts this PC now: next time chips and Alice work without [K]' } else { 'the PET no longer trusts this PC' })
+            } else {
+                Add-Log 'the PET trusted this PC, but the token could not be saved here'
+            }
         }
         'denied' {
             # The PET (not this PC) decides who opens chips. Say what to press there.
@@ -2270,8 +2316,11 @@ function Step-Link {
         $S.Writer.NewLine = "`n"
         $S.Linked = $true
         $os = (Get-CimInstance Win32_OperatingSystem).Caption -replace '^Microsoft ', ''
+        # `time`: this PC's clock (the PET has none of its own; it only takes it from a
+        # PC it trusts, or when its own is certainly wrong). `trust`: the token from [T].
         Send-Pet ([ordered]@{ t = 'hello'; host = $env:COMPUTERNAME; os = $os; user = $env:USERNAME
-                admin = $S.Admin; full = $S.Full; input = [bool]$S.Full; mode = (Get-Mode).ToLower(); app = $AppVersion })
+                admin = $S.Admin; full = $S.Full; input = [bool]$S.Full; mode = (Get-Mode).ToLower(); app = $AppVersion
+                time = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); trust = (Get-TrustToken) })
         Add-Log "linked to the PET at $Pet ($(if ($S.Full) { 'full access' } else { 'read-only' }))"
         Update-Ui
         Invoke-Scan
@@ -2313,6 +2362,7 @@ $adminLink.Add_LinkClicked({
     $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', "`"$PSCommandPath`"",
         '-Pet', $Pet, '-Port', $Port, '-TunnelPort', $TunnelPort, '-Elevated')
     $argList += @('-StartMode', (Get-Mode))
+    if ($TrustFile) { $argList += @('-TrustFile', "`"$TrustFile`"") }
     try {
         # Windows shows the UAC prompt; you click Yes or No.
         Start-Process -FilePath 'powershell.exe' -ArgumentList $argList -Verb RunAs | Out-Null

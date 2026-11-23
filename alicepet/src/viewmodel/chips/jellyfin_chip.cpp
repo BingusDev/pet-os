@@ -87,10 +87,19 @@ JellyfinChip::JellyfinChip(model::PetConfig config) : config_(std::move(config))
 
 JellyfinChip::~JellyfinChip() {
     if (player_ > 0) platform::proc::stop(player_, SIGTERM, 500);
-    if (!pc_key_.empty()) {
+    if (!pc_key_.empty() && pc_key_login_) {
+        platform::net::http_request("POST", base_ + "/Sessions/Logout", "", {pc_auth_header(device_id_, pc_key_)}, 1500);
+    } else if (!pc_key_.empty()) {
         platform::net::http_request("DELETE", base_ + "/Auth/Keys/" + pc_key_, "", {auth_header()}, 1500);
     }
     std::remove(mpv_conf_path_.c_str());
+}
+
+std::string JellyfinChip::pc_auth_header(const std::string& device_id, const std::string& token) {
+    std::string header = "Authorization: MediaBrowser Client=\"AlicePET PC\", Device=\"Jack In PC\", DeviceId=\"" +
+                         device_id + "-pc\", Version=\"" APP_VERSION "\"";
+    if (!token.empty()) header += ", Token=\"" + token + "\"";
+    return header;
 }
 
 std::string JellyfinChip::auth_header() const {
@@ -508,7 +517,7 @@ void JellyfinChip::on_result(Result result) {
         return;
     }
     if (result.generation != generation_) {
-        revoke_key(result.key);  // a PC key made for a play that is already over
+        revoke_key(result.key, result.key_login);  // a PC key made for a play that is already over
         return;                  // stale
     }
     switch (result.what) {
@@ -548,12 +557,12 @@ void JellyfinChip::on_result(Result result) {
             break;
         case Result::What::PcStream: {
             if (!pc_playing_ || view_ != View::Playing) {
-                revoke_key(result.key);  // stopped before the stream was ready
+                revoke_key(result.key, result.key_login);  // stopped before the stream was ready
                 break;
             }
             const std::string url = pc_link::relay_file(result.text, {auth_header()}, result.name);
             if (url.empty()) {
-                revoke_key(result.key);
+                revoke_key(result.key, result.key_login);
                 pc_playing_ = false;
                 view_ = View::Error;
                 status_ = "Couldn't start the media relay for the PC.";
@@ -561,6 +570,7 @@ void JellyfinChip::on_result(Result result) {
             }
             pc_direct_ = result.direct;
             pc_key_ = result.key;
+            pc_key_login_ = result.key_login;
             const std::string direct_url =
                 result.key.empty() ? std::string() : result.text + "&api_key=" + platform::net::url_encode(result.key);
             play_method_ = result.direct ? "DirectPlay" : "Transcode";
@@ -578,6 +588,7 @@ void JellyfinChip::on_result(Result result) {
                           ",\"seekable\":" + (result.direct ? "true" : "false") + ",\"item\":\"" +
                           platform::net::json_escape(playing_.id) + "\"}");
             stream_info_ = std::string(result.direct ? "direct play" : "transcoding") + " on " + pc_link::host();
+            if (!result.note.empty()) status_ = result.note;
             report("/Sessions/Playing", start_ticks_, false);
             break;
         }
@@ -651,7 +662,8 @@ void JellyfinChip::start_pc_playback(long long start_ticks) {
     stream_info_ = "asking Jellyfin for a PC stream...";
     report_ms_ = 0;
     results_.run([base = base_, auth = auth_header(), uid = user_id_, item = playing_.id, device = device_id_,
-                  session = play_session_, start_ticks, gen = generation_, offer_key = config_.jellyfin_pc_direct]() {
+                  session = play_session_, start_ticks, gen = generation_, offer_key = config_.jellyfin_pc_direct,
+                  pc_user = config_.jellyfin_pc_user, pc_password = config_.jellyfin_pc_password]() {
         Result result{Result::What::Error, {}, {}, "", 0, gen};
         const auto response = platform::net::http_get(
             base + "/Users/" + platform::net::url_encode(uid) + "/Items/" + platform::net::url_encode(item), {auth}, kTimeoutMs);
@@ -691,7 +703,7 @@ void JellyfinChip::start_pc_playback(long long start_ticks) {
                 }
             }
             const std::string app = std::string(kPcKeyApp) + session;
-            const auto made = offer_key ? platform::net::http_request("POST", base + "/Auth/Keys?app=" + platform::net::url_encode(app),
+            const auto made = offer_key && pc_user.empty() ? platform::net::http_request("POST", base + "/Auth/Keys?app=" + platform::net::url_encode(app),
                                                                       "", {auth}, kTimeoutMs)
                                         : platform::net::HttpResponse{};
             const auto again =
@@ -702,6 +714,33 @@ void JellyfinChip::start_pc_playback(long long start_ticks) {
                 for (const auto& k : now["Items"].items()) {
                     if (k["AppName"].str() == app) result.key = k["AccessToken"].str();
                 }
+            }
+        }
+        // [jellyfin] pc_user: the better way. An ordinary user made for this logs in
+        // for the one play; its token can watch what that user may watch and
+        // nothing else, and it is logged out when the play ends.
+        if (!pc_user.empty()) {
+            const std::string login = pc_auth_header(device, "");
+            const auto in = platform::net::http_request(
+                "POST", base + "/Users/AuthenticateByName",
+                "{\"Username\":\"" + platform::net::json_escape(pc_user) + "\",\"Pw\":\"" +
+                    platform::net::json_escape(pc_password) + "\"}",
+                {login, "Content-Type: application/json"}, kTimeoutMs);
+            platform::json::Value who;
+            if (in.ok && in.status == 200 && platform::json::parse(in.body, who) && !who["AccessToken"].str().empty()) {
+                const std::string token = who["AccessToken"].str();
+                if (who["User"]["Policy"]["IsAdministrator"].boolean(false)) {
+                    // An administrator's token on a PC is what this setting exists to avoid.
+                    platform::net::http_request("POST", base + "/Sessions/Logout", "", {pc_auth_header(device, token)},
+                                                kTimeoutMs);
+                    result.note = "pc_user is a Jellyfin admin: not used (relay only)";
+                } else {
+                    result.key = token;
+                    result.key_login = true;
+                }
+            } else {
+                result.note = in.ok ? "pc_user login refused (HTTP " + std::to_string(in.status) + "): relay only"
+                                    : "pc_user login failed: relay only";
             }
         }
         if (direct) {
@@ -756,12 +795,14 @@ void JellyfinChip::pc_tick() {
 
 // Deletes a per-play key on the server, trying a few times: a key that outlives
 // its play is an administrator login nobody is watching.
-void JellyfinChip::revoke_key(const std::string& key) {
+void JellyfinChip::revoke_key(const std::string& key, bool login) {
     if (key.empty()) return;
-    results_.run([url = base_ + "/Auth/Keys/" + platform::net::url_encode(key), auth = auth_header()]() {
+    // A pc_user login ends by logging itself out; an API key is deleted with the PET's own key.
+    results_.run([url = login ? base_ + "/Sessions/Logout" : base_ + "/Auth/Keys/" + platform::net::url_encode(key),
+                  auth = login ? pc_auth_header(device_id_, key) : auth_header(), login]() {
         for (int attempt = 0; attempt < 3; ++attempt) {
-            const auto r = platform::net::http_request("DELETE", url, "", {auth}, kTimeoutMs);
-            if (r.ok && (r.status / 100 == 2 || r.status == 404)) break;
+            const auto r = platform::net::http_request(login ? "POST" : "DELETE", url, "", {auth}, kTimeoutMs);
+            if (r.ok && (r.status / 100 == 2 || r.status == 404 || (login && r.status == 401))) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(500 * (attempt + 1)));
         }
         return Result{Result::What::Position, {}, {}, "", -1, 0};  // ignored
@@ -769,8 +810,9 @@ void JellyfinChip::revoke_key(const std::string& key) {
 }
 
 void JellyfinChip::revoke_pc_key() {
-    revoke_key(pc_key_);
+    revoke_key(pc_key_, pc_key_login_);
     pc_key_.clear();
+    pc_key_login_ = false;
 }
 
 void JellyfinChip::finish_pc_playback() {

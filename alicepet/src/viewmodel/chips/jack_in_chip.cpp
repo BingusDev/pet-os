@@ -10,6 +10,7 @@
 #include "viewmodel/alice_viewmodel.h"
 #include "viewmodel/chips/terminal_chip.h"
 #include "model/chip_registry.h"
+#include "logger/logger.h"
 
 #include <algorithm>
 #include <cctype>
@@ -909,7 +910,15 @@ bool JackInChip::take_input(Input& input) {
 
 // About 12 fps while the PC is mirroring; nothing is captured otherwise.
 bool JackInChip::wants_frame(uint32_t now_ms) {
-    if (!mirroring()) return false;
+    if (!mirroring()) {
+        frame_asap_ = false;
+        return false;
+    }
+    if (frame_asap_) {
+        frame_asap_ = false;
+        last_frame_ms_ = now_ms;
+        return true;
+    }
     if (last_frame_ms_ != 0 && now_ms - last_frame_ms_ < 80) return false;
     last_frame_ms_ = now_ms;
     return true;
@@ -956,6 +965,25 @@ void JackInChip::offer_frame(const uint8_t* argb, uint32_t stride, int w, int h,
         y = end;
     }
     last_px_ = std::move(px);
+    if (input_pending_) {
+        input_pending_ = false;
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - input_at_).count();
+        if (timing_log_due(input_log_next_, ms)) LOG_INFO("pc input: next frame sent {:.1f} ms after the input", ms);
+    }
+}
+
+// Called by the input drain only while the PC is linked.
+void JackInChip::mark_input_applied() {
+    input_pending_ = true;
+    input_at_ = std::chrono::steady_clock::now();
+}
+
+// Logs a timing at most twice a second, and always one that took 50 ms or more.
+bool JackInChip::timing_log_due(std::chrono::steady_clock::time_point& next, double ms) {
+    const auto now = std::chrono::steady_clock::now();
+    if (ms < 50.0 && now < next) return false;
+    next = now + std::chrono::milliseconds(500);
+    return true;
 }
 
 void JackInChip::send_frame_band(const std::string& screen, int w, int h, const std::vector<uint16_t>& px, int y0,

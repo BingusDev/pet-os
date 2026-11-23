@@ -10,7 +10,7 @@ include(GNUInstallDirs)
 # "TemplateApp" values that would otherwise silently win.
 
 set(APP_DISPLAY_NAME "AlicePET" CACHE STRING "Human-readable application name used by launchers and package filename" FORCE)
-set(APP_DEBIAN_REVISION "rev22" CACHE STRING "Debian package revision/vendor suffix")
+set(APP_DEBIAN_REVISION "rev23" CACHE STRING "Debian package revision/vendor suffix")
 set(APP_DEBIAN_ARCHITECTURE "arm64" CACHE STRING "Debian package architecture")
 set(APP_MAINTAINER "Holden <netholden@gmail.com>" CACHE STRING "Debian package maintainer" FORCE)
 set(APP_PACKAGE_DESCRIPTION "AlicePET OS: Navi home, chat with Alice, net scan, battle chips" CACHE STRING "Debian package summary" FORCE)
@@ -76,10 +76,16 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
 install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/jackin/usb-gadget.sh"
     DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/alicepet"
 )
+# macOS/Linux client, launchers and README; usb-gadget.sh copies these onto the drive.
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/jackin/unix/"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/alicepet/jackin/unix"
+    FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+)
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/jackin/windows"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/alicepet/jackin"
 )
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/jackin/PROTOCOL.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/jackin/SETUP-GADGET.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/jackin/alicepet-jackin.sudoers"
     DESTINATION "${CMAKE_INSTALL_DOCDIR}/jackin"
 )

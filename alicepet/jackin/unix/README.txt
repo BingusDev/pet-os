@@ -8,8 +8,8 @@ open (macOS) or xdg-open (Linux).
 
 Start it
 --------
-macOS: open the ALICEPET drive and double-click JackIn.command. Terminal opens
-       and connects. If macOS refuses to run it, open Terminal and type
+macOS: open the ALICEPET drive and double-click JackIn.command. The first time,
+       right-click it and choose Open. Terminal opens and connects. If macOS refuses to run it, open Terminal and type
        bash /Volumes/ALICEPET/JackIn.command (drag the file into the window
        to fill in the path), then press Return.
 

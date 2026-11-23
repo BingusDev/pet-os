@@ -5,11 +5,14 @@
 #pragma once
 
 #include "model/pet_config.h"
+
+#include <chrono>
 #include "platform/jack_link.h"
 #include "platform/media_relay.h"
 #include "viewmodel/chip_module.h"
 #include "viewmodel/chips/bridge_client.h"
 
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -171,8 +174,15 @@ public:
         int y{0};
     };
     bool take_input(Input& input);
-    // True when a frame should be captured now (about 10 fps while the PC is mirroring).
+    // True when a frame should be captured now (about 12 fps while the PC is mirroring).
     bool wants_frame(uint32_t now_ms);
+    // A PC key, character or pointer changed the chip: the next wants_frame() is
+    // true once, skipping the rate limit, so the PC sees the result at once.
+    void request_frame() { frame_asap_ = true; }
+    // Diagnostics (logged only while linked, rate-limited): the time from a PC input
+    // being applied to the next frame offered, and the timing check shared by callers.
+    void mark_input_applied();
+    static bool timing_log_due(std::chrono::steady_clock::time_point& next, double ms);
     // One LVGL frame (ARGB8888, `stride` bytes per row). `screen` names the PET screen.
     void offer_frame(const uint8_t* argb, uint32_t stride, int w, int h, const std::string& screen);
     bool mirroring() const { return mirror_on_ && connected_; }
@@ -274,6 +284,11 @@ private:
     std::deque<std::string> opening_;
     std::deque<Input> inputs_;
     uint32_t last_frame_ms_{0};
+    bool frame_asap_{false};
+    // Set by mark_input_applied(); offer_frame() logs the wait for the next frame.
+    bool input_pending_{false};
+    std::chrono::steady_clock::time_point input_at_{};
+    std::chrono::steady_clock::time_point input_log_next_{};
     std::vector<uint16_t> last_px_;  // RGB565 of the last frame sent
     std::string last_screen_;
     std::string pc_chip_;

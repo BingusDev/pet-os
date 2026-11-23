@@ -692,8 +692,18 @@ function Add-ChatResult([bool]$ok, [string]$out) {
     $chatLog.ScrollToCaret()
 }
 
+# Timing diagnostics go to a file, not the UI: %TEMP%\JackIn-timing.log (new in rev26).
+$script:TimingLog = Join-Path $env:TEMP 'JackIn-timing.log'
+$script:TimingNext = [DateTime]::MinValue
+$script:InputSentAt = $null
+
+function Write-Timing([string]$text) {
+    try { Add-Content -LiteralPath $script:TimingLog -Value ("{0} {1}" -f (Get-Date -Format 'HH:mm:ss.fff'), $text) } catch { }
+}
+
 function Send-Pet($obj) {
     if ($null -eq $S.Writer) { return }
+    if ($obj.t -in @('key', 'char', 'pointer') -and $null -eq $script:InputSentAt) { $script:InputSentAt = [Diagnostics.Stopwatch]::StartNew() }
     try {
         $S.Writer.WriteLine(($obj | ConvertTo-Json -Compress -Depth 4))
     } catch {
@@ -986,6 +996,15 @@ function Apply-Frame($msg) {
     $count = [Math]::Min($n * $w, $script:Pixels.Length - $start)
     if ($count -le 0) { return }
     [JackInFrame]::Decode([Convert]::FromBase64String($rle), $script:Pixels, $start, $count)
+    $script:FramePending = $true
+}
+
+# Copies the decoded pixels to the mirror once per frame, after all of its bands.
+function Flush-Frame {
+    if (-not $script:FramePending -or $null -eq $script:Pixels) { return }
+    $script:FramePending = $false
+    $w = $script:FrameW
+    $h = $script:FrameH
     # One bitmap per frame size, refilled in place (no new 2 MB bitmap per frame).
     $bmp = $script:FrameBmp
     if ($null -eq $bmp -or $bmp.Width -ne $w -or $bmp.Height -ne $h) {
@@ -997,6 +1016,14 @@ function Apply-Frame($msg) {
     [Runtime.InteropServices.Marshal]::Copy($script:Pixels, 0, $data.Scan0, $script:Pixels.Length)
     $bmp.UnlockBits($data)
     $mirror.Invalidate()
+    if ($script:InputSentAt) {
+        $ms = $script:InputSentAt.Elapsed.TotalMilliseconds
+        $script:InputSentAt = $null
+        if ($ms -ge 50 -or [DateTime]::Now -ge $script:TimingNext) {
+            $script:TimingNext = [DateTime]::Now.AddMilliseconds(500)
+            Write-Timing ("key-to-frame {0:N1} ms" -f $ms)
+        }
+    }
 }
 
 function Clear-Mirror {
@@ -1005,6 +1032,7 @@ function Clear-Mirror {
     $script:Pixels = $null
     $script:FrameW = 0
     $script:FrameH = 0
+    $script:FramePending = $false
     $mirror.Invalidate()
 }
 
@@ -1962,6 +1990,7 @@ function Step-Link {
                 try { On-Line $line } catch { Add-Log "skipped a PET message: $($_.Exception.Message)" }
             }
         }
+        Flush-Frame
     } catch {
         Drop-Link 'the link broke'
     }

@@ -11,9 +11,10 @@ the Mac mini. You can chat with her, run quick network checks, and slot
   <img src="alicepet/screenshots/folder@3x.png" width="48%" alt="Battle Chip folder">
 </p>
 
-> **Status:** active development. Everything below runs in the desktop
-> simulator. It hasn't run on real CardputerZero hardware yet. See
-> [HANDOFF.md](HANDOFF.md) for the full current state.
+> **Status:** active development. The CardputerZero is in use and runs
+> 0.5.0-rev23. Some chips are verified only in the desktop simulator, and the
+> Jack In client for macOS and Linux is verified only against a local stand-in.
+> See [HANDOFF.md](HANDOFF.md) for what is proven and what is not.
 
 ## Features
 
@@ -26,9 +27,9 @@ the Mac mini. You can chat with her, run quick network checks, and slot
 | **Sleep** | ESC or idle turns the backlight off; any key wakes | ✅ |
 | **VOICE** chip | Push-to-talk → local Whisper on the Mac → Alice replies | ✅ |
 | **TERMINAL** chip | SSH bookmarks, built-in VT100 view, "Ask Alice" command suggestions (run only on Enter) | ✅ |
-| **JELLYFIN** chip | Browse library → seasons → episodes; low-bitrate H.264 to the 320×170 panel via mpv | ✅ (desktop playback stubbed) |
+| **JELLYFIN** chip | Browse library → seasons → episodes; low-bitrate H.264 to the 320×170 panel via mpv; on a linked PC it plays through JACK IN | ✅ (desktop playback stubbed) |
 | **LAN TECH** chip | Wall-jack tester: link, DHCP, gateway, DNS, speed, switch port; static-IP fallback, saved reports, device list with "who's new", ping and open ports | ✅ (not yet on hardware) |
-| **JACK IN** chip | PC sidekick over USB: read-only scan, Alice's fix, Full Access / admin / Share PC Internet clicked on the PC, live log, JACK OUT | 🚧 first cut (Windows app untested) |
+| **JACK IN** chip | PC sidekick over USB: read-only scan, Alice's fix, Full Access / admin / Share PC Internet clicked on the PC, live log, JACK OUT. The macOS/Linux client is read-only: scan, chat, and PC playback requests | 🚧 Windows: ran on the PC in earlier revs; the latest JackIn.ps1 STOP/timeout/handover fixes are read-verified only. macOS/Linux: verified only against a local stand-in, not on a real Mac or Linux PC |
 | **REMOTE** chip | IR learn and replay with LIRC `ir-ctl`, remotes and macros as text files | ✅ (not yet on hardware) |
 | **RETRO** chip | RomM library, download, RetroArch with per-platform cores, save sync | ✅ (not yet on hardware) |
 
@@ -94,13 +95,22 @@ success.
 The first configure downloads the CardputerZero BSP/SDK (~435 MB) and LVGL. Both go
 into `alicepet/.cache/` and aren't committed.
 
+`APP_DEBIAN_REVISION` is a plain cache entry (no `FORCE`), so a build tree configured
+earlier keeps its old revision. On grandworld-pi, pass `-DAPP_DEBIAN_REVISION=rev23` or
+use a fresh build tree before packaging.
+
 ## Installing on the PET
 
 1. Get the CardputerZero onto Wi-Fi + Tailscale with SSH access.
 2. `SKIP_BUILD=1 INSTALL=1 REMOTE_USER=<user> REMOTE_HOST=<pet> ./alicepet/deploy.sh`
-3. On the Mac, start the bridge with a token:
+   This copies the .deb, runs `dpkg -i`, and restarts APPLaunch as a user service
+   (`systemctl --user restart APPLaunch.service`), falling back to the system unit.
+3. The PET boots without the desktop: `multi-user.target` is the default. This was
+   set on the device by hand and no repo script does it. To go back to the desktop:
+   `sudo systemctl set-default graphical.target`.
+4. On the Mac, start the bridge with a token:
    `BIND_HOST=$(tailscale ip -4) PET_BRIDGE_TOKEN=<token> bin/alicepet-bridge.sh`
-4. On the PET, put `token=<token>` (and the Jellyfin `api_key=` if you use it) in
+5. On the PET, put `token=<token>` (and the Jellyfin `api_key=` if you use it) in
    `/etc/alicepet.conf`, then run `chmod 640 /etc/alicepet.conf`.
 
 ## Secrets

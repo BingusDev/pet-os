@@ -10,8 +10,19 @@ Owner: Holden. Navi: Alice (OpenClaw agent on Holden's Mac mini).
 - `bin/alicepet-bridge.sh`: starts the Mac-side bridge (vendored in `vendor/cardputer-pet-terminal/bridge/`) that relays PET chat/voice to an OpenClaw session (`agent:main:pet`). Localhost only by default; needs `PET_BRIDGE_TOKEN` to bind elsewhere. `bin/voice-route.mjs` adds `/api/pet/voice` (local whisper transcription).
 - `CHIPS.md`, `BUILD-PLAN.md`, `NOTES.md`: intent, roadmap, install/test checklist.
 
-## Status (2026-11-17)
-Done and committed, desktop-tested:
+## Status (2026-11-22)
+Release: 0.5.0-rev23, installed on the PET (`alicepet/cmake/cm0-package.cmake`). The device has arrived and is in use. The bullets below are the history.
+
+Done since 2026-11-18 (on `main`):
+- Device day fixes (rev2): volume OSD, Jellyfin mpv auth via `Authorization: MediaBrowser Token=...`, S16LE audio via PipeWire.
+- PET boots to `multi-user.target` (no desktop). APPLaunch runs as a user service: `deploy.sh` restarts it with `systemctl --user`. Undo: `sudo systemctl set-default graphical.target`.
+- JACK IN gadget: RNDIS for Windows and ECM for macOS/Linux in one configuration (`alicepet/jackin/SETUP-GADGET.md`). The USB-C mux LED is driven by `usb-gadget.sh`.
+- JACK IN drive image carries `JackIn.cmd`/`.ps1` plus `JackIn.command` (macOS; right-click → Open the first time), `JackIn.sh` and `jackin-client.sh` (Linux/macOS: bash and curl only, Read mode only). Gaps are listed in `alicepet/jackin/unix/README.txt`.
+- Jellyfin on the PC: navigation matches Retro (←/→ one row, ↑/↓ three, Enter, `/` search, TAB movies/shows or season switch, Esc clears the filter then leaves; 7-row list). MKV now transcodes to MP4; H.264 MP4 plays direct. Item IDs are URL-encoded.
+- Retro: reloads the first tab when its platform vanishes; server-supplied names are sanitized; search Backspace drops a whole UTF-8 character.
+- Tests: Debug `alicepet_tests` passes 514 checks (reported; not re-run for this doc update).
+
+Done and committed, desktop-tested (2026-11-17 and earlier):
 - v0.3: Boot / Navi Home / Chip Folder / Battle Chip In screens matching the mockups (Departure Mono 11px, pixel icons, chip art from `chips.html`).
 - v0.4: `.deb` packaging (`/etc/alicepet.conf` conffile), Talk-to-Alice chat on Home, NET SCAN (`[1]`).
 - v0.5 step 1: sleep (ESC / idle), chip-module framework.
@@ -31,11 +42,12 @@ Done and committed, desktop-tested:
 - Linux desktop build works too (`linux-x86-64` preset). LVGL's draw thread now has a 128 KB stack: FreeType overflowed the old 32 KB one on Ubuntu.
 
 In progress / not done:
-- JACK IN: nothing proven on hardware. Check: the CM0 port does device mode (`dtoverlay=dwc2,dr_mode=otg`), `usb-gadget.sh up` works and the USB-A/Ethernet side comes back after `down`; install `alicepet-jackin.sudoers` for the app user; Windows binds RNDIS from the OS descriptors; the PowerShell app has never been run (no Windows or PowerShell here), so expect fixes on first launch. macOS/Linux apps are not written yet.
+- JACK IN, Windows: the app has run on the PC in earlier revs. Tonight's JackIn.ps1 STOP/timeout/handover fixes (`e2e41f9`, `b434a8f`) are read-verified only; run them on the PC. This file doesn't record the gadget bring-up on the board. Before relying on it, confirm `dtoverlay=dwc2,dr_mode=peripheral` in `config.txt` [all] (see `alicepet/jackin/SETUP-GADGET.md`), `usb-gadget.sh up`/`down`, and the `alicepet-jackin.sudoers` rule.
+- JACK IN, macOS/Linux: the read-only client is verified only against a local stand-in (`alicepet/jackin/test/unix/run-tests.sh`). Not yet run on a real Mac or Linux PC. Gaps: Full Access, voice, mirroring, Share Internet, seek/pause.
 - RETRO save sync is written against RomM's current API (POST /api/saves with `saveFile`, GET /api/saves?rom_id=, GET /api/saves/{id}/content) and tested with a stand-in server; check it against Holden's RomM version and that the token has assets.read + assets.write.
 - Power profiles: written and unit-tested against a fake sysfs, but off (`[power] profiles=off`) until checked on the board. USB hub/Ethernet, audio codec, HDMI and IR power switches are not found yet.
-- Nothing has run on real hardware yet. The device arrives 2026-11-18. Expect to fix evdev key mapping, the backlight dim level (`dim_percent`), (`src/platform/linux_input.cpp`, check with `evtest`), font sizes, backlight path, and ALSA device names. Also check: which user APPLaunch runs the app as (needs `/dev/input`, backlight write, and read access to `/etc/alicepet.conf`); whether mpv's `--vo=drm` picks the panel or HDMI (may need `--drm-device=`); `--hwdec=v4l2m2m-copy` for hardware H.264; the panel's color depth vs LVGL's 32-bit config; and that Jellyfin playback works with the key sent as a header.
-- Device build/package re-verified 2026-11-17 (cross-built .deb, needs glibc 2.38+; trixie has 2.41). Not yet run on the board.
+- Hardware bring-up: the device is in use, but this file doesn't record which items were checked on the board. Still open unless confirmed: evdev key mapping (`src/platform/linux_input.cpp`, check with `evtest`), the backlight dim level (`dim_percent`), font sizes, backlight path, ALSA device names, whether mpv's `--vo=drm` picks the panel or HDMI (may need `--drm-device=`), `--hwdec=v4l2m2m-copy`, and the panel color depth vs LVGL's 32-bit config.
+- Packaging: rev23 is the current package (cross-built .deb; needs glibc 2.38+, trixie has 2.41). On an older build tree, pass `-DAPP_DEBIAN_REVISION=rev23` (see README).
 
 ## Secrets
 None in the repo. Device secrets go in `/etc/alicepet.conf` (`token=`, Jellyfin `api_key=`) and are set on the device only. Never commit them.

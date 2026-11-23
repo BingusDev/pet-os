@@ -1353,7 +1353,8 @@ $ReadMethods = @('tostring', 'trim', 'trimend', 'trimstart', 'split', 'tolower',
     'endswith', 'indexof', 'padleft', 'padright', 'gettype', 'equals', 'join', 'round', 'floor', 'ceiling', 'count')
 # Types a READ command may name. Anything else ([IO.File], [IO.StreamWriter]'path', [scriptblock], [wmi]...) is refused.
 $ReadTypes = @('string', 'char', 'int', 'int16', 'int32', 'int64', 'long', 'uint16', 'uint32', 'uint64', 'double', 'single', 'float', 'decimal',
-    'bool', 'boolean', 'byte', 'datetime', 'timespan', 'math', 'version', 'guid', 'array', 'object', 'hashtable', 'pscustomobject', 'ordered', 'void')
+    'bool', 'boolean', 'byte', 'datetime', 'timespan', 'version', 'guid', 'array', 'object', 'hashtable', 'pscustomobject', 'ordered', 'void')
+# ([math] is not on the list: the constrained READ session refuses [math]::Round(...) anyway. Use [int](...) or '{0:N1}' -f ...)
 function Test-ReadOnly([string]$cmd) {
     $ast = Get-CmdAst $cmd
     if ($null -eq $ast) { return $false }

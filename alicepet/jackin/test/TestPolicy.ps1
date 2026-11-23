@@ -36,9 +36,9 @@ $readOk = @('Get-Process | Sort-Object WS -Descending | Select-Object -First 5',
     'Get-CimInstance Win32_OperatingSystem | Select-Object Caption, LastBootUpTime', '(Get-Date).ToString()',
     '$p = Get-Process; $p | % { $_.Name }', 'Test-ComputerSecureChannel',
     # still fine after the 0.9.4 tightening
-    'Get-ChildItem C:\Windows -Force | Select-Object -First 3', '$env:COMPUTERNAME', '[int](Get-Date).Year', '[math]::Round(3.14159, 2)',
+    'Get-ChildItem C:\Windows -Force | Select-Object -First 3', '$env:COMPUTERNAME', '[int](Get-Date).Year', "'{0:N1}' -f 3.14159",
     'Get-Process | % { $_.Name.ToUpper() }', 'gps | % -Process { $_.Id }', 'Get-Content C:\Windows\win.ini -TotalCount 5',
-    'Get-CimInstance Win32_LogicalDisk | ForEach-Object { [pscustomobject]@{ Drive = $_.DeviceID; Free = [math]::Round($_.FreeSpace / 1GB, 1) } }',
+    'Get-CimInstance Win32_LogicalDisk | ForEach-Object { [pscustomobject]@{ Drive = $_.DeviceID; Free = [int]($_.FreeSpace / 1GB) } }',
     'powercfg /list', 'dsregcmd /status', 'gpresult /r', 'Get-Service | Sort-Object Status | Format-Table -AutoSize', 'ping.exe 10.55.0.1',
     'Get-ChildItem | Where-Object Length -gt 1MB | Measure-Object Length -Sum', 'Resolve-DnsName example.com', 'Get-Date | Out-String')
 $readNo = @('Remove-Item C:\temp\x', 'Stop-Process -Name OneDrive', 'ipconfig /release', 'Set-Content x.txt hi', 'sc stop x', 'sc.exe stop wuauserv',
@@ -56,7 +56,7 @@ $readNo = @('Remove-Item C:\temp\x', 'Stop-Process -Name OneDrive', 'ipconfig /r
     'Get-Process | Out-File procs.txt', 'Split-WindowsImage -ImagePath a.wim -SplitImagePath b.swm -FileSize 100', '[scriptblock]::Create("whoami").Invoke()',
     '[xml]$x = Get-Content a.xml', '$env:PATH = "C:\evil"', '$ExecutionContext.InvokeCommand.InvokeScript("whoami")', 'Get-Item C:\x | % { $_.Delete() }',
     'New-Object -ComObject WScript.Shell', '. C:\temp\x.ps1', '& "Remove-Item" C:\x', 'Get-Process | Tee-Object procs.txt', 'winver', 'nbtstat -R',
-    'Invoke-WebRequest http://example.com -OutFile x', 'Get-ChildItem -OutVariable x | Set-Content y', 'where.exe /r C:\ *.txt')
+    'Invoke-WebRequest http://example.com -OutFile x', '[math]::Round(3.14159, 2)', 'Get-ChildItem -OutVariable x | Set-Content y', 'where.exe /r C:\ *.txt')
 $destructive = @('Remove-Item C:\temp -Recurse', 'del x', 'rd /s /q x', 'Stop-Process -Id 4', 'taskkill /im x.exe /f', 'Uninstall-Package x',
     'msiexec /x {GUID}', 'winget uninstall foo', 'Set-MpPreference -DisableRealtimeMonitoring $true', 'Disable-NetAdapter Wi-Fi',
     'reg delete HKCU\Software\X /f', 'bcdedit /set safeboot minimal', 'shutdown /r /t 0', 'Restart-Computer', 'net user bob /add',
@@ -96,7 +96,7 @@ function Invoke-InReadRunspace([string]$text) {
 $lockedOut = @('[IO.File]::Exists("C:\Windows\win.ini")', '(Get-Item $env:TEMP).GetFiles().Count', 'New-Object -ComObject Scripting.FileSystemObject',
     'Add-Type -TypeDefinition "public class JackInPolicyProbe { }"', '[Diagnostics.Process]::GetCurrentProcess().Id',
     '[scriptblock]::Create("1 + 1").Invoke()')
-$stillRuns = @('(Get-Date).Year', 'Get-Process -Id $PID | ForEach-Object { $_.ProcessName }', '"a,b".Split(",").Count', '[math]::Round(2.6)',
+$stillRuns = @('(Get-Date).Year', 'Get-Process -Id $PID | ForEach-Object { $_.ProcessName }', '"a,b".Split(",").Count', "'{0:N1}' -f 2.64", '[int](7 / 2)',
     'Get-ChildItem $env:WINDIR -ErrorAction Stop | Select-Object -First 1 | ForEach-Object { $_.Name }', '$ExecutionContext.SessionState.LanguageMode')
 foreach ($c in $lockedOut) {
     $r = Invoke-InReadRunspace $c

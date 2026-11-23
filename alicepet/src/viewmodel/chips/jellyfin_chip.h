@@ -15,6 +15,10 @@
 
 namespace viewmodel::chips {
 
+// Whether the PC (Jack In) can play this file as it is: H.264 video in an MP4/M4V/MOV
+// container with AAC/MP3 or no audio. Anything else (MKV included) is transcoded.
+bool pc_direct_play(const std::string& container, const std::string& video, const std::string& audio);
+
 // JELLYFIN (chip 001), mockups/media.html screens 1-4:
 //   Library -> (series) seasons + episodes -> resume prompt -> playing.
 // Browsing uses the Jellyfin REST API ([jellyfin] url + api_key from

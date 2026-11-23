@@ -39,6 +39,19 @@ std::string lower(std::string value) {
     return value;
 }
 
+} // namespace
+
+bool pc_direct_play(const std::string& container, const std::string& video, const std::string& audio) {
+    // Windows Media Player plays MP4/M4V/MOV with H.264 video and AAC/MP3 (or no) audio as they are,
+    // with seeking. MKV does not play reliably there, so it takes the H.264/AAC MP4 transcode.
+    const bool mp4_container = container.find("mp4") != std::string::npos ||
+                               container.find("m4v") != std::string::npos ||
+                               container.find("mov") != std::string::npos;
+    return mp4_container && video == "h264" && (audio.empty() || audio == "aac" || audio == "mp3");
+}
+
+namespace {
+
 JellyfinChip::Item parse_item(const platform::json::Value& v) {
     JellyfinChip::Item item;
     item.id = v["Id"].str();
@@ -225,7 +238,8 @@ void JellyfinChip::choose(const Item& item) {
 
 std::string JellyfinChip::stream_url(const Item& item, long long start_ticks, bool with_key) const {
     // Server-side transcode to the panel: H.264 + AAC stereo HLS, <= width x 170.
-    return base_ + "/Videos/" + item.id + "/master.m3u8?MediaSourceId=" + item.id + "&DeviceId=" + device_id_ +
+    const std::string id = platform::net::url_encode(item.id);
+    return base_ + "/Videos/" + id + "/master.m3u8?MediaSourceId=" + id + "&DeviceId=" + device_id_ +
            "&PlaySessionId=" + play_session_ + "&VideoCodec=h264&AudioCodec=aac&MaxWidth=" +
            std::to_string(config_.jellyfin_width) + "&MaxHeight=170&VideoBitrate=" +
            std::to_string(config_.jellyfin_max_bitrate) +
@@ -630,7 +644,8 @@ void JellyfinChip::start_pc_playback(long long start_ticks) {
     results_.run([base = base_, auth = auth_header(), uid = user_id_, item = playing_.id, device = device_id_,
                   session = play_session_, start_ticks, gen = generation_]() {
         Result result{Result::What::Error, {}, {}, "", 0, gen};
-        const auto response = platform::net::http_get(base + "/Users/" + uid + "/Items/" + item, {auth}, kTimeoutMs);
+        const auto response = platform::net::http_get(
+            base + "/Users/" + platform::net::url_encode(uid) + "/Items/" + platform::net::url_encode(item), {auth}, kTimeoutMs);
         platform::json::Value json;
         if (!response.ok || response.status != 200 || !platform::json::parse(response.body, json)) {
             result.text = response.ok ? "Jellyfin said HTTP " + std::to_string(response.status) + " for the item."
@@ -645,14 +660,10 @@ void JellyfinChip::start_pc_playback(long long start_ticks) {
             if (stream["Type"].str() == "Video" && video.empty()) video = lower(stream["Codec"].str());
             if (stream["Type"].str() == "Audio" && audio.empty()) audio = lower(stream["Codec"].str());
         }
-        // Windows Media Player (Media Foundation) plays these files as they are,
-        // with seeking; everything else gets an H.264/AAC MP4 transcode.
-        std::string ext;
-        for (const char* c : {"mp4", "m4v", "mov", "mkv"}) {
-            if (container.find(c) != std::string::npos) ext = c == std::string("mkv") ? "mkv" : "mp4";
-        }
-        const bool direct = video == "h264" && !ext.empty() && (audio.empty() || audio == "aac" || audio == "mp3");
-        const std::string ids = "MediaSourceId=" + source_id + "&DeviceId=" + device + "&PlaySessionId=" + session;
+        const bool direct = pc_direct_play(container, video, audio);
+        const std::string enc_item = platform::net::url_encode(item);
+        const std::string ids = "MediaSourceId=" + platform::net::url_encode(source_id) + "&DeviceId=" +
+                                platform::net::url_encode(device) + "&PlaySessionId=" + platform::net::url_encode(session);
         result.what = Result::What::PcStream;
         result.direct = direct;
         // A key just for this play, so the PC can stream from Jellyfin itself
@@ -664,7 +675,7 @@ void JellyfinChip::start_pc_playback(long long start_ticks) {
         if (keys.ok && keys.status == 200 && platform::json::parse(keys.body, list)) {
             for (const auto& k : list["Items"].items()) {
                 if (k["AppName"].str().rfind(kPcKeyApp, 0) == 0 && !k["AccessToken"].str().empty()) {
-                    platform::net::http_request("DELETE", base + "/Auth/Keys/" + k["AccessToken"].str(), "", {auth},
+                    platform::net::http_request("DELETE", base + "/Auth/Keys/" + platform::net::url_encode(k["AccessToken"].str()), "", {auth},
                                                 kTimeoutMs);
                 }
             }
@@ -682,10 +693,10 @@ void JellyfinChip::start_pc_playback(long long start_ticks) {
             }
         }
         if (direct) {
-            result.text = base + "/Videos/" + item + "/stream." + ext + "?Static=true&" + ids;
-            result.name = "video." + ext;
+            result.text = base + "/Videos/" + enc_item + "/stream.mp4?Static=true&" + ids;
+            result.name = "video.mp4";
         } else {
-            result.text = base + "/Videos/" + item + "/stream.mp4?" + ids +
+            result.text = base + "/Videos/" + enc_item + "/stream.mp4?" + ids +
                           "&VideoCodec=h264&AudioCodec=aac&VideoBitrate=8000000&AudioBitrate=192000"
                           "&MaxAudioChannels=2&TranscodingMaxAudioChannels=2&MaxWidth=1920&StartTimeTicks=" +
                           std::to_string(start_ticks);

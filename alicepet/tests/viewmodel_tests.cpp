@@ -1200,6 +1200,30 @@ void test_retro_list_layout() {
     CHECK(RetroChip::wrap_title("Tetris", 12, 1) == "Tetris");
 }
 
+void test_jellyfin_pc_direct_play() {
+    using viewmodel::chips::pc_direct_play;
+    // H.264 MP4 family with AAC, MP3 or no audio plays as it is.
+    CHECK(pc_direct_play("mov,mp4,m4a,3gp", "h264", "aac"));
+    CHECK(pc_direct_play("mp4", "h264", "mp3"));
+    CHECK(pc_direct_play("mp4", "h264", ""));
+    CHECK(pc_direct_play("mov,mp4", "h264", "aac"));
+    // MKV never direct-plays on the PC, even when the streams are fine.
+    CHECK(!pc_direct_play("matroska,webm", "h264", "aac"));
+    CHECK(!pc_direct_play("mkv", "h264", "aac"));
+    // Other video or audio codecs transcode.
+    CHECK(!pc_direct_play("mp4", "hevc", "aac"));
+    CHECK(!pc_direct_play("mp4", "h264", "ac3"));
+    CHECK(!pc_direct_play("", "h264", "aac"));
+}
+
+void test_jellyfin_item_ids_are_encoded() {
+    using platform::net::url_encode;
+    // Item IDs and keys go into URL paths and queries, so reserved characters must be escaped.
+    CHECK(url_encode("abc123") == "abc123");
+    CHECK(url_encode("a b&c/d?e=f") == "a%20b%26c%2Fd%3Fe%3Df");
+    CHECK(url_encode("../Auth").find('/') == std::string::npos);
+}
+
 void test_jellyfin_list_navigation() {
     using viewmodel::chips::JellyfinChip;
     using R = JellyfinChip::Result;
@@ -1378,6 +1402,8 @@ int main() {
         {"retro_scrolling_systems_and_names", test_retro_scrolling_systems_and_names},
         {"retro_list_layout", test_retro_list_layout},
         {"jellyfin_list_navigation", test_jellyfin_list_navigation},
+        {"jellyfin_pc_direct_play", test_jellyfin_pc_direct_play},
+        {"jellyfin_item_ids_are_encoded", test_jellyfin_item_ids_are_encoded},
         {"retro_pagination_and_cache", test_retro_pagination_and_cache},
         {"retro_needs_server", test_retro_needs_server},
         {"retro_save_sync_helpers", test_retro_save_sync_helpers},

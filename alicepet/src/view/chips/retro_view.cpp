@@ -116,7 +116,7 @@ void RetroView::render_library(const RetroChip& retro) {
     if (retro.search().empty() && retro.has_more()) count += "/" + std::to_string(retro.total_games());
     lv_label_set_text(frame_.tag, (tab + " · " + count).c_str());
     lv_label_set_text(frame_.footer, retro.searching() ? "type to search [↵]done [ESC]clear"
-                                                       : "[←→]game [TAB]system [/]find [↵]open");
+                                                       : "[↑↓]game [←→]page [TAB]system [/]find [↵]open");
 
     // Tabs: scroll so the current one is always visible.
     int x = 6;

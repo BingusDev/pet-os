@@ -1148,21 +1148,25 @@ void test_retro_scrolling_systems_and_names() {
     retro.on_result(page);
     CHECK(retro.view() == RetroChip::View::Library && retro.games().size() == 25 && retro.selected() == 0);
     CHECK(!retro.loading_more() && retro.has_more());
-    retro.handle_key(Key::Right);
+    retro.handle_key(Key::Down);  // one game
     CHECK(retro.selected() == 1);
-    retro.handle_char("c");  // plain C (Fn+C is the arrow)
+    retro.handle_char("x");  // plain X (Fn+X is the arrow)
     CHECK(retro.selected() == 2);
+    retro.handle_char("f");
+    CHECK(retro.selected() == 1);
+    retro.handle_key(Key::Right);  // Left/Right move a page
+    CHECK(retro.selected() == 1 + RetroChip::kPageStep);
     retro.handle_char("z");
     CHECK(retro.selected() == 1);
-    retro.handle_key(Key::Down);  // PC wheel notch / Fn+X: a screenful
+    retro.handle_char("c");  // plain C (Fn+C is the arrow)
     CHECK(retro.selected() == 1 + RetroChip::kPageStep);
-    retro.handle_key(Key::Up);
+    retro.handle_key(Key::Left);
     CHECK(retro.selected() == 1);
-    while (retro.selected() < 16) retro.handle_key(Key::Right);
+    while (retro.selected() < 16) retro.handle_key(Key::Down);
     CHECK(!retro.loading_more());
-    retro.handle_key(Key::Right);  // 8 from the end of what's loaded
+    retro.handle_key(Key::Down);  // 8 from the end of what's loaded
     CHECK(retro.selected() == 17 && retro.loading_more());
-    for (int i = 0; i < 20; ++i) retro.handle_key(Key::Right);
+    for (int i = 0; i < 20; ++i) retro.handle_key(Key::Down);
     CHECK(retro.selected() == 24);  // the end of the loaded list until the page lands
     RetroChip::Result next = page;
     next.offset = 25;
@@ -1171,7 +1175,7 @@ void test_retro_scrolling_systems_and_names() {
     next.games.push_back(mk(26));
     retro.on_result(next);
     CHECK(retro.games().size() == 50);
-    retro.handle_key(Key::Right);
+    retro.handle_key(Key::Down);
     CHECK(retro.selected() == 25 && retro.game()->id == 26);
     retro.handle_char("/");  // search still opens; letters then type
     retro.handle_char("c");
@@ -1231,7 +1235,7 @@ void test_jellyfin_item_ids_are_encoded() {
 void test_jellyfin_list_navigation() {
     using viewmodel::chips::JellyfinChip;
     using R = JellyfinChip::Result;
-    // Same keys as RETRO: Left/Right step one row, Up/Down move a page of 3 (no wrap),
+    // Same keys as RETRO: Up/Down step one row, Left/Right move a page of 7 rows (no wrap),
     // Esc clears a filter before it leaves the chip, TAB switches season.
     model::PetConfig config;  // no server: results are fed in through on_result()
     JellyfinChip chip(config);
@@ -1251,22 +1255,22 @@ void test_jellyfin_list_navigation() {
     CHECK(chip.view() == JellyfinChip::View::Library);
     CHECK(chip.selected() == 0);
 
-    chip.handle_key(Key::Left);
-    CHECK(chip.selected() == 0);  // no wrap at the top
-    chip.handle_key(Key::Right);
-    chip.handle_key(Key::Right);
-    CHECK(chip.selected() == 2);
-    chip.handle_key(Key::Left);
-    CHECK(chip.selected() == 1);
-    chip.handle_key(Key::Down);
-    CHECK(chip.selected() == 4);  // one page
-    for (int i = 0; i < 5; ++i) chip.handle_key(Key::Down);
-    CHECK(chip.selected() == 11);  // stops at the last row
-    chip.handle_key(Key::Right);
-    CHECK(chip.selected() == 11);
     chip.handle_key(Key::Up);
-    CHECK(chip.selected() == 8);
-    for (int i = 0; i < 5; ++i) chip.handle_key(Key::Up);
+    CHECK(chip.selected() == 0);  // no wrap at the top
+    chip.handle_key(Key::Down);
+    chip.handle_key(Key::Down);
+    CHECK(chip.selected() == 2);
+    chip.handle_key(Key::Up);
+    CHECK(chip.selected() == 1);
+    chip.handle_key(Key::Right);
+    CHECK(chip.selected() == 8);  // one page
+    chip.handle_key(Key::Right);
+    CHECK(chip.selected() == 11);  // stops at the last row
+    chip.handle_key(Key::Down);
+    CHECK(chip.selected() == 11);
+    chip.handle_key(Key::Left);
+    CHECK(chip.selected() == 4);
+    for (int i = 0; i < 5; ++i) chip.handle_key(Key::Left);
     CHECK(chip.selected() == 0);
 
     // Search filters as you type; Esc clears the filter first, a second Esc leaves the chip.
@@ -1313,19 +1317,20 @@ void test_jellyfin_list_navigation() {
     CHECK(chip.episode() == 0);
 
     chip.handle_key(Key::Down);
-    CHECK(chip.episode() == 3);
+    CHECK(chip.episode() == 1);
     chip.handle_key(Key::Down);
+    chip.handle_key(Key::Down);
+    CHECK(chip.episode() == 3);
+    chip.handle_key(Key::Right);  // a page
+    CHECK(chip.episode() == 8);  // last episode
     chip.handle_key(Key::Down);
     CHECK(chip.episode() == 8);
-    chip.handle_key(Key::Down);
-    CHECK(chip.episode() == 8);  // last episode
     chip.handle_key(Key::Up);
-    CHECK(chip.episode() == 5);
-    chip.handle_key(Key::Left);
-    CHECK(chip.episode() == 4);
+    CHECK(chip.episode() == 7);
+    chip.handle_key(Key::Left);  // a page back
+    CHECK(chip.episode() == 0);
     chip.handle_key(Key::Right);
-    chip.handle_key(Key::Right);
-    CHECK(chip.episode() == 6);
+    CHECK(chip.episode() == 7);
 
     // TAB moves to the next season (generation 3); Left/Right stay on episodes.
     chip.handle_key(Key::Tab);

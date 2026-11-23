@@ -70,7 +70,7 @@ void JellyfinView::render_library(const JellyfinChip& jf) {
     const bool shows = jf.kind() == JellyfinChip::Kind::Shows;
     lv_label_set_text(frame_.title, shows ? "JELLYFIN · TV SHOWS" : "JELLYFIN · MOVIES");
     lv_label_set_text_fmt(frame_.tag, "%zu %s", jf.library_total(), shows ? "shows" : "movies");
-    lv_label_set_text(frame_.footer, shows ? "[↑↓]page [←→]pick [↵]open [/]find [TAB]movies" : "[↑↓]page [←→]pick [↵]play [/]find [TAB]shows");
+    lv_label_set_text(frame_.footer, shows ? "[↑↓]pick [←→]page [↵]open [/]find [TAB]movies" : "[↑↓]pick [←→]page [↵]play [/]find [TAB]shows");
 
     const auto items = jf.library();
     if (items.empty()) {
@@ -110,7 +110,7 @@ void JellyfinView::render_episodes(const JellyfinChip& jf) {
     lv_label_set_text(frame_.title, clip_cols(series ? series->name : "", 28).c_str());
     const auto& seasons = jf.seasons();
     lv_label_set_text(frame_.tag, jf.season() < seasons.size() ? clip_cols(seasons[jf.season()].name, 12).c_str() : "");
-    lv_label_set_text(frame_.footer, "[↑↓]page [←→]pick [TAB]season [↵]play [ESC]back");
+    lv_label_set_text(frame_.footer, "[↑↓]pick [←→]page [TAB]season [↵]play [ESC]back");
 
     const auto& eps = jf.episodes();
     if (eps.empty()) {

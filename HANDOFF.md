@@ -20,11 +20,21 @@ Done since 2026-11-18 (on `main`):
 - JACK IN drive image carries `JackIn.cmd`/`.ps1` plus `JackIn.command` (macOS; right-click → Open the first time), `JackIn.sh` and `jackin-client.sh` (Linux/macOS: bash and curl only, Read mode only). Gaps are listed in `alicepet/jackin/unix/README.txt`.
 - Jellyfin on the PC: navigation matches Retro (←/→ one row, ↑/↓ three, Enter, `/` search, TAB movies/shows or season switch, Esc clears the filter then leaves; 7-row list). MKV now transcodes to MP4; H.264 MP4 plays direct. Item IDs are URL-encoded.
 - Retro: reloads the first tab when its platform vanishes; server-supplied names are sanitized; search Backspace drops a whole UTF-8 character.
-- Tests: Debug `alicepet_tests` passes 514 checks (reported; not re-run for this doc update).
+- Tests: Debug `alicepet_tests` passes 568 checks (re-run 2026-11-23 on the rev27 branch).
+- rev27 / Jack In 0.9.4 (2026-11-23, review fixes; see `alicepet/jackin/PROTOCOL.md`):
+  - The PET decides whether a PC may use it: `open`, keys, typing and the mouse need `[K]` on the PET's Jack In screen (`[jackin] pc_control=on` allows chips from the start), and Terminal needs its own `[K]` every session. The panel stays lit while the PC has Terminal open or is waiting for `[K]`. The PC's own `input` flag is no longer enough.
+  - Jack In video goes through the PET relay only. The direct Jellyfin URL with a per-play API key (an administrator key) is opt-in: `[jellyfin] pc_direct=on`. Leftover keys are swept and revokes retry.
+  - Windows READ mode: stricter command check (no `${function:..}`/`${alias:..}`/`${C:\..}` variables, no `-Name:value` member calls, no type casts or .NET types outside a short list, no functions, fewer native tools) and READ commands run in a ConstrainedLanguage runspace. FULL asks Yes/No for more (member calls through `%`, `Start-Process cmd ...`, `[scriptblock]::Create`, static file calls).
+  - Windows: `$script:FramePending` is initialised (rev26 dropped the first link of every launch). The app keeps reading the link while a Yes/No box is open, and a Yes only counts if the link and mode are unchanged. Going back to Read stops running commands. JACK OUT waits up to 2 s for them. NET resolves names first and refuses this PC's own addresses.
+  - PET link sends never block the UI thread (frames are skipped while the PC isn't reading).
+  - Clients without a player control (Mac/Linux, Windows without WMP) report `handoff`, so the transcode they just started keeps running.
+  - Retro: a game started before RomM's save list is known waits for it; if RomM can't be asked, the save is uploaded only after a fresh check.
+  - `decode_chunked` can't loop; curl runs with `globoff` (ROM names with `[ ]`).
+  - Not verified on hardware. Policy checks: `alicepet/jackin/test/TestPolicy.ps1` on Windows.
 
 Done and committed, desktop-tested (2026-11-17 and earlier):
 - v0.3: Boot / Navi Home / Chip Folder / Battle Chip In screens matching the mockups (Departure Mono 11px, pixel icons, chip art from `chips.html`).
-- v0.4: `.deb` packaging (`/etc/alicepet.conf` conffile), Talk-to-Alice chat on Home, NET SCAN (`[1]`).
+- v0.4: `.deb` packaging (`/etc/alicepet.conf` conffile), Talk-to-Alice chat on Home, NET SCAN (`[1]` then; `[2]` since rev24, `[1]` opens the Chip Folder).
 - v0.5 step 1: sleep (ESC / idle), chip-module framework.
 - v0.5 step 2: VOICE chip push-to-talk (arecord -> bridge -> whisper -> pet session), TTS hook off by default.
 - v0.5 step 3a: TERMINAL chip (SSH bookmarks, pty ssh + VT100 view, Ask-Alice command suggestions that only run on Enter).

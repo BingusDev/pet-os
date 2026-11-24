@@ -11,6 +11,8 @@
 #include "viewmodel/chips/jack_in_chip.h"
 #include "viewmodel/alice_viewmodel.h"
 
+#include <thread>
+#include <chrono>
 #include <algorithm>
 #include <cctype>
 #include <csignal>
@@ -505,7 +507,10 @@ void JellyfinChip::on_result(Result result) {
         }
         return;
     }
-    if (result.generation != generation_) return;  // stale
+    if (result.generation != generation_) {
+        revoke_key(result.key);  // a PC key made for a play that is already over
+        return;                  // stale
+    }
     switch (result.what) {
         case Result::What::Library:
             user_id_ = result.text;
@@ -542,9 +547,13 @@ void JellyfinChip::on_result(Result result) {
             stream_info_ = result.text;
             break;
         case Result::What::PcStream: {
-            if (!pc_playing_ || view_ != View::Playing) break;
+            if (!pc_playing_ || view_ != View::Playing) {
+                revoke_key(result.key);  // stopped before the stream was ready
+                break;
+            }
             const std::string url = pc_link::relay_file(result.text, {auth_header()}, result.name);
             if (url.empty()) {
+                revoke_key(result.key);
                 pc_playing_ = false;
                 view_ = View::Error;
                 status_ = "Couldn't start the media relay for the PC.";
@@ -642,7 +651,7 @@ void JellyfinChip::start_pc_playback(long long start_ticks) {
     stream_info_ = "asking Jellyfin for a PC stream...";
     report_ms_ = 0;
     results_.run([base = base_, auth = auth_header(), uid = user_id_, item = playing_.id, device = device_id_,
-                  session = play_session_, start_ticks, gen = generation_]() {
+                  session = play_session_, start_ticks, gen = generation_, offer_key = config_.jellyfin_pc_direct]() {
         Result result{Result::What::Error, {}, {}, "", 0, gen};
         const auto response = platform::net::http_get(
             base + "/Users/" + platform::net::url_encode(uid) + "/Items/" + platform::net::url_encode(item), {auth}, kTimeoutMs);
@@ -666,10 +675,12 @@ void JellyfinChip::start_pc_playback(long long start_ticks) {
                                 platform::net::url_encode(device) + "&PlaySessionId=" + platform::net::url_encode(session);
         result.what = Result::What::PcStream;
         result.direct = direct;
-        // A key just for this play, so the PC can stream from Jellyfin itself
-        // without ever seeing the PET's own key. Jellyfin keys can't be scoped,
-        // so it lives only while the video plays: the PET deletes it on stop, and
-        // any left over from a crash (same app-name prefix) is deleted here first.
+        // [jellyfin] pc_direct=on only: a key just for this play, so the PC can
+        // stream from Jellyfin itself. Jellyfin keys can't be scoped (each one is
+        // an administrator key), so by default none is made and the PC only gets
+        // the PET's relay URL. A key lives only while the video plays: the PET
+        // deletes it on stop, and any left over from a crash or a power loss
+        // (same app-name prefix) is deleted here first, whatever the setting.
         const auto keys = platform::net::http_get(base + "/Auth/Keys", {auth}, kTimeoutMs);
         platform::json::Value list;
         if (keys.ok && keys.status == 200 && platform::json::parse(keys.body, list)) {
@@ -680,8 +691,9 @@ void JellyfinChip::start_pc_playback(long long start_ticks) {
                 }
             }
             const std::string app = std::string(kPcKeyApp) + session;
-            const auto made = platform::net::http_request(
-                "POST", base + "/Auth/Keys?app=" + platform::net::url_encode(app), "", {auth}, kTimeoutMs);
+            const auto made = offer_key ? platform::net::http_request("POST", base + "/Auth/Keys?app=" + platform::net::url_encode(app),
+                                                                      "", {auth}, kTimeoutMs)
+                                        : platform::net::HttpResponse{};
             const auto again =
                 made.ok && made.status / 100 == 2 ? platform::net::http_get(base + "/Auth/Keys", {auth}, kTimeoutMs)
                                                   : platform::net::HttpResponse{};
@@ -720,6 +732,18 @@ void JellyfinChip::pc_tick() {
             position_ticks_ = static_cast<long long>(std::max(0.0, p.pos) * kTicksPerSecond);
             paused_ = p.paused;
         }
+        if (p.state == "handoff") {
+            // The PC gave the stream to a player that reports nothing back. It is
+            // still playing: leave the Jellyfin session and its transcode alone
+            // (a Stopped report would end the stream it is reading) and go back
+            // to the list. Only the relay URL was handed over, so a PC key is unused.
+            pc_playing_ = false;
+            revoke_pc_key();
+            status_ = "Playing in " + (pc_link::host().empty() ? std::string("the PC") : pc_link::host()) + "'s own player";
+            view_ = return_view_;
+            touch();
+            return;
+        }
         if (p.state == "stopped" || p.state == "ended" || p.state == "error") {
             if (p.state == "error") status_ = "The PC couldn't play it: " + p.error;
             finish_pc_playback();
@@ -730,12 +754,22 @@ void JellyfinChip::pc_tick() {
     if (pc_playing_ && !pc_link::connected()) finish_pc_playback();  // the PC went away
 }
 
-void JellyfinChip::revoke_pc_key() {
-    if (pc_key_.empty()) return;
-    results_.run([url = base_ + "/Auth/Keys/" + pc_key_, auth = auth_header()]() {
-        platform::net::http_request("DELETE", url, "", {auth}, kTimeoutMs);
+// Deletes a per-play key on the server, trying a few times: a key that outlives
+// its play is an administrator login nobody is watching.
+void JellyfinChip::revoke_key(const std::string& key) {
+    if (key.empty()) return;
+    results_.run([url = base_ + "/Auth/Keys/" + platform::net::url_encode(key), auth = auth_header()]() {
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            const auto r = platform::net::http_request("DELETE", url, "", {auth}, kTimeoutMs);
+            if (r.ok && (r.status / 100 == 2 || r.status == 404)) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(500 * (attempt + 1)));
+        }
         return Result{Result::What::Position, {}, {}, "", -1, 0};  // ignored
     });
+}
+
+void JellyfinChip::revoke_pc_key() {
+    revoke_key(pc_key_);
     pc_key_.clear();
 }
 

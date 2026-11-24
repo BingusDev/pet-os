@@ -128,6 +128,7 @@ private:
     void start_pc_playback(long long start_ticks);
     void finish_pc_playback();
     void revoke_pc_key();
+    void revoke_key(const std::string& key);
     void pc_tick();
     std::string pc_title() const;
     void report(const char* endpoint, long long ticks, bool paused);

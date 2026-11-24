@@ -448,7 +448,8 @@ void write_file_atomic(const std::string& path, const std::string& text) {
 }  // namespace
 
 std::string RetroChip::cache_path(const std::string& tab) const {
-    return cache_dir_ + "/retro-" + (tab.empty() ? "all" : tab) + ".json";
+    // The slug comes from the server: keep it a plain file name.
+    return cache_dir_ + "/retro-" + (tab.empty() ? "all" : safe_name(tab, "tab")) + ".json";
 }
 
 std::string RetroChip::current_tab() const {
@@ -616,6 +617,7 @@ void RetroChip::fetch_saves(const Game& game) {
     if (!config_.retro_sync_saves || base_.empty()) return;
     saves_rom_ = game.id;
     play_local_rom_ = 0;
+    start_pending_rom_ = 0;
     saves_known_ = false;
     saves_checking_ = true;
     saves_failed_ = false;
@@ -639,6 +641,17 @@ void RetroChip::start(const Game& game) {
     // A newer save on RomM than on the PET is pulled first, so play picks up
     // where another device left off.
     const std::string path = local_save_path(game);
+    const bool sync = config_.retro_sync_saves && !base_.empty();
+    // RomM hasn't said yet which saves it has: an empty list here means "not
+    // known", not "none". Wait for the answer rather than start on an old save.
+    if (sync && saves_rom_ == game.id && saves_checking_) {
+        start_pending_rom_ = game.id;
+        status_ = "checking RomM for a newer save...";
+        touch();
+        return;
+    }
+    start_pending_rom_ = 0;
+    launch_saves_known_ = !sync || (saves_rom_ == game.id && saves_known_);
     const Save* remote = config_.retro_sync_saves && saves_rom_ == game.id
                              ? pick_save(saves_, fs::path(path).filename().string()) : nullptr;
     if (remote && remote->updated > mtime_of(path) + 2 && !sync_paused(game)) {
@@ -702,6 +715,26 @@ void RetroChip::pull_save(const Game& game, const Save& save) {
         // Stamp it with RomM's time so it isn't uploaded straight back.
         fs::last_write_time(path, fs::file_time_type::clock::now() -
                                       std::chrono::seconds(std::max(0LL, static_cast<long long>(std::time(nullptr)) - updated)), ec);
+        return result;
+    });
+    touch();
+}
+
+// After a play that started without RomM's save list: ask again, and upload only
+// if RomM has nothing newer than the save the PET started from (on_result).
+void RetroChip::check_then_push(const Game& game) {
+    save_status_ = "checking RomM before uploading...";
+    results_.run([url = base_ + "/api/saves?rom_id=" + std::to_string(game.id), headers = headers(), rom = game.id]() {
+        Result result;
+        result.what = Result::What::Saves;
+        result.rom_id = rom;
+        result.then_push = true;
+        const auto response = platform::net::http_request("GET", url, "", headers, kApiTimeoutMs);
+        if (!response.ok || response.status != 200) {
+            result.text = response.ok ? "HTTP " + std::to_string(response.status) : response.error;
+            return result;
+        }
+        result.saves = parse_saves(response.body);
         return result;
     });
     touch();
@@ -892,6 +925,36 @@ const RetroChip::Game* RetroChip::game() const {
 
 void RetroChip::on_result(Result result) {
     shown_valid_ = false;  // results can merge into games_ in place
+    if (result.what == Result::What::Saves && result.then_push) {
+        save_status_.clear();
+        const Game* played = nullptr;
+        for (const auto& g : games_) {
+            if (g.id == result.rom_id) played = &g;
+        }
+        if (!played) return;
+        if (!result.text.empty()) {
+            status_ = "save kept on the PET: couldn't check RomM";
+            touch();
+            return;
+        }
+        const std::string path = local_save_path(*played);
+        const Save* remote = pick_save(result.saves, fs::path(path).filename().string());
+        if (result.rom_id == saves_rom_) {
+            saves_ = result.saves;
+            saves_known_ = true;
+            saves_failed_ = false;
+            saves_checking_ = false;
+        }
+        if (remote && remote->updated > launch_save_mtime_ + 2) {
+            // RomM's save is newer than the one this play started from: keep both.
+            std::ofstream(conflict_marker(path)) << remote->id << "\n";
+            status_ = "save kept on the PET: RomM has a different one";
+            touch();
+            return;
+        }
+        push_save(*played);
+        return;
+    }
     if (result.what == Result::What::Saves) {
         if (result.rom_id != saves_rom_) return;  // the user moved on to another game
         saves_checking_ = false;
@@ -899,6 +962,13 @@ void RetroChip::on_result(Result result) {
         saves_known_ = !saves_failed_;
         saves_ = std::move(result.saves);
         touch();
+        // ENTER was pressed while this check ran: start now that the answer is in.
+        if (start_pending_rom_ == result.rom_id) {
+            start_pending_rom_ = 0;
+            status_.clear();
+            const Game* g = game();
+            if (g && g->id == result.rom_id && view_ == View::Details && downloaded(*g)) start(*g);
+        }
         return;
     }
     if (result.what == Result::What::SaveUp) {
@@ -1128,7 +1198,10 @@ bool RetroChip::handle_key(Key key) {
         break;
     }
     case View::Details:
-        if (key == Key::Escape) view_ = View::Library;
+        if (key == Key::Escape) {
+            view_ = View::Library;
+            start_pending_rom_ = 0;
+        }
         if ((key == Key::Left || key == Key::Right) && game() && !downloaded(*game())) details_play_ = !details_play_;
         if (key == Key::Enter) {
             if (const Game* g = game(); g && details_play_ && pc_link::connected()) {
@@ -1212,7 +1285,8 @@ void RetroChip::tick(uint32_t elapsed_ms) {
                 }
                 if (played && config_.retro_sync_saves && !base_.empty() &&
                     mtime_of(local_save_path(*played)) > launch_save_mtime_) {
-                    push_save(*played);
+                    if (launch_saves_known_) push_save(*played);
+                    else check_then_push(*played);
                 }
             }
             touch();

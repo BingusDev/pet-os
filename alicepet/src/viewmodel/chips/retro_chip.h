@@ -116,6 +116,7 @@ public:
         int rom_id{0};
         std::string text;
         size_t generation{0};
+        bool then_push{false};  // Saves: the check made after a play whose launch didn't know RomM's saves
     };
     void on_result(Result result);
     static std::vector<Platform> parse_platforms(const std::string& json);
@@ -206,6 +207,12 @@ private:
     bool saves_failed_{false};
     std::vector<Save> saves_;
     long long launch_save_mtime_{0};
+    // False when a game started before RomM's save list was known (the check was
+    // still running or failed): its save is only uploaded after a fresh check
+    // shows RomM has nothing newer than what the PET started from.
+    bool launch_saves_known_{true};
+    int start_pending_rom_{0};  // ENTER came while the save check ran: start when it answers
+    void check_then_push(const Game& game);
     int play_local_rom_{0};  // RomM's newer save didn't download; the next ENTER plays the PET's
     std::string save_status_;
 

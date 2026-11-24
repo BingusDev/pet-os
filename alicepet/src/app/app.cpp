@@ -837,6 +837,7 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         vm.handle_char("l");
         // The PC opens JELLYFIN: it renders for the PC's mirror (jack-pc-jellyfin)
         // while the PET panel shows the Jack In card on the top layer (jack-pet-operating).
+        jack->handle_char("k");  // PET-side grant: the PC may open and drive chips
         jack->on_line(R"({"t":"open","chip":"jellyfin"})");
         drain_pc_requests(vm);
         update_pc_overlay(vm, fonts, art_dir);
@@ -853,6 +854,7 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         jack->on_line(R"({"t":"state","full":true,"admin":true,"net":true,"input":true,"mode":"ask"})");
         for (const char* chip : {"lan-tech", "retro", "terminal", "jellyfin"}) {
             jack->on_line(std::string(R"({"t":"open","chip":")") + chip + "\"}");
+            if (std::string(chip) == "terminal") jack->handle_char("k");  // Terminal needs its own [K]
             drain_pc_requests(vm);
             update_pc_overlay(vm, fonts, art_dir);
             advance(virtual_now + 400);
@@ -1046,7 +1048,16 @@ int Application::run() {
             if (linked && !jack_was_linked) g_last_local_key_ms = now_ms;  // countdown starts at link
             jack_was_linked = linked;
             jack_mirroring = linked && jack_chip->mirroring();
-            g_jack_blanked = linked && now_ms - g_last_local_key_ms >= kJackBlankAfterMs;
+            // Something on the PET needs Holden (the PC asked for chip control): light the panel.
+            if (auto* jack_mut = static_cast<viewmodel::chips::JackInChip*>(
+                    view_model.chip_module(model::chip_index("jack-in")));
+                jack_mut && jack_mut->take_attention()) {
+                g_last_local_key_ms = now_ms;
+            }
+            // The panel stays lit while the PC has Terminal open, or is waiting for
+            // [K]: a shell driven from the PC is never out of sight on the PET.
+            const bool watch = linked && (jack_chip->pc_chip() == "terminal" || !jack_chip->pc_wants().empty());
+            g_jack_blanked = linked && !watch && now_ms - g_last_local_key_ms >= kJackBlankAfterMs;
         }
         const auto want_level = (view_model.sleeping() || g_jack_blanked) ? platform::ScreenLevel::Off
                                 : view_model.dimmed()                      ? platform::ScreenLevel::Dim

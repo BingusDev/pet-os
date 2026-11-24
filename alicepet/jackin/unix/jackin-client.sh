@@ -56,10 +56,22 @@ send() {
 link_lost() {
     log "the link to the PET is gone (unplugged, or the PET left Jack In)."
     kill -USR1 $$ 2>/dev/null
+    quit_for_sure
 }
 
 request_quit() {
     kill -TERM $$ 2>/dev/null
+    quit_for_sure
+}
+
+# The main shell is usually sitting in `read` at the prompt, and an old bash
+# (macOS ships 3.2) may not run its trap until Return is pressed. The trap
+# handler kills this reader first, so getting here a second later means it never
+# ran: end the main shell outright rather than leave a dead session open.
+quit_for_sure() {
+    sleep 1
+    log "closed."
+    kill -KILL $$ 2>/dev/null
 }
 
 host_name() {
@@ -188,8 +200,10 @@ handle_play() {
     fi
     log "playing $title in your default player. Pause, seek and volume aren't available from this client."
     open_url "$url"
-    # Nothing reports back from the external player: tell the PET it stopped.
-    send "{\"t\":\"progress\",\"item\":$(jstr "$item"),\"pos\":0,\"paused\":false,\"state\":\"stopped\"}"
+    # Nothing reports back from the external player. "handoff" sends the PET back
+    # to its list without telling Jellyfin the play stopped ("stopped" ended the
+    # transcode the player had just started reading).
+    send "{\"t\":\"progress\",\"item\":$(jstr "$item"),\"pos\":0,\"paused\":false,\"state\":\"handoff\"}"
 }
 
 handle() {
@@ -197,6 +211,7 @@ handle() {
     t=$(json_str t "$line")
     case "$t" in
         pet) log "operator: $(json_str operator "$line")" ;;
+        denied) log "the PET wants [K] pressed on it before a chip opens for this computer." ;;
         chips)
             log "PET chips: $(printf '%s' "$line" | grep -o '"name":"[^"]*"' | sed 's/"name":"//; s/"$//' | paste -sd, -)" ;;
         alice) handle_alice "$line" ;;

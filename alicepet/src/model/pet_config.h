@@ -71,6 +71,11 @@ struct PetConfig {
     std::string jellyfin_player{"mpv --really-quiet --fs --vo=drm --hwdec=auto"};
     int jellyfin_max_bitrate{450000};
     int jellyfin_width{320};
+    // [jellyfin] pc_direct = off | on. Jack In video normally reaches the PC through
+    // the PET's relay, so no Jellyfin credential leaves the PET. "on" also offers
+    // the PC a direct URL with a Jellyfin API key made for that play. Jellyfin
+    // API keys are full administrator keys: only for PCs you own.
+    bool jellyfin_pc_direct{false};
 
     // [romm]: url + API token (Bearer). https URLs go through the system curl.
     std::string romm_url;
@@ -128,6 +133,10 @@ struct PetConfig {
     // Who runs the PET: the PC app shows "OPERATOR: <name>" and labels chat with it
     // (never the Windows user name). [jackin] operator= (or owner=).
     std::string jack_operator{"Holden"};
+    // [jackin] pc_control = ask | on. "ask" (default): a linked PC can't open or
+    // drive chips until [K] is pressed on the PET. "on": chips are allowed from
+    // the start of every session. Terminal always needs its own [K].
+    bool jack_pc_control{false};
 };
 
 // Parses the INI-style /etc/alicepet.conf. Unknown keys are ignored; malformed

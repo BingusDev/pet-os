@@ -53,4 +53,8 @@ ProbeResult probe_ps5(const std::string& address, int timeout_ms);
 std::string json_escape(const std::string& value);
 // Responses are parsed with platform/json.h.
 
+// Body of a "Transfer-Encoding: chunked" reply (public for tests). Stops at the
+// first chunk that claims more bytes than the reply holds.
+std::string decode_chunked(const std::string& body);
+
 } // namespace platform::net

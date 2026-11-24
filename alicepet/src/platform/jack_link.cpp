@@ -136,6 +136,7 @@ void LineServer::drop_client() {
     }
     client_fd_ = -1;
     buffer_.clear();
+    out_.clear();
 }
 
 LineServer::Poll LineServer::poll() {
@@ -153,6 +154,11 @@ LineServer::Poll LineServer::poll() {
         out.connected = true;
     }
     if (client_fd_ < 0) return out;
+    if (!out_.empty() && !flush_some()) {
+        out.disconnected = !out.connected;
+        out.connected = false;
+        return out;
+    }
     char chunk[4096];
     for (;;) {
         const ssize_t n = ::recv(client_fd_, chunk, sizeof(chunk), 0);
@@ -181,14 +187,51 @@ LineServer::Poll LineServer::poll() {
     return out;
 }
 
-bool LineServer::send(const std::string& line) {
+// Never blocks the UI thread: what the socket won't take now waits in `out_` and
+// goes out from poll(). A PC that stops reading (a Yes/No box is open there) only
+// costs it mirror frames, not the link, until the backlog passes kMaxBacklog.
+bool LineServer::send(const std::string& line, bool droppable) {
     if (client_fd_ < 0) return false;
-    const std::string data = line + "\n";
-    if (!send_all(client_fd_, data.data(), data.size())) {
+    if (droppable && out_.size() > kDropBacklog) return false;
+    out_.append(line);
+    out_.push_back('\n');
+    if (!flush_some()) return false;
+    if (out_.size() > kMaxBacklog) {
         drop_client();
         return false;
     }
     return true;
+}
+
+// Writes as much of the backlog as the socket takes right now. False (and the
+// client dropped) when the connection failed.
+bool LineServer::flush_some() {
+    while (client_fd_ >= 0 && !out_.empty()) {
+        const ssize_t n = ::send(client_fd_, out_.data(), out_.size(), MSG_NOSIGNAL);
+        if (n > 0) {
+            out_.erase(0, static_cast<size_t>(n));
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return true;
+        drop_client();
+        return false;
+    }
+    return client_fd_ >= 0;
+}
+
+// Best effort before a deliberate close (the jack-out line): waits up to
+// `timeout_ms` in total for the backlog to go out.
+void LineServer::flush(int timeout_ms) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (client_fd_ >= 0 && !out_.empty()) {
+        if (!flush_some() || out_.empty()) return;
+        const int left = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
+        if (left <= 0) return;
+        pollfd p{client_fd_, POLLOUT, 0};
+        if (::poll(&p, 1, left) <= 0) return;
+    }
 }
 
 // --- Relay -------------------------------------------------------------------

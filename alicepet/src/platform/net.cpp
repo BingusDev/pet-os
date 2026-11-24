@@ -154,7 +154,7 @@ bool parse_url(const std::string& url, std::string& host, int& port, std::string
     return !host.empty() && port > 0;
 }
 
-std::string decode_chunked(const std::string& body) {
+std::string decode_chunked_impl(const std::string& body) {
     std::string out;
     size_t pos = 0;
     while (pos < body.size()) {
@@ -162,12 +162,19 @@ std::string decode_chunked(const std::string& body) {
         if (eol == std::string::npos) {
             break;
         }
-        const size_t size = std::strtoul(body.substr(pos, eol - pos).c_str(), nullptr, 16);
+        const size_t size = std::strtoull(body.substr(pos, eol - pos).c_str(), nullptr, 16);
         if (size == 0) {
             break;
         }
-        out.append(body, eol + 2, size);
-        pos = eol + 2 + size + 2;
+        // A chunk can't be longer than what is left of the body. Without this a
+        // huge size wrapped `pos` back to the start and the loop never ended.
+        const size_t data = eol + 2;
+        if (size > body.size() - data) {
+            out.append(body, data, std::string::npos);  // cut-off reply: keep what arrived
+            break;
+        }
+        out.append(body, data, size);
+        pos = data + size + 2;
     }
     return out;
 }
@@ -193,6 +200,8 @@ namespace {
 std::string curl_quote(const std::string& value) {
     std::string out = "\"";
     for (const char c : value) {
+        // A line break would end the value and start a new curl option.
+        if (c == '\n' || c == '\r' || c == '\0') continue;
         if (c == '"' || c == '\\') out += '\\';
         out += c;
     }
@@ -230,6 +239,7 @@ HttpResponse https_via_curl(const std::string& method, const std::string& url, c
     std::string config = "url = " + curl_quote(url) + "\nrequest = " + curl_quote(method) + "\n";
     for (const auto& header : headers) config += "header = " + curl_quote(header) + "\n";
     config += "compressed\n";  // RomM's JSON lists gzip ~2x smaller over slow links
+    config += "globoff\n";     // [ ] { } in a URL (ROM file names) are literal, not curl ranges
     if (body_file) config += "data-binary = " + curl_quote(std::string("@") + body_path) + "\n";
     const ssize_t written = write(fd, config.data(), config.size());
     close(fd);
@@ -369,7 +379,7 @@ HttpResponse http_request(const std::string& method, const std::string& url, con
     }
     response.body = raw.substr(header_end + 4);
     if (reply_headers.find("transfer-encoding: chunked") != std::string::npos) {
-        response.body = decode_chunked(response.body);
+        response.body = decode_chunked_impl(response.body);
     }
     response.ok = true;
     return response;
@@ -491,5 +501,7 @@ std::string url_encode(const std::string& value) {
     }
     return out;
 }
+
+std::string decode_chunked(const std::string& body) { return decode_chunked_impl(body); }
 
 } // namespace platform::net

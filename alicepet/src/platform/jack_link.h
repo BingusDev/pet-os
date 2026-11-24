@@ -36,8 +36,18 @@ public:
     };
     // Never blocks.
     Poll poll();
-    bool send(const std::string& line);  // adds the newline
+    // Adds the newline. Never blocks: bytes the socket won't take yet are queued
+    // and written from poll(). A `droppable` line (a mirror frame band) is
+    // refused (false) while more than kDropBacklog is waiting; any line that
+    // takes the backlog past kMaxBacklog drops the client.
+    bool send(const std::string& line, bool droppable = false);
+    // Waits up to `timeout_ms` for queued lines to go out (before a deliberate close).
+    void flush(int timeout_ms);
+    size_t backlog() const { return out_.size(); }
     void drop_client();
+
+    static constexpr size_t kDropBacklog = 256 * 1024;
+    static constexpr size_t kMaxBacklog = 4 * 1024 * 1024;
 
     // A line longer than this drops the connection (a 15 s voice clip is ~650 KB of base64).
     static constexpr size_t kMaxLine = 2 * 1024 * 1024;
@@ -46,6 +56,8 @@ private:
     int listen_fd_{-1};
     int client_fd_{-1};
     std::string buffer_;
+    std::string out_;  // lines accepted by send() that the socket hasn't taken yet
+    bool flush_some();
 };
 
 // "Share PC Internet": an HTTP proxy on the PET (CONNECT and plain http://)

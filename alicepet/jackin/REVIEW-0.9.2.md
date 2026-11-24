@@ -52,7 +52,8 @@ Good
   127.0.0.1 on the PET.
 - Relay URLs carry 128-bit random tokens; upstream credentials (Jellyfin and
   RomM headers) stay on the PET and are added by the relay. The PC never sees
-  them. The relay strips Authorization/Cookie from the PC side and never passes
+  them. (0.9.3 added a direct Jellyfin URL carrying a per-play API key, which is
+  an administrator key; since 0.9.4 that is off unless `[jellyfin] pc_direct=on`.) The relay strips Authorization/Cookie from the PC side and never passes
   its own gate cookie upstream.
 - The PC's loopback forwarder (RomM secure context) listens on 127.0.0.1 only.
 - READ mode is an allowlist parsed with the PowerShell AST; FULL mode still

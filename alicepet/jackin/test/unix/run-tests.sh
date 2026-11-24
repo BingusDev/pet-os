@@ -59,7 +59,7 @@ say() { printf '%s\n' "$1" >>"$WORK/inbox"; }
 
 run_client() {
     JACKIN_PET=127.0.0.1 JACKIN_PORT="$PORT" JACKIN_OPENER="$OPENER" \
-        JACKIN_TEST_OPENED="$WORK/opened" \
+        JACKIN_TEST_OPENED="$WORK/opened" JACKIN_TRUST_FILE="$WORK/trust" \
         bash "$CLIENT" </dev/null >"$WORK/client.out" 2>&1 &
     CLIENT_PID=$!
 }
@@ -67,6 +67,8 @@ run_client() {
 stop_pet() {
     stop_pet_procs
 }
+
+TOKEN=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
 # ---- scenario 1: a full session, ending with jack out -----------------------
 echo "== scenario 1: session, PET messages, jack out"
@@ -81,6 +83,7 @@ say '{"t":"ask","what":"full"}'
 say '{"t":"net_open","id":"n1","host":"example.invalid","port":80}'
 say '{"t":"play","kind":"video","title":"Test Movie","url":"http://127.0.0.1:9/x.mp4","item":"abc","start":0,"base":0,"length":100,"seekable":true}'
 say '{"t":"scan"}'
+say "{\"t\":\"trust\",\"token\":\"$TOKEN\"}"
 say '{"t":"jackout","why":"test done"}'
 wait "$CLIENT_PID"; CODE=$?
 CLIENT_PID=
@@ -91,6 +94,10 @@ check "hello names this OS" "$WORK/pet1.out" "\"os\":\"$EXPECT_OS\""
 check "hello is Read mode" "$WORK/pet1.out" '"mode":"read"'
 check "hello has no full access" "$WORK/pet1.out" '"full":false'
 absent "never claims full access" "$WORK/pet1.out" '"full":true'
+check "hello has no trust token the first time" "$WORK/pet1.out" '"trust":""'
+if grep -qE '"time":1[0-9]{9}[,}]' "$WORK/pet1.out"; then pass "hello carries the clock"; else fail "hello carries the clock"; fi
+check "trust token kept" "$WORK/trust" "$TOKEN"
+if [ "$(stat -c %a "$WORK/trust" 2>/dev/null || stat -f %Lp "$WORK/trust")" = 600 ]; then pass "trust token is private"; else fail "trust token is private"; fi
 check "scan sent" "$WORK/pet1.out" '"t":"scan"'
 check "scan log lines sent" "$WORK/pet1.out" '"t":"log"'
 check "run declined with read-only" "$WORK/pet1.out" '"reason":"read-only"'
@@ -112,11 +119,14 @@ start_pet "$WORK/pet2.out"
 run_client
 sleep 1
 say '{"t":"pet","operator":"Holden"}'
+say '{"t":"trust","token":""}'
 sleep 1
 stop_pet_procs
 wait "$CLIENT_PID"; CODE=$?
 CLIENT_PID=
 
+check "the kept token is shown at the next link" "$WORK/pet2.out" "\"trust\":\"$TOKEN\""
+if [ -e "$WORK/trust" ]; then fail "token forgotten when the PET says so"; else pass "token forgotten when the PET says so"; fi
 check "client notices the link is gone" "$WORK/client.out" 'the link to the PET is gone'
 if [ "$CODE" -eq 1 ]; then pass "exit 1 when the link drops"; else fail "exit code $CODE after link drop"; fi
 

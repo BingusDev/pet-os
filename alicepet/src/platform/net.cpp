@@ -3,9 +3,12 @@
  */
 
 #include "net.h"
+#include "platform/clock_sync.h"
 
 #include "process.h"
 
+#include <fstream>
+#include <filesystem>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -212,7 +215,8 @@ std::string curl_quote(const std::string& value) {
 // Headers (tokens) go through a 0600 temp config file, not argv, so they stay
 // out of `ps`; the body goes through a 0600 temp file too.
 HttpResponse https_via_curl(const std::string& method, const std::string& url, const std::string& body,
-                            const std::vector<std::string>& headers, int timeout_ms, size_t max_reply) {
+                            const std::vector<std::string>& headers, int timeout_ms, size_t max_reply,
+                            const std::string& output = "") {
     HttpResponse response;
     char path[] = "/tmp/alicepet-curl-XXXXXX";
     const int fd = mkstemp(path);
@@ -241,6 +245,10 @@ HttpResponse https_via_curl(const std::string& method, const std::string& url, c
     config += "compressed\n";  // RomM's JSON lists gzip ~2x smaller over slow links
     config += "globoff\n";     // [ ] { } in a URL (ROM file names) are literal, not curl ranges
     if (body_file) config += "data-binary = " + curl_quote(std::string("@") + body_path) + "\n";
+    // A download goes straight to its file: the body never sits in this process's memory.
+    if (!output.empty()) {
+        config += "output = " + curl_quote(output) + "\nmax-filesize = " + std::to_string(max_reply) + "\n";
+    }
     const ssize_t written = write(fd, config.data(), config.size());
     close(fd);
     if (written != static_cast<ssize_t>(config.size())) {
@@ -252,9 +260,9 @@ HttpResponse https_via_curl(const std::string& method, const std::string& url, c
     std::string out;
     // Room for the largest reply the caller accepts plus the status marker;
     // anything that fills it is reported as too large, not as a curl failure.
-    const size_t capture_cap = max_reply + 64;
+    const size_t capture_cap = (output.empty() ? max_reply : 4096) + 64;
     const int rc = proc::run_capture({"curl", "-sS", "--max-time", std::to_string(std::max(1, timeout_ms / 1000)),
-                                      "-K", path, "-w", "\n@@HTTP@@%{http_code}"},
+                                      "-K", path, "-w", "\n@@HTTP@@%{http_code} %header{date}"},
                                      out, timeout_ms + 2000, false, capture_cap);
     unlink(path);
     if (body_file) unlink(body_path);
@@ -265,10 +273,15 @@ HttpResponse https_via_curl(const std::string& method, const std::string& url, c
     static constexpr char kMarker[] = "\n@@HTTP@@";
     const size_t marker = out.rfind(kMarker);
     if (rc != 0 || marker == std::string::npos) {
-        response.error = rc == -1 ? "curl missing" : rc == -2 ? "timeout" : "curl exit " + std::to_string(rc);
+        response.error = rc == -1 ? "curl missing" : rc == -2 ? "timeout" : rc == 63 ? "reply too large"
+                                                                          : "curl exit " + std::to_string(rc);
         return response;
     }
     response.status = std::atoi(out.c_str() + marker + sizeof(kMarker) - 1);  // was +10: "200" read as 0
+    // After the status: the server's Date header (an older curl prints the format text, which parses as 0).
+    if (const size_t space = out.find(' ', marker + sizeof(kMarker) - 1); space != std::string::npos) {
+        response.date = clock_sync::parse_http_date(out.substr(space + 1));
+    }
     out.resize(marker);
     response.body = std::move(out);  // no second copy of a large download
     if (response.body.size() > max_reply) {
@@ -289,6 +302,36 @@ int parse_http_status(const std::string& raw) {
     // The space must sit on the status line; find(' ') alone can land in a later header or body.
     if (space == std::string::npos || space > line_end) return 0;
     return std::atoi(raw.c_str() + space + 1);
+}
+
+HttpResponse http_download(const std::string& url, const std::vector<std::string>& headers, const std::string& path,
+                           int timeout_ms, size_t max_bytes) {
+    HttpResponse response = https_via_curl("GET", url, "", headers, timeout_ms, max_bytes, path);
+    std::error_code ec;
+    if (!response.ok && response.error == "curl missing" && url.rfind("http://", 0) == 0) {
+        // No curl on this system: the in-process client, which holds the file in memory once.
+        response = http_request("GET", url, "", headers, timeout_ms, max_bytes);
+        if (response.ok && response.status == 200) {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            out.write(response.body.data(), static_cast<std::streamsize>(response.body.size()));
+            out.flush();
+            if (!out) {
+                response.ok = false;
+                response.error = "can't write " + path;
+            }
+        }
+        response.body.clear();
+    }
+    // curl's max-filesize only stops a reply that says how long it is: check what arrived.
+    if (response.ok && response.status == 200) {
+        const auto size = std::filesystem::file_size(path, ec);
+        if (ec || size > max_bytes) {
+            response.ok = false;
+            response.error = ec ? "nothing was saved" : "reply too large";
+        }
+    }
+    if (!response.ok || response.status != 200) std::filesystem::remove(path, ec);
+    return response;
 }
 
 HttpResponse http_request(const std::string& method, const std::string& url, const std::string& body,
@@ -376,6 +419,11 @@ HttpResponse http_request(const std::string& method, const std::string& url, con
     std::string reply_headers = raw.substr(0, header_end);
     for (char& c : reply_headers) {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    if (const size_t at = reply_headers.find("\r\ndate:"); at != std::string::npos) {
+        const size_t from = at + 7;
+        // The original text: the lower-cased copy has "nov" where the parser wants "Nov".
+        response.date = clock_sync::parse_http_date(raw.substr(from, raw.find("\r\n", from) - from));
     }
     response.body = raw.substr(header_end + 4);
     if (reply_headers.find("transfer-encoding: chunked") != std::string::npos) {

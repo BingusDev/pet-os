@@ -36,11 +36,29 @@ the next turn, until she answers without a command. After 25 commands (Full;
 the app's live log and on the PET. The PC's microphone records only while
 the person holds the app's talk button; the PET can't start it.
 
+Alice is reached with the PET's own login, so `chat` and `voice` are answered
+only once the PET allowed this PC: [K] this session, a trusted PC, or
+`[jackin] pc_control=on`. Until then the PET answers `alice` `ok: false`
+("Press [K] on the PET...") and shows the request on its screen.
+
+Trusted PCs: [T] twice on the PET's Jack In screen makes a random token, stores
+it in `[jackin] state_dir`/`jack-trusted.conf` (0600, at most 16 PCs) and sends
+it to the PC (`trust`). A PC that shows a known token in `hello` gets chip
+control and Alice at once, and its clock may set the PET's. Terminal still needs
+its own [K] every session, and the PC's access mode (Read/Ask/Full) is still
+chosen on the PC. [T] twice on a trusted PC forgets it.
+
+Session reports: when a session ends (JACK OUT, the app closing, the cable
+pulled) the PET writes `state_dir`/`jack-reports/<host>-<date>-<time>.txt`:
+the PC, its scan, what Alice said and every command in the session log. The
+scan is also kept as that PC's "last visit", shown and given to Alice at the
+next link. `[jackin] reports=off` turns the reports off. The newest 200 are kept.
+
 ## PC → PET
 
 | `t` | Fields | Meaning |
 |---|---|---|
-| `hello` | `host`, `os`, `user`, `admin`, `full`, `input`, `mode` (`read`/`ask`/`full`), `app` | Session start (also after an elevated relaunch). `input`: true in Ask or Full (keys may be forwarded) |
+| `hello` | `host`, `os`, `user`, `admin`, `full`, `input`, `mode` (`read`/`ask`/`full`), `app`, `time`, `trust` | Session start (also after an elevated relaunch). `input`: true in Ask or Full (keys may be forwarded). `time`: the PC's clock in unix seconds; the PET (no battery clock) takes it from a trusted PC, or from any PC when its own clock is before September 2026. `trust`: the token the PET gave this PC with [T] (`""` if none) |
 | `scan` | `cpu`, `ram` (% used), `disk`, `disk_free` (%), `startup`, `defender` (`on`/`off`/`?`), `defender_since`, `top` [`{name, mb}`] | Read-only scan results |
 | `state` | `full`, `admin`, `net`, `input`, `mode`, optional `denied` (`"admin"` when UAC was cancelled) | Something changed on the PC |
 | `open` | `chip` | Open a PC-capable chip (`terminal`, `jellyfin`, `retro`, `lan-tech`) on the PET. Ignored for any other id. Only honoured after [K] was pressed on the PET (`pet` `control: true`), and `terminal` only after its own [K] (`pet` `terminal: true`); otherwise the PET answers `denied` |
@@ -66,7 +84,8 @@ the person holds the app's talk button; the PET can't start it.
 | `ask` | `what`: `full` / `admin` / `net` | Highlights that button on the PC; nothing changes until it is clicked |
 | `drop` | `what`: `full` / `net` | Turn that off (taking access away needs no click) |
 | `run` | `id`, `cmd`, optional `agent` (true: from Alice's loop, shown in the chat) | Run one PowerShell command, as the access mode allows (above) |
-| `pet` | `operator`, `control`, `terminal` | Sent after `hello` and whenever a grant changes: who runs the PET (`[jackin] operator=`, default `Holden`; the app shows it as OPERATOR and on chat lines, never the Windows user), and what the PET lets this PC do. `control`: the PC may open and drive chips ([K] on the PET, or `[jackin] pc_control=on`). `terminal`: it may open Terminal (always its own [K], every session). The PC's own `input` flag is never enough |
+| `trust` | `token` | [T] pressed twice on the PET. 64 hex characters: keep it (Windows: DPAPI for this user, `%APPDATA%\AlicePET\jackin-trust.dat`; Mac/Linux: `~/.config/alicepet/jackin-trust`, 0600) and send it as `hello` `trust` from now on. `""`: forget the token (the PET forgot this PC, or didn't know the token it was shown) |
+| `pet` | `operator`, `control`, `terminal`, `trusted` | Sent after `hello` and whenever a grant changes: who runs the PET (`[jackin] operator=`, default `Holden`; the app shows it as OPERATOR and on chat lines, never the Windows user), and what the PET lets this PC do. `control`: the PC may open and drive chips ([K] on the PET, or `[jackin] pc_control=on`). `terminal`: it may open Terminal (always its own [K], every session). `trusted`: the PET knew this PC's token, so `control` was on from the start. The PC's own `input` flag is never enough |
 | `denied` | `what`: `control` / `terminal`, `chip` | An `open` was refused until [K] is pressed on the PET. When it is, the PET opens `chip` itself and sends `pet` with the new grants |
 | `agent_more` | `steps`, `next` | Alice hit the step cap; ask Holden "Keep going?" and reply `agent_more` |
 | `agent_stop` | `why` | Alice's command loop ended early |

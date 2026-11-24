@@ -11,6 +11,7 @@
 #include "platform/media_relay.h"
 #include "viewmodel/chip_module.h"
 #include "viewmodel/chips/bridge_client.h"
+#include "viewmodel/chips/jack_store.h"
 
 #include <chrono>
 #include <cstdint>
@@ -61,7 +62,9 @@ bool take_progress(Progress& progress);
 // clicked there. The PET can only ask ([F] [A] [N]), take access away again,
 // or [X] JACK OUT, which closes the PC app. Everything that lets the PC use the
 // PET is decided on the PET: [K] lets the PC open and drive chips, and Terminal
-// (the PET's SSH keys) needs its own [K] in every session.
+// (the PET's SSH keys) needs its own [K] in every session. [T] (twice) trusts
+// this PC: from then on it gets chip control as soon as it links, and its clock
+// may set the PET's. Each session ends with a text report in [jackin] state_dir.
 // Protocol: alicepet/jackin/PROTOCOL.md.
 class JackInChip : public ChipModule {
 public:
@@ -139,6 +142,10 @@ public:
     // drive chips / may open Terminal. Both end with the session.
     bool pc_control() const { return pc_control_; }
     bool pc_terminal() const { return pc_terminal_; }
+    // This PC showed a token Holden gave it with [T] (jack-trusted.conf).
+    bool trusted() const { return trusted_; }
+    // The first [T] was pressed: the next one trusts (or forgets) this PC.
+    bool trust_armed() const { return trust_armed_; }
     // What the PC is waiting for Holden to allow with [K]: "", "control" or "terminal".
     const std::string& pc_wants() const { return pc_wants_; }
     // True once after something on the PET screen needs Holden (the app lights the panel).
@@ -160,7 +167,11 @@ public:
 
     // "CPU 78% · RAM 91% · C: 8% free"
     static std::string scan_summary(const Scan& scan);
-    static std::string alice_prompt(const std::string& host, const std::string& os, const Scan& scan);
+    // `last` is jack_store::last_text() of the visit before this one, or "".
+    static std::string alice_prompt(const std::string& host, const std::string& os, const Scan& scan,
+                                    const std::string& last = "");
+    // The text report written when a session ends (public for tests).
+    std::string report_text(const std::string& why) const;
     // Splits Alice's answer into her words and a "CMD:" PowerShell line (if any).
     static void split_reply(const std::string& reply, std::string& words, std::string& command);
     // The bridge prompt for a chat message typed on the PC, telling Alice the mode and the CMD: rule.
@@ -220,6 +231,11 @@ private:
     bool send(const std::string& json, bool droppable = false);
     void send_pet();
     void grant_key();
+    void trust_key();
+    void push_log(LogLine line);
+    std::string state_dir() const;
+    // Writes the session report and remembers the scan for the next visit.
+    void end_session(const std::string& why);
     void deny_open(const std::string& chip, const char* what);
     void submit_gadget(bool up);
     void note(const std::string& text, LogLine::Kind kind = LogLine::Kind::Note);
@@ -323,6 +339,12 @@ private:
     std::string pc_wants_;          // "control" / "terminal": the PC asked, [K] decides
     std::string pc_wants_chip_;     // the chip that request was for
     bool attention_{false};
+    bool trusted_{false};
+    bool trust_armed_{false};
+    size_t session_lines_{0};       // log lines added since this session's hello
+    std::string session_began_;     // "YYYY-MM-DD HH:MM"
+    jack_store::LastVisit last_visit_;
+    bool last_noted_{false};
     bool mirror_on_{false};         // the PC window is visible and wants frames
     std::deque<std::string> opening_;
     std::deque<Input> inputs_;

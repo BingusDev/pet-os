@@ -76,6 +76,13 @@ struct PetConfig {
     // the PC a direct URL with a Jellyfin API key made for that play. Jellyfin
     // API keys are full administrator keys: only for PCs you own.
     bool jellyfin_pc_direct{false};
+    // [jellyfin] pc_user / pc_password: an ordinary (non-administrator) Jellyfin
+    // user made for PC playback. When set, each Jack In play logs that user in,
+    // hands the PC a direct URL with that login's token, and logs it out when the
+    // play ends. The password is a secret (alicepet.local.conf only). An
+    // administrator account is refused.
+    std::string jellyfin_pc_user;
+    std::string jellyfin_pc_password;
 
     // [romm]: url + API token (Bearer). https URLs go through the system curl.
     std::string romm_url;
@@ -137,6 +144,14 @@ struct PetConfig {
     // drive chips until [K] is pressed on the PET. "on": chips are allowed from
     // the start of every session. Terminal always needs its own [K].
     bool jack_pc_control{false};
+    // Where the PET keeps what it remembers about PCs: the trusted list
+    // (jack-trusted.conf) and one report per session (jack-reports/).
+    std::string jack_state_dir{"~/.local/share/alicepet"};
+    // [jackin] reports = on | off: write a text report of each session at jack out.
+    bool jack_reports{true};
+    // [clock] set=: run with a unix time to set the PET's clock (no battery clock).
+    // Used with the time of a trusted Jack In PC or of the RomM server. Empty = never.
+    std::string clock_set{"sudo -n /usr/libexec/alicepet/set-clock.sh"};
 };
 
 // Parses the INI-style /etc/alicepet.conf. Unknown keys are ignored; malformed

@@ -115,7 +115,12 @@ async function handleVoice(server, req, res) {
   const sttMs = Date.now() - started;
   console.log(`[pet-voice] ${audio.length} bytes -> ${transcript.length} chars in ${sttMs} ms`);
   if (!transcript) return send(res, 200, { ok: false, error: "I didn't catch that. Hold SPACE and try again?", stt_ms: sttMs });
-  const answer = await askBridge(server, transcript);
+  // X-Pet-Prefix (percent-encoded): context the PET wants in front of what was
+  // said, e.g. Jack In's access mode and the CMD: rule. The transcript returned
+  // to the PET stays just the spoken words.
+  let prefix = '';
+  try { prefix = decodeURIComponent(String(req.headers['x-pet-prefix'] || '')).slice(0, 600); } catch { prefix = ''; }
+  const answer = await askBridge(server, prefix ? `${prefix} ${transcript}` : transcript);
   return send(res, 200, { ...answer, transcript, stt_ms: sttMs });
 }
 

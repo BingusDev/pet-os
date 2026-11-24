@@ -17,6 +17,7 @@ struct HttpResponse {
     int status{0};
     std::string body;
     std::string error;    // transport error when !ok
+    long long date{0};    // the server's Date header as unix seconds (0 = none)
 };
 
 // http:// is handled in-process (the bridge runs over Tailscale, which already
@@ -27,6 +28,10 @@ HttpResponse http_post_json(const std::string& url, const std::string& json_body
 HttpResponse http_request(const std::string& method, const std::string& url, const std::string& body,
                           const std::vector<std::string>& headers, int timeout_ms,
                           size_t max_reply = 4 * 1024 * 1024);
+// GET straight into the file at `path` (through curl, so a big ROM is never held
+// in memory). The file is removed again unless the reply is a 200 of at most max_bytes.
+HttpResponse http_download(const std::string& url, const std::vector<std::string>& headers, const std::string& path,
+                           int timeout_ms, size_t max_bytes);
 HttpResponse http_get(const std::string& url, const std::vector<std::string>& headers, int timeout_ms);
 // Percent-encodes a query parameter value.
 std::string url_encode(const std::string& value);

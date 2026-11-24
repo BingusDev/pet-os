@@ -2,7 +2,8 @@
 #
 # Starts the real Jack In app against a scripted stand-in PET on 127.0.0.1 and
 # checks the link by itself (no typing): the first link stays up, READ mode runs
-# a read-only command and refuses the ways round it, and JACK OUT closes the app.
+# a read-only command and refuses the ways round it, the trust token from the PET
+# is kept and shown back (in a temp file, never the real one), and JACK OUT closes the app.
 # The Jack In window shows for about half a minute and then closes.
 #   powershell -NoProfile -ExecutionPolicy Bypass -File TestLink.ps1
 # Every command sent here is harmless even if a check fails and it runs.
@@ -74,14 +75,26 @@ function Find-Msg([string]$type, $id = $null) {
     return $null
 }
 
+# A token "the PET gave this PC last time", sealed the way the app seals it.
+Add-Type -AssemblyName System.Security
+$trustFile = Join-Path ([System.IO.Path]::GetTempPath()) "JackIn-trust-test-$PID.dat"
+$salt = [System.Text.Encoding]::ASCII.GetBytes('AlicePET Jack In trust')
+$oldToken = 'ab' * 32
+$newToken = 'cd' * 32
+[System.IO.File]::WriteAllBytes($trustFile, [System.Security.Cryptography.ProtectedData]::Protect(
+        [System.Text.Encoding]::ASCII.GetBytes($oldToken), $salt, 'CurrentUser'))
+
 $proc = Start-Process powershell.exe -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden',
-    '-File', "`"$App`"", '-Pet', '127.0.0.1', '-Port', $Port, '-TunnelPort', ($Port + 1))
+    '-File', "`"$App`"", '-Pet', '127.0.0.1', '-Port', $Port, '-TunnelPort', ($Port + 1), '-TrustFile', "`"$trustFile`"")
 try {
     Check 'the app dials the PET and says hello' (Wait-App 40 { $null -ne (Find-Msg 'hello') })
     $hello = Find-Msg 'hello'
     if ($hello) {
         Write-Host "  app $($hello.app), mode $($hello.mode), admin=$($hello.admin)"
         Check 'it starts in READ mode' ($hello.mode -eq 'read' -and -not $hello.full -and -not $hello.input)
+        $nowUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        Check 'hello carries this PC''s clock' ($hello.PSObject.Properties['time'] -and [Math]::Abs([long]$hello.time - $nowUnix) -lt 120)
+        Check 'hello shows the kept trust token' ($hello.PSObject.Properties['trust'] -and $hello.trust -eq $oldToken)
     }
     Check 'the scan arrives' (Wait-App 60 { $null -ne (Find-Msg 'scan') })
 
@@ -106,6 +119,19 @@ try {
         $n++
     }
 
+    # [T] twice on the PET: forget this PC, then trust it again with a new token.
+    Send-App ([ordered]@{ t = 'trust'; token = '' })
+    Check 'the PET can make the app forget its token' (Wait-App 10 { -not (Test-Path -LiteralPath $trustFile) })
+    Send-App ([ordered]@{ t = 'trust'; token = $newToken })
+    [void](Wait-App 10 { Test-Path -LiteralPath $trustFile })
+    $kept = ''
+    try {
+        $kept = [System.Text.Encoding]::ASCII.GetString([System.Security.Cryptography.ProtectedData]::Unprotect(
+                [System.IO.File]::ReadAllBytes($trustFile), $salt, 'CurrentUser'))
+    } catch { }
+    Check 'a new token is kept, sealed for this Windows user' ($kept -eq $newToken)
+    Check 'the token is not readable as plain text' (-not ([System.IO.File]::ReadAllText($trustFile).Contains($newToken)))
+
     # NET is off, and localhost is this PC: the app must say no either way.
     Send-App ([ordered]@{ t = 'net_open'; id = 77; host = 'localhost'; port = 80 })
     Check 'a tunnel to this PC is refused' (Wait-App 10 { $null -ne (Find-Msg 'net_fail' 77) })
@@ -118,6 +144,7 @@ try {
     if (-not $proc.HasExited) { try { $proc.Kill() } catch { } }
     if ($client) { try { $client.Close() } catch { } }
     $listener.Stop()
+    if (Test-Path -LiteralPath $trustFile) { Remove-Item -LiteralPath $trustFile -Force }
 }
 if ($fail) { Write-Host "$fail link checks failed"; exit 1 }
 Write-Host 'link ok'

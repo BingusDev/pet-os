@@ -6,6 +6,8 @@
  * tests build anywhere the app builds: `ctest` or run alicepet_tests directly.
  */
 
+#include "platform/clock_sync.h"
+#include "viewmodel/chips/jack_store.h"
 #include "model/chip_registry.h"
 #include "model/pet_config.h"
 #include "model/power_profile.h"
@@ -31,6 +33,7 @@
 #include <filesystem>
 #include <fstream>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <string>
 #include <vector>
@@ -435,6 +438,13 @@ void test_config_local_overlay() {
     CHECK(config.bookmarks.size() == 1);
     CHECK(config.sleep_after_s == 300);  // untouched values still come from the main file
     CHECK(model::local_config_path("/etc/alicepet.conf") == "/etc/alicepet.local.conf");
+    // rev28 keys and their defaults.
+    CHECK(config.jack_reports && config.jack_state_dir == "~/.local/share/alicepet" && config.jellyfin_pc_user.empty());
+    CHECK(config.clock_set.find("set-clock.sh") != std::string::npos);
+    const auto fresh = model::parse_pet_config(
+        "[jackin]\nreports=off\nstate_dir=/var/lib/pet\n[jellyfin]\npc_user=couch\npc_password=p w\n[clock]\nset=\n");
+    CHECK(!fresh.jack_reports && fresh.jack_state_dir == "/var/lib/pet");
+    CHECK(fresh.jellyfin_pc_user == "couch" && fresh.jellyfin_pc_password == "p w" && fresh.clock_set.empty());
     fs::remove_all(dir);
 }
 
@@ -769,7 +779,7 @@ void test_jack_session() {
     jack.on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk"})");
     CHECK(jack.connected() && jack.view() == JackInChip::View::Session);
     // The PET names its operator (never the Windows user) right after hello.
-    CHECK(!jack.sent.empty() && jack.sent[0] == R"({"t":"pet","operator":"Holden","control":false,"terminal":false})");
+    CHECK(!jack.sent.empty() && jack.sent[0] == R"({"t":"pet","operator":"Holden","control":false,"terminal":false,"trusted":false})");
     jack.sent.clear();
     CHECK(!jack.full() && !jack.admin());
     CHECK(jack.keep_awake());
@@ -808,6 +818,14 @@ void test_jack_session() {
     CHECK(!jack.keep_awake());
     // Chat from the PC app goes to Alice through the PET and the answer goes back.
     jack.on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk"})");
+    // ... once Holden allowed this PC with [K]: Alice is reached with the PET's login.
+    jack.on_line(R"({"t":"chat","text":"why is this PC slow?"})");
+    CHECK(!jack.chat_waiting() && jack.pc_wants() == "control" && jack.take_attention());
+    CHECK(jack.sent.back().find("Press [K]") != std::string::npos);
+    jack.on_line(R"({"t":"voice","wav":"AAAA"})");
+    CHECK(!jack.chat_waiting());
+    jack.handle_char("k");
+    CHECK(jack.pc_control() && jack.pc_wants().empty());
     jack.on_line(R"({"t":"chat","text":"why is this PC slow?"})");
     CHECK(jack.chat_waiting());
     CHECK(jack.log().back().text == "Holden: why is this PC slow?");
@@ -1064,7 +1082,7 @@ void test_jack_pc_control_is_granted_on_the_pet() {
     // First [K]: chips, but never Terminal along with it.
     jack.handle_char("k");
     CHECK(jack.pc_control() && !jack.pc_terminal() && !jack.take_open(id));
-    CHECK(jack.sent[jack.sent.size() - 2] == R"({"t":"pet","operator":"Holden","control":true,"terminal":false})");
+    CHECK(jack.sent[jack.sent.size() - 2] == R"({"t":"pet","operator":"Holden","control":true,"terminal":false,"trusted":false})");
     CHECK(jack.sent.back() == R"({"t":"denied","what":"terminal","chip":"terminal"})" && jack.pc_wants() == "terminal");
     jack.on_line(R"({"t":"open","chip":"jellyfin"})");
     CHECK(jack.take_open(id) && id == "jellyfin");
@@ -1590,7 +1608,189 @@ void test_retro_safe_names() {
     CHECK(body.find("\r\nEvil: 1") == std::string::npos);
 }
 
+// [T] twice trusts a PC: the PET makes the token, the PC shows it at the next
+// link and gets chip control at once (never Terminal). Every session leaves a report.
+void test_jack_trust_and_report() {
+    using viewmodel::chips::JackInChip;
+    namespace store = viewmodel::chips::jack_store;
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "alicepet-jack-store-test";
+    std::filesystem::remove_all(dir);
+    model::PetConfig config;
+    config.jack_gadget_up.clear();
+    config.jack_gadget_down.clear();
+    config.bridge_url.clear();
+    config.clock_set.clear();
+    config.jack_state_dir = dir.string();
+    const char* hello = R"({"t":"hello","host":"HK-DESKTOP","os":"Windows 11","user":"hk","full":true,"input":true,"mode":"ask"})";
+    std::string token;
+    {
+        JackInChip jack(config);
+        jack.capture_sent = true;
+        jack.on_line(hello);
+        CHECK(!jack.trusted() && !jack.pc_control());
+        // One [T] only asks; another key calls it off.
+        jack.handle_char("t");
+        CHECK(jack.trust_armed() && !jack.trusted() && jack.status().find("[T] again") != std::string::npos);
+        jack.handle_char("l");
+        jack.handle_char("l");
+        CHECK(!jack.trust_armed());
+        jack.handle_char("t");
+        jack.handle_char("T");
+        CHECK(jack.trusted() && jack.pc_control() && !jack.pc_terminal());
+        const std::string head = R"({"t":"trust","token":")";
+        for (const auto& line : jack.sent) {
+            if (line.rfind(head, 0) == 0) token = line.substr(head.size(), 64);
+        }
+        CHECK(token.size() == 64 && token.find_first_not_of("0123456789abcdef") == std::string::npos);
+        CHECK(jack.sent.back() == R"({"t":"pet","operator":"Holden","control":true,"terminal":false,"trusted":true})");
+        jack.on_line(R"({"t":"scan","cpu":78,"ram":91,"disk":"C:","disk_free":8,"startup":14,"defender":"off"})");
+        jack.on_line(R"({"t":"log","text":"Get-Process","ok":true})");
+        const std::string report = jack.report_text("test");
+        CHECK(report.find("HK-DESKTOP (Windows 11), user hk") != std::string::npos);
+        CHECK(report.find("RAM 91%") != std::string::npos && report.find("> Get-Process") != std::string::npos);
+        CHECK(report.find("trusted PC") != std::string::npos);
+        jack.handle_char("x");
+    }
+    // The list is private and the session left one report and the scan for next time.
+    const auto list = store::load_trusted(dir.string());
+    CHECK(list.size() == 1 && list[0].host == "HK-DESKTOP" && list[0].token == token);
+    CHECK((std::filesystem::status(dir / "jack-trusted.conf").permissions() & std::filesystem::perms::others_all) ==
+          std::filesystem::perms::none);
+    CHECK((std::filesystem::status(dir / "jack-trusted.conf").permissions() & std::filesystem::perms::group_all) ==
+          std::filesystem::perms::none);
+    size_t reports = 0;
+    for (const auto& e : std::filesystem::directory_iterator(dir / "jack-reports")) {
+        if (e.path().extension() == ".txt") ++reports;
+    }
+    CHECK(reports == 1);
+    const auto last = store::load_last(dir.string(), "HK-DESKTOP");
+    CHECK(last.have && last.ram == 91 && last.defender == "off");
+    CHECK(store::last_text(last, "C:").find("RAM 91%") != std::string::npos);
+    {
+        // The next link with the token: chips at once, Terminal still asks, last visit noted.
+        JackInChip jack(config);
+        jack.capture_sent = true;
+        std::string with = hello;
+        with.insert(with.size() - 1, ",\"trust\":\"" + token + "\"");
+        jack.on_line(with);
+        CHECK(jack.trusted() && jack.pc_control() && !jack.pc_terminal());
+        std::string id;
+        jack.on_line(R"({"t":"open","chip":"terminal"})");
+        CHECK(!jack.take_open(id) && jack.pc_wants() == "terminal");
+        jack.on_line(R"({"t":"scan","cpu":10,"ram":40,"disk":"C:","disk_free":50,"startup":3,"defender":"on"})");
+        bool noted = false;
+        for (const auto& line : jack.log()) noted = noted || line.text.find("last visit") != std::string::npos;
+        CHECK(noted);
+        // The admin handover is the same visit: no report for it.
+        jack.on_line(R"({"t":"bye","why":"admin handover"})");
+        // A wrong token gets nothing and is told to forget it.
+        std::string wrong = hello;
+        wrong.insert(wrong.size() - 1, ",\"trust\":\"" + std::string(64, 'a') + "\"");
+        jack.sent.clear();
+        jack.on_line(wrong);
+        CHECK(!jack.trusted() && !jack.pc_control());
+        CHECK(std::find(jack.sent.begin(), jack.sent.end(), R"({"t":"trust","token":""})") != jack.sent.end());
+        // [T] twice on a trusted PC forgets it.
+        jack.on_line(with);
+        CHECK(jack.trusted());
+        jack.handle_char("t");
+        jack.handle_char("t");
+        CHECK(!jack.trusted() && store::load_trusted(dir.string()).empty());
+        jack.on_line(with);
+        CHECK(!jack.trusted());
+    }
+    reports = 0;
+    for (const auto& e : std::filesystem::directory_iterator(dir / "jack-reports")) {
+        if (e.path().extension() == ".txt") ++reports;
+    }
+    CHECK(reports == 1);
+    // Host names from a PC never leave the reports folder.
+    CHECK(store::safe_host("../../etc/passwd").find('/') == std::string::npos);
+    CHECK(store::safe_host("..").find('.') == std::string::npos);
+    std::filesystem::remove_all(dir);
+}
+
+// A ROM download goes straight to its file, tells the server's time, and leaves
+// nothing behind when the reply is an error or larger than allowed.
+void test_http_download_streams_to_disk() {
+    if (std::system("command -v curl >/dev/null 2>&1") != 0) return;  // the download path is curl
+    for (const char* name : {"no_proxy", "NO_PROXY"}) {
+        const char* old = std::getenv(name);
+        setenv(name, (std::string(old ? old : "") + (old && *old ? "," : "") + "127.0.0.1").c_str(), 1);
+    }
+    const int listener = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    int one = 1;
+    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    CHECK(::bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof addr) == 0 && ::listen(listener, 4) == 0);
+    socklen_t len = sizeof addr;
+    getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &len);
+    const int port = ntohs(addr.sin_port);
+    const std::string rom(300000, 'R');
+    // Three requests: the ROM, a 404, and the ROM again for a caller that allows less.
+    std::thread server([listener, rom]() {
+        for (int i = 0; i < 3; ++i) {
+            const int fd = ::accept(listener, nullptr, nullptr);
+            if (fd < 0) return;
+            char buf[2048];
+            std::string request;
+            while (request.find("\r\n\r\n") == std::string::npos) {
+                const ssize_t n = ::recv(fd, buf, sizeof buf, 0);
+                if (n <= 0) break;
+                request.append(buf, static_cast<size_t>(n));
+            }
+            const bool missing = i == 1;
+            const std::string body = missing ? "no such rom" : rom;
+            const std::string head = std::string(missing ? "HTTP/1.1 404 Not Found" : "HTTP/1.1 200 OK") +
+                                     "\r\nDate: Sun, 22 Nov 2026 02:19:22 GMT\r\nContent-Length: " +
+                                     std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n";
+            const std::string reply = head + body;
+            size_t sent = 0;
+            while (sent < reply.size()) {
+                const ssize_t n = ::send(fd, reply.data() + sent, reply.size() - sent, MSG_NOSIGNAL);
+                if (n <= 0) break;
+                sent += static_cast<size_t>(n);
+            }
+            ::close(fd);
+        }
+    });
+    const std::string url = "http://127.0.0.1:" + std::to_string(port) + "/api/roms/1/content/Game%20[!].gb";
+    const std::string path = (std::filesystem::temp_directory_path() / "alicepet-download-test.part").string();
+    auto r = platform::net::http_download(url, {"Authorization: Bearer x"}, path, 10000, 1024 * 1024);
+    CHECK(r.ok && r.status == 200 && r.body.empty());
+    CHECK(r.date == 1795313962);
+    std::error_code ec;
+    CHECK(std::filesystem::file_size(path, ec) == rom.size());
+    r = platform::net::http_download(url, {}, path, 10000, 1024 * 1024);
+    CHECK(r.status == 404 && !std::filesystem::exists(path));
+    r = platform::net::http_download(url, {}, path, 10000, 1000);
+    CHECK(!r.ok && r.error == "reply too large" && !std::filesystem::exists(path));
+    ::close(listener);
+    server.join();
+}
+
+// The PET's clock is only set by a source Holden trusts, unless it is certainly wrong.
+void test_clock_sync_rules() {
+    using namespace platform::clock_sync;
+    const long long good = kSaneEpoch + 5000000;
+    CHECK(should_set(1700000000, good, false));        // a clock from before the PET existed: anyone may fix it
+    CHECK(!should_set(good, good + 86400, false));     // a sane clock: not from a PC nobody trusted
+    CHECK(should_set(good, good + 86400, true));
+    CHECK(!should_set(good, good + 30, true));         // close enough
+    CHECK(!should_set(good, 1700000000, true));        // never back to a time that can't be right
+    CHECK(!should_set(good, 0, true));
+    CHECK(parse_http_date("Sun, 22 Nov 2026 02:19:22 GMT") == 1795313962);
+    CHECK(parse_http_date("garbage") == 0 && parse_http_date("") == 0);
+}
+
 int main() {
+    // Nothing here may write to the real home folder (Jack In reports, trusted PCs).
+    const std::filesystem::path home = std::filesystem::temp_directory_path() / "alicepet-tests-home";
+    std::filesystem::create_directories(home);
+    setenv("HOME", home.c_str(), 1);
     const std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"wrap", test_wrap},
         {"pc_input_reaches_open_chip", test_pc_input_reaches_open_chip},
@@ -1635,6 +1835,9 @@ int main() {
         {"lan_helpers", test_lan_helpers},
         {"lan_static_config", test_lan_static_config},
         {"jack_session", test_jack_session},
+        {"jack_trust_and_report", test_jack_trust_and_report},
+        {"clock_sync_rules", test_clock_sync_rules},
+        {"http_download_streams_to_disk", test_http_download_streams_to_disk},
         {"jack_line_server", test_jack_line_server},
         {"jack_relay", test_jack_relay},
         {"http_status_line", test_http_status_line},

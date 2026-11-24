@@ -4,6 +4,7 @@
 
 #include "viewmodel/chips/jack_in_chip.h"
 
+#include "platform/clock_sync.h"
 #include "platform/json.h"
 #include "platform/net.h"
 #include "platform/process.h"
@@ -15,6 +16,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -38,6 +40,16 @@ std::string trim(const std::string& value) {
 std::string first_line(const std::string& text) {
     const std::string t = trim(text);
     return t.substr(0, t.find('\n'));
+}
+
+// "2026-11-23 14:05", local time.
+std::string now_text() {
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    localtime_r(&now, &tm);
+    char buf[32];
+    std::strftime(buf, sizeof buf, "%Y-%m-%d %H:%M", &tm);
+    return buf;
 }
 
 int as_int(const platform::json::Value& v) {
@@ -301,7 +313,29 @@ void JackInChip::on_line(const std::string& line) {
         input_ok_ = msg["input"].boolean(false);
         mode_ = msg["mode"].str(full_ ? "full" : "read");
         view_ = View::Session;
+        session_lines_ = 0;
+        session_began_ = now_text();
         note("linked to " + host_ + (admin_ ? " (admin)" : "") + (full_ ? ", full access" : ", read-only"));
+        // A token Holden gave this PC with [T]: chip control is on from the start.
+        // (Terminal keeps its own [K].) A token the PET no longer knows is dropped there too.
+        const std::string token = msg["trust"].str();
+        const std::string dir = state_dir();
+        if (!token.empty() && !dir.empty()) {
+            trusted_ = jack_store::find_trusted(jack_store::load_trusted(dir), token) >= 0;
+            if (trusted_) {
+                pc_control_ = true;
+                note("trusted PC: it may open chips and talk to Alice");
+            } else {
+                send(R"({"t":"trust","token":""})");
+            }
+        }
+        // The PET has no battery clock: a trusted PC may set it, any PC may fix one that is certainly wrong.
+        const long long pc_time = msg["time"].integer(0);
+        if (pc_time > 0 && !config_.clock_set.empty() &&
+            platform::clock_sync::offer(config_.clock_set, pc_time, trusted_, "the PC")) {
+            note("PET clock set from the PC");
+        }
+        if (!dir.empty()) last_visit_ = jack_store::load_last(dir, host_);
         send_pet();
         send_chips();
     } else if (t == "scan") {
@@ -316,6 +350,10 @@ void JackInChip::on_line(const std::string& line) {
         scan_.defender_since = msg["defender_since"].str();
         for (const auto& hog : msg["top"].items()) {
             scan_.top.push_back({hog["name"].str("?"), as_int(hog["mb"])});
+        }
+        if (last_visit_.have && !last_noted_) {
+            last_noted_ = true;
+            note(jack_store::last_text(last_visit_, scan_.disk));
         }
         if (!alice_asked_) ask_alice();
     } else if (t == "state") {
@@ -423,7 +461,17 @@ void JackInChip::on_line(const std::string& line) {
         }
     } else if (t == "chat" || t == "voice") {
         // Talking to Alice from the PC app: the PET is the one with the bridge.
-        if (chat_waiting_) {
+        if (!pc_control_ && !trusted_) {
+            // Alice is reached with the PET's own login, so a PC nobody allowed doesn't get her.
+            if (pc_wants_.empty()) {
+                pc_wants_ = "control";
+                pc_wants_chip_.clear();
+                attention_ = true;
+                note("PC wants to talk to Alice: waiting for [K] here", LogLine::Kind::Fail);
+            }
+            status_ = "PC wants to talk to Alice: [K] allows it";
+            send(R"({"t":"alice","ok":false,"text":"Press [K] on the PET to let this PC talk to Alice.","heard":"","cmd":""})");
+        } else if (chat_waiting_) {
             send(R"({"t":"alice","ok":false,"text":"Still answering the last one...","heard":"","cmd":""})");
         } else if (t == "chat") {
             const std::string text = trim(msg["text"].str());
@@ -452,8 +500,10 @@ void JackInChip::on_line(const std::string& line) {
                 agent_held_.clear();
                 chat_waiting_ = true;
                 alice_waiting_ = true;
-                chat_.run([config = config_, wav = std::move(wav), gen = chat_generation_]() {
-                    return std::make_pair(gen, bridge_voice(config, wav));
+                // The same header a typed message gets, so Alice knows the access mode and the CMD: rule.
+                chat_.run([config = config_, wav = std::move(wav), gen = chat_generation_,
+                           prefix = chat_prompt(host_, mode_, "")]() {
+                    return std::make_pair(gen, bridge_voice(config, wav, prefix));
                 });
             } else {
                 send(R"({"t":"alice","ok":false,"text":"That recording didn't come through. Try again?","heard":"","cmd":""})");
@@ -471,7 +521,10 @@ void JackInChip::on_line(const std::string& line) {
     } else if (t == "net_fail") {
         relay_.fail(static_cast<int>(msg["id"].integer()));
     } else if (t == "bye") {
-        note("PC app closed (" + msg["why"].str("jack out") + ")");
+        const std::string why = msg["why"].str("jack out");
+        note("PC app closed (" + why + ")");
+        // "admin handover" is the same visit going on in the elevated app.
+        if (why != "admin handover") end_session("PC app closed (" + why + ")");
         server_.drop_client();
         reset_session();
         view_ = View::Waiting;
@@ -499,6 +552,10 @@ void JackInChip::reset_session() {
     pc_terminal_ = false;
     pc_wants_.clear();
     pc_wants_chip_.clear();
+    trusted_ = false;
+    trust_armed_ = false;
+    last_visit_ = jack_store::LastVisit{};
+    last_noted_ = false;
     ++chat_generation_;  // an answer still on its way belongs to the session that just ended
     mirror_on_ = false;
     pc_chip_.clear();
@@ -557,7 +614,8 @@ bool JackInChip::send(const std::string& json, bool droppable) {
 // Who runs the PET and what this PC may do with it (sent at link and on every change).
 void JackInChip::send_pet() {
     send("{\"t\":\"pet\",\"operator\":\"" + json_escape(config_.jack_operator) + "\",\"control\":" +
-         (pc_control_ ? "true" : "false") + ",\"terminal\":" + (pc_terminal_ ? "true" : "false") + "}");
+         (pc_control_ ? "true" : "false") + ",\"terminal\":" + (pc_terminal_ ? "true" : "false") + ",\"trusted\":" +
+         (trusted_ ? "true" : "false") + "}");
 }
 
 void JackInChip::deny_open(const std::string& chip, const char* what) {
@@ -601,6 +659,8 @@ void JackInChip::grant_key() {
         return;
     }
     status_.clear();
+    // The one place [T] is advertised: right after Holden allowed this PC once.
+    if (pc_control_ && !pc_terminal_ && !trusted_ && !state_dir().empty()) status_ = "PC allowed. [T] twice trusts it every time";
     send_pet();
     if (!pc_wants_chip_.empty() && (pc_wants_chip_ != "terminal" || pc_terminal_)) opening_.push_back(pc_wants_chip_);
     pc_wants_.clear();
@@ -608,9 +668,125 @@ void JackInChip::grant_key() {
 }
 
 void JackInChip::note(const std::string& text, LogLine::Kind kind) {
-    log_.push_back({kind, text, 0});
-    while (log_.size() > kMaxLog) log_.pop_front();
+    push_log({kind, text, 0});
     if (view_ != View::Log) log_scroll_ = 0;
+}
+
+void JackInChip::push_log(LogLine line) {
+    log_.push_back(std::move(line));
+    while (log_.size() > kMaxLog) log_.pop_front();
+    if (connected_) ++session_lines_;
+}
+
+std::string JackInChip::state_dir() const {
+    return config_.jack_state_dir.empty() ? "" : platform::proc::expand_home(config_.jack_state_dir);
+}
+
+// [T] on the PET, twice: trust this PC from now on, or forget it again. The PET
+// makes the token and keeps the list; the PC only shows the token back in hello.
+void JackInChip::trust_key() {
+    const std::string dir = state_dir();
+    if (dir.empty()) {
+        status_ = "no [jackin] state_dir: can't keep a trusted list";
+        return;
+    }
+    if (!trust_armed_) {
+        trust_armed_ = true;
+        status_ = trusted_ ? "Forget this trusted PC? [T] again" : "Trust this PC every time? [T] again";
+        return;
+    }
+    trust_armed_ = false;
+    auto list = jack_store::load_trusted(dir);
+    if (trusted_) {
+        // Forget every entry for this PC's name; its token stops working at once.
+        list.erase(std::remove_if(list.begin(), list.end(),
+                                  [&](const jack_store::TrustedPc& pc) { return pc.host == host_; }),
+                   list.end());
+        if (!jack_store::save_trusted(dir, list)) {
+            status_ = "couldn't save the trusted list";
+            return;
+        }
+        trusted_ = false;
+        send(R"({"t":"trust","token":""})");
+        note("you no longer trust this PC");
+        status_ = "This PC is no longer trusted";
+        send_pet();
+        return;
+    }
+    const std::string token = jack_store::new_token();
+    if (token.empty()) {
+        status_ = "couldn't make a trust token";
+        return;
+    }
+    list.erase(std::remove_if(list.begin(), list.end(),
+                              [&](const jack_store::TrustedPc& pc) { return pc.host == host_; }),
+               list.end());
+    while (list.size() >= jack_store::kMaxTrusted) list.erase(list.begin());
+    list.push_back({token, host_, jack_store::today()});
+    if (!jack_store::save_trusted(dir, list)) {
+        status_ = "couldn't save the trusted list";
+        return;
+    }
+    trusted_ = true;
+    pc_control_ = true;
+    send("{\"t\":\"trust\",\"token\":\"" + token + "\"}");
+    note("you trusted this PC: it may open chips and talk to Alice every time");
+    status_ = "Trusted. [T] twice forgets it again";
+    send_pet();
+    if (!pc_wants_chip_.empty() && pc_wants_chip_ != "terminal") opening_.push_back(pc_wants_chip_);
+    if (pc_wants_ == "control") {
+        pc_wants_.clear();
+        pc_wants_chip_.clear();
+    }
+}
+
+std::string JackInChip::report_text(const std::string& why) const {
+    std::string out = "JACK IN report\n";
+    out += "PC:      " + host_ + (os_.empty() ? "" : " (" + os_ + ")") + (user_.empty() ? "" : ", user " + user_) + "\n";
+    out += "Linked:  " + session_began_ + "\n";
+    out += "Ended:   " + now_text() + ", " + why + "\n";
+    out += "Access:  " + mode_ + (admin_ ? ", admin" : "") + (trusted_ ? ", trusted PC" : "") + "\n";
+    if (scan_.have) {
+        out += "Scan:    " + scan_summary(scan_);
+        if (scan_.startup >= 0) out += " · startup items " + std::to_string(scan_.startup);
+        out += " · Defender " + scan_.defender + "\n";
+        if (!scan_.top.empty()) {
+            out += "Top RAM:";
+            for (const auto& hog : scan_.top) out += " " + hog.name + " " + std::to_string(hog.mb) + "MB";
+            out += "\n";
+        }
+    }
+    if (last_visit_.have) out += "Before:  " + jack_store::last_text(last_visit_, scan_.disk) + "\n";
+    if (!alice_text_.empty()) out += "Alice:   " + alice_text_ + "\n";
+    if (!suggestion_.empty()) out += "Fix not run: " + suggestion_ + "\n";
+    out += "\nSession log\n";
+    const size_t count = std::min(session_lines_, log_.size());
+    for (size_t i = log_.size() - count; i < log_.size(); ++i) {
+        const LogLine& line = log_[i];
+        const char* mark = line.kind == LogLine::Kind::Fail ? "x " : line.kind == LogLine::Kind::Pending ? "? " : "  ";
+        out += mark + line.text + "\n";
+    }
+    return out;
+}
+
+void JackInChip::end_session(const std::string& why) {
+    const std::string dir = state_dir();
+    if (!connected_ || dir.empty()) return;
+    if (config_.jack_reports) {
+        const std::string path = jack_store::write_report(dir, host_, report_text(why));
+        if (!path.empty()) note("report saved: " + path);
+    }
+    if (scan_.have) {
+        jack_store::LastVisit visit;
+        visit.have = true;
+        visit.when = jack_store::today();
+        visit.cpu = scan_.cpu;
+        visit.ram = scan_.ram;
+        visit.disk_free = scan_.disk_free;
+        visit.startup = scan_.startup;
+        visit.defender = scan_.defender;
+        jack_store::save_last(dir, host_, visit);
+    }
 }
 
 void JackInChip::ask(const char* what) {
@@ -629,7 +805,8 @@ void JackInChip::ask_alice() {
     alice_waiting_ = true;
     alice_text_.clear();
     suggestion_.clear();
-    alice_.run([config = config_, prompt = alice_prompt(host_, os_, scan_), gen = ++alice_generation_]() {
+    const std::string last = last_visit_.have ? jack_store::last_text(last_visit_, scan_.disk) : "";
+    alice_.run([config = config_, prompt = alice_prompt(host_, os_, scan_, last), gen = ++alice_generation_]() {
         return std::make_pair(gen, bridge_ask(config, prompt));
     });
 }
@@ -699,8 +876,7 @@ void JackInChip::agent_run(const std::string& command) {
     agent_cmd_ = command;
     send("{\"t\":\"run\",\"id\":" + std::to_string(agent_id_) + ",\"agent\":true,\"cmd\":\"" +
          json_escape(command) + "\"}");
-    log_.push_back({LogLine::Kind::Pending, "> " + command, agent_id_});
-    while (log_.size() > kMaxLog) log_.pop_front();
+    push_log({LogLine::Kind::Pending, "> " + command, agent_id_});
 }
 
 void JackInChip::agent_stop(const std::string& why) {
@@ -720,8 +896,7 @@ void JackInChip::run_suggestion() {
     }
     const int id = next_id_++;
     send("{\"t\":\"run\",\"id\":" + std::to_string(id) + ",\"cmd\":\"" + json_escape(suggestion_) + "\"}");
-    log_.push_back({LogLine::Kind::Pending, "> " + suggestion_, id});
-    while (log_.size() > kMaxLog) log_.pop_front();
+    push_log({LogLine::Kind::Pending, "> " + suggestion_, id});
     suggestion_.clear();
     status_.clear();
     touch();
@@ -730,6 +905,7 @@ void JackInChip::run_suggestion() {
 void JackInChip::jack_out(const std::string& why) {
     send("{\"t\":\"jackout\",\"why\":\"" + json_escape(why) + "\"}");
     server_.flush(300);  // the PC has to see this line before the socket closes
+    end_session(why);
     server_.drop_client();
     reset_session();
     note("jacked out");
@@ -753,6 +929,7 @@ bool JackInChip::handle_key(Key key) {
         touch();
         return true;
     }
+    trust_armed_ = false;
     if (key == Key::Escape) {
         if (!status_.empty()) {
             status_.clear();
@@ -767,6 +944,7 @@ bool JackInChip::handle_key(Key key) {
 
 void JackInChip::handle_char(const std::string& utf8) {
     const char c = utf8.size() == 1 ? static_cast<char>(std::tolower(static_cast<unsigned char>(utf8[0]))) : 0;
+    if (c != 't') trust_armed_ = false;
     if (c == 'l') {
         view_ = view_ == View::Log ? (connected_ ? View::Session : View::Waiting) : View::Log;
         log_scroll_ = 0;
@@ -774,7 +952,9 @@ void JackInChip::handle_char(const std::string& utf8) {
         return;
     }
     if (!connected_) return;
-    if (c == 'f') {
+    if (c == 't') {
+        trust_key();
+    } else if (c == 'f') {
         if (full_) {
             drop("full");  // taking access away needs no click on the PC
             status_ = "asked the PC to go back to read-only";
@@ -842,6 +1022,7 @@ void JackInChip::tick(uint32_t elapsed_ms) {
     for (const auto& line : polled.lines) on_line(line);
     if (polled.disconnected && connected_) {
         note("the PC went away (unplugged or app closed)", LogLine::Kind::Fail);
+        end_session("the PC went away");
         reset_session();
         view_ = view_ == View::Log ? View::Log : View::Waiting;
         touch();
@@ -912,7 +1093,8 @@ std::string JackInChip::scan_summary(const Scan& scan) {
     return out;
 }
 
-std::string JackInChip::alice_prompt(const std::string& host, const std::string& os, const Scan& scan) {
+std::string JackInChip::alice_prompt(const std::string& host, const std::string& os, const Scan& scan,
+                                     const std::string& last) {
     std::string p =
         "PET JACK IN. Holden (store IT) plugged the PET into a PC; read-only scan below. Reply for a tiny screen: "
         "1-2 short sentences on the worst problem, then optionally one line 'CMD: <one PowerShell command>' that "
@@ -926,6 +1108,7 @@ std::string JackInChip::alice_prompt(const std::string& host, const std::string&
             p += " " + scan.top[i].name + " " + std::to_string(scan.top[i].mb) + "MB";
         }
     }
+    if (!last.empty()) p += " · " + last + " (say what changed if it matters)";
     return clip_for_bridge(p);
 }
 
@@ -958,8 +1141,9 @@ std::string JackInChip::output_prompt(const std::string& mode, const std::string
     std::string body = trim(out);
     if (body.empty()) body = "(no output)";
     head += "Output of `" + cmd + "` (exit " + (ok ? "ok" : "failed") + "): ";
-    // The bridge keeps 600 characters: the command and the start of its output.
-    const size_t room = kBridgeMaxInput > head.size() + 40 ? kBridgeMaxInput - head.size() - 20 : 40;
+    // The bridge keeps bridge_max_input() characters: the command and the start of its output.
+    const size_t limit = bridge_max_input();
+    const size_t room = limit > head.size() + 40 ? limit - head.size() - 20 : 40;
     const std::string clipped = clip_for_bridge(body, room);
     if (clipped.size() < body.size()) body = clipped + " [cut]";
     return head + body;

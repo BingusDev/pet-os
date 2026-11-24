@@ -1,0 +1,62 @@
+# Builds the desktop app, runs its tests and the Jack In client tests on every
+# pull request and on pushes to main. Nothing here touches a PET or needs a secret.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Build and test (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build libsdl2-dev libfmt-dev libjpeg-dev libpng-dev libfreetype-dev zlib1g-dev shellcheck netcat-openbsd
+          pipx install 'cmake>=3.31'
+      - name: Cache fetched dependencies
+        uses: actions/cache@v4
+        with:
+          path: alicepet/.cache/linux-x86_64-deps
+          key: deps-linux-${{ hashFiles('alicepet/CMakeLists.txt', 'alicepet/cmake/**', 'alicepet/CMakePresets.json') }}
+      - name: Build
+        working-directory: alicepet
+        run: |
+          cmake --preset linux-x86-64
+          cmake --build --preset linux-x86-64-dbg
+      - name: App tests
+        working-directory: alicepet
+        run: ctest --test-dir build/linux-x86-64 -C Debug --output-on-failure
+      - name: Jack In client tests (Mac/Linux client)
+        run: bash alicepet/jackin/test/unix/run-tests.sh
+      - name: Shell scripts
+        run: |
+          shellcheck -S warning -e SC2034 \
+            alicepet/jackin/unix/jackin-client.sh alicepet/jackin/usb-gadget.sh \
+            alicepet/jackin/test/unix/run-tests.sh alicepet/libexec/set-clock.sh bin/pet-setup.sh
+      - name: Bridge scripts parse
+        run: |
+          node --check vendor/cardputer-pet-terminal/bridge/server.mjs
+          node --check bin/voice-route.mjs
+
+  windows:
+    name: Jack In read-only policy (Windows PowerShell 5.1)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: TestPolicy.ps1
+        shell: cmd
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File alicepet\jackin\test\TestPolicy.ps1

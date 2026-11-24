@@ -82,9 +82,43 @@ host_name() {
     fi
 }
 
+# [T] twice on the PET trusts this computer: the PET makes a token, this client
+# keeps it (for this user only) and shows it back in every hello. The PET keeps
+# the list and can forget this computer at any time.
+TRUST_FILE=${JACKIN_TRUST_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/alicepet/jackin-trust}
+
+trust_token() {
+    local token=""
+    [ -r "$TRUST_FILE" ] && IFS= read -r token <"$TRUST_FILE"
+    case "$token" in
+        *[!0-9a-f]*) token="" ;;
+    esac
+    [ "${#token}" -eq 64 ] && printf '%s' "$token"
+    return 0
+}
+
+save_trust() {
+    local token=$1
+    case "$token" in
+        *[!0-9a-f]*) token="" ;;
+    esac
+    if [ "${#token}" -ne 64 ]; then
+        rm -f "$TRUST_FILE"
+        log "the PET no longer trusts this computer."
+        return 0
+    fi
+    if mkdir -p "$(dirname "$TRUST_FILE")" && (umask 077 && printf '%s\n' "$token" >"$TRUST_FILE"); then
+        log "the PET trusts this computer now: next time it needs no [K]."
+    else
+        log "the PET trusted this computer, but the token could not be saved here."
+    fi
+}
+
+# `time` is this computer's clock: the PET has none of its own and only takes it
+# from a computer it trusts, or when its own is certainly wrong.
 hello_line() {
-    printf '{"t":"hello","host":%s,"os":"%s","user":%s,"admin":false,"full":false,"input":false,"mode":"read","app":%s}' \
-        "$(jstr "$(host_name)")" "$OS" "$(jstr "$(id -un)")" "$(jstr "$APP_NAME")"
+    printf '{"t":"hello","host":%s,"os":"%s","user":%s,"admin":false,"full":false,"input":false,"mode":"read","app":%s,"time":%s,"trust":"%s"}' \
+        "$(jstr "$(host_name)")" "$OS" "$(jstr "$(id -un)")" "$(jstr "$APP_NAME")" "$(date +%s)" "$(trust_token)"
 }
 
 # ---- scan: read-only checks, the same fields the Windows app sends -----------
@@ -211,6 +245,7 @@ handle() {
     t=$(json_str t "$line")
     case "$t" in
         pet) log "operator: $(json_str operator "$line")" ;;
+        trust) save_trust "$(json_str token "$line")" ;;
         denied) log "the PET wants [K] pressed on it before a chip opens for this computer." ;;
         chips)
             log "PET chips: $(printf '%s' "$line" | grep -o '"name":"[^"]*"' | sed 's/"name":"//; s/"$//' | paste -sd, -)" ;;

@@ -4,6 +4,7 @@
 
 #include "viewmodel/chips/retro_chip.h"
 
+#include "platform/clock_sync.h"
 #include "platform/json.h"
 #include "platform/net.h"
 #include "platform/process.h"
@@ -478,11 +479,13 @@ void RetroChip::load_platforms() {
         status_ = "loading systems...";
     }
     const size_t gen = generation_;
-    results_.run([url = base_ + "/api/platforms", headers = headers(), gen]() {
+    results_.run([url = base_ + "/api/platforms", headers = headers(), gen, clock_set = config_.clock_set]() {
         Result result;
         result.generation = gen;
         auto response = platform::net::http_request("GET", url, "", headers, kApiTimeoutMs, kPageMaxReply);
         if (!response.ok) response = platform::net::http_request("GET", url, "", headers, kPageTimeoutMs, kPageMaxReply);
+        // No clock battery: Holden's own RomM server says what time it is before any save is compared.
+        if (response.date > 0) platform::clock_sync::offer(clock_set, response.date, true, "RomM");
         if (!response.ok || response.status != 200) {
             result.text = response.ok ? "RomM said HTTP " + std::to_string(response.status) : "RomM: " + response.error;
             result.offset = -2;  // platforms failed
@@ -622,10 +625,12 @@ void RetroChip::fetch_saves(const Game& game) {
     saves_checking_ = true;
     saves_failed_ = false;
     saves_.clear();
-    results_.run([url = base_ + "/api/saves?rom_id=" + std::to_string(game.id), headers = headers(), rom = game.id]() {
+    results_.run([url = base_ + "/api/saves?rom_id=" + std::to_string(game.id), headers = headers(), rom = game.id,
+                  clock_set = config_.clock_set]() {
         Result result;
         result.rom_id = rom;
         const auto response = platform::net::http_request("GET", url, "", headers, kApiTimeoutMs);
+        if (response.date > 0) platform::clock_sync::offer(clock_set, response.date, true, "RomM");
         if (!response.ok || response.status != 200) {
             result.what = Result::What::Saves;
             result.text = response.ok ? "HTTP " + std::to_string(response.status) : response.error;
@@ -794,26 +799,19 @@ void RetroChip::download(const Game& game, bool then_play) {
     status_ = "downloading " + size_text(game.size) + "...";
     const size_t gen = ++generation_;
     const std::string url = base_ + "/api/roms/" + std::to_string(game.id) + "/content/" + platform::net::url_encode(game.file);
-    results_.run([url, headers = headers(), path = local_path(game), gen]() {
+    results_.run([url, headers = headers(), path = local_path(game), gen, clock_set = config_.clock_set]() {
         Result result;
         result.generation = gen;
-        const auto response = platform::net::http_request("GET", url, "", headers, kDownloadTimeoutMs, kMaxRomBytes);
+        // Straight to disk: a 64 MB ROM held in memory is most of what a 512 MB PET has free.
+        std::error_code ec;
+        fs::create_directories(fs::path(path).parent_path(), ec);
+        const std::string tmp = path + ".part";
+        const auto response = platform::net::http_download(url, headers, tmp, kDownloadTimeoutMs, kMaxRomBytes);
+        if (response.date > 0) platform::clock_sync::offer(clock_set, response.date, true, "RomM");
         if (!response.ok || response.status != 200) {
             result.text = response.ok ? "download refused (HTTP " + std::to_string(response.status) + ")"
                                       : "download failed: " + response.error;
             return result;
-        }
-        std::error_code ec;
-        fs::create_directories(fs::path(path).parent_path(), ec);
-        const std::string tmp = path + ".part";
-        {
-            std::ofstream out(tmp, std::ios::binary);
-            out.write(response.body.data(), static_cast<std::streamsize>(response.body.size()));
-            out.flush();
-            if (!out) {
-                result.text = "can't write " + tmp;
-                return result;
-            }
         }
         fs::rename(tmp, path, ec);
         if (ec) {

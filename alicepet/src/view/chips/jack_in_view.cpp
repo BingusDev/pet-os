@@ -98,7 +98,7 @@ int JackInView::wrapped(const std::string& value, uint32_t color, int x, int y, 
 }
 
 void JackInView::pills(const JackInChip& jack) {
-    // Right to left: PC net, ADMIN, FULL / READ-ONLY.
+    // Right to left: PC net, ADMIN, TRUSTED, FULL / READ-ONLY.
     struct Pill {
         std::string label;
         uint32_t bg;
@@ -107,6 +107,7 @@ void JackInView::pills(const JackInChip& jack) {
     std::vector<Pill> list;
     if (jack.sharing()) list.push_back({"PC net", kEdgeBlue, kWhite});
     if (jack.admin()) list.push_back({"ADMIN", kOrange, 0x1a0f00});
+    if (jack.trusted()) list.push_back({"TRUSTED", kLilac, 0x1a0f3a});
     list.push_back(jack.full() ? Pill{"FULL", kGreen, 0x000000} : Pill{"READ-ONLY", kYellow, 0x3a1f00});
     int right = 316;
     for (const auto& p : list) {

@@ -20,7 +20,17 @@ Done since 2026-11-18 (on `main`):
 - JACK IN drive image carries `JackIn.cmd`/`.ps1` plus `JackIn.command` (macOS; right-click → Open the first time), `JackIn.sh` and `jackin-client.sh` (Linux/macOS: bash and curl only, Read mode only). Gaps are listed in `alicepet/jackin/unix/README.txt`.
 - Jellyfin on the PC: navigation matches Retro (←/→ one row, ↑/↓ three, Enter, `/` search, TAB movies/shows or season switch, Esc clears the filter then leaves; 7-row list). MKV now transcodes to MP4; H.264 MP4 plays direct. Item IDs are URL-encoded.
 - Retro: reloads the first tab when its platform vanishes; server-supplied names are sanitized; search Backspace drops a whole UTF-8 character.
-- Tests: Debug `alicepet_tests` passes 568 checks (re-run 2026-11-23 on the rev27 branch).
+- Tests: Debug `alicepet_tests` passes 616 checks (re-run 2026-11-23 on the rev28 branch).
+- rev28 / Jack In 0.9.5 (2026-11-23, seven features; see `alicepet/jackin/PROTOCOL.md` and `alicepet/config/alicepet.conf`):
+  - Trusted PCs: `[T]` twice on the PET's Jack In screen trusts the linked PC (token made on the PET, kept in `[jackin] state_dir`/`jack-trusted.conf`; the PC app keeps its copy with DPAPI). A trusted PC gets chip control and Alice without `[K]`; Terminal still asks. `[T]` twice again forgets it.
+  - Chat and voice from a PC now need the PET's OK first (`[K]`, a trusted PC, or `pc_control=on`), because Alice is reached with the PET's login.
+  - Session reports: each Jack In session ends with `jack-reports/<host>-<date>-<time>.txt` on the PET, and the scan is remembered as that PC's "last visit" for Alice (`[jackin] reports=off` to stop).
+  - Longer messages to Alice: the bridge takes `PET_MAX_INPUT_CHARS` (default 4000, was 600) and tells the PET its limit in every reply (`max_input`); an older bridge still means 600. Voice messages carry the access-mode header (`X-Pet-Prefix`) through `bin/voice-route.mjs`. The bridge and voice route on the Mac mini must be restarted to pick this up.
+  - Clock: the PET sets its clock (`[clock] set=`, `set-clock.sh` through sudo) from a trusted PC's `hello` `time`, from any PC when its own clock is before September 2026, and from the RomM server's `Date` header. Needs the new sudo rule: run `bin/pet-setup.sh` once after installing rev28.
+  - ROM downloads go straight to disk through curl (`http_download`), not through memory.
+  - Jellyfin on a PC: `[jellyfin] pc_user=` / `pc_password=` name an ordinary Jellyfin user that is logged in for one play and logged out after it; the PC gets a direct URL with that login. An administrator account is refused. `pc_direct=on` (administrator API key) still works but `pc_user` is the one to use.
+  - CI: `.github/workflows/ci.yml` builds the desktop app, runs `alicepet_tests`, the Mac/Linux client tests, shellcheck and `TestPolicy.ps1` on Windows for every pull request.
+  - Not verified on hardware, against a real Jellyfin, or against the live bridge.
 - rev27 / Jack In 0.9.4 (2026-11-23, review fixes; see `alicepet/jackin/PROTOCOL.md`):
   - The PET decides whether a PC may use it: `open`, keys, typing and the mouse need `[K]` on the PET's Jack In screen (`[jackin] pc_control=on` allows chips from the start), and Terminal needs its own `[K]` every session. The panel stays lit while the PC has Terminal open or is waiting for `[K]`. The PC's own `input` flag is no longer enough.
   - Jack In video goes through the PET relay only. The direct Jellyfin URL with a per-play API key (an administrator key) is opt-in: `[jellyfin] pc_direct=on`. Leftover keys are swept and revokes retry.

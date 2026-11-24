@@ -113,6 +113,8 @@ public:
         bool direct{false};  // PcStream: the file itself (seekable) rather than a transcode
         std::string name{};  // PcStream: file name for the relay URL
         std::string key{};   // PcStream: short-lived Jellyfin key for the PC's direct URL ("" = relay only)
+        bool key_login{false};  // ... it is the [jellyfin] pc_user login's token, not an API key
+        std::string note{};     // PcStream: why the PC got no direct URL (shown in the status line)
     };
 
     // Applies a worker result; results from before the latest request are dropped.
@@ -128,7 +130,9 @@ private:
     void start_pc_playback(long long start_ticks);
     void finish_pc_playback();
     void revoke_pc_key();
-    void revoke_key(const std::string& key);
+    void revoke_key(const std::string& key, bool login);
+    // The Authorization header of the PC-playback login ([jellyfin] pc_user); `token` "" before it logs in.
+    static std::string pc_auth_header(const std::string& device_id, const std::string& token);
     void pc_tick();
     std::string pc_title() const;
     void report(const char* endpoint, long long ticks, bool paused);
@@ -177,6 +181,7 @@ private:
     std::string stream_info_;
     std::string play_method_{"Transcode"};
     std::string pc_key_;  // Jellyfin key the PC streams with directly; revoked when the play ends
+    bool pc_key_login_{false};
     bool pc_playing_{false};
     bool pc_direct_{false};
 

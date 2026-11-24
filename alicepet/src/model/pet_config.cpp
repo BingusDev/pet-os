@@ -162,7 +162,11 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
             else if (key == "player") config.jellyfin_player = value;
             else if (key == "max_bitrate") config.jellyfin_max_bitrate = to_int(value, config.jellyfin_max_bitrate);
             else if (key == "width") config.jellyfin_width = to_int(value, config.jellyfin_width);
+            else if (key == "pc_user") config.jellyfin_pc_user = value;
+            else if (key == "pc_password") config.jellyfin_pc_password = value;
             else if (key == "pc_direct") config.jellyfin_pc_direct = value == "on" || value == "true" || value == "1" || value == "yes";
+        } else if (section == "clock") {
+            if (key == "set") config.clock_set = value;
         } else if (section == "romm") {
             if (key == "url") config.romm_url = value;
             else if (key == "token") config.romm_token = value;
@@ -210,6 +214,8 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
             else if (key == "gadget_up") config.jack_gadget_up = value;
             else if (key == "gadget_down") config.jack_gadget_down = value;
             else if ((key == "operator" || key == "owner") && !value.empty()) config.jack_operator = value;
+            else if (key == "state_dir" && !value.empty()) config.jack_state_dir = value;
+            else if (key == "reports") config.jack_reports = !(value == "off" || value == "false" || value == "0" || value == "no");
             else if (key == "pc_control") config.jack_pc_control = value == "on" || value == "true" || value == "1" || value == "yes";
         }
     }

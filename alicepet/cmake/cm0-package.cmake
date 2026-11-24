@@ -10,7 +10,7 @@ include(GNUInstallDirs)
 # "TemplateApp" values that would otherwise silently win.
 
 set(APP_DISPLAY_NAME "AlicePET" CACHE STRING "Human-readable application name used by launchers and package filename" FORCE)
-set(APP_DEBIAN_REVISION "rev27" CACHE STRING "Debian package revision/vendor suffix")
+set(APP_DEBIAN_REVISION "rev28" CACHE STRING "Debian package revision/vendor suffix")
 set(APP_DEBIAN_ARCHITECTURE "arm64" CACHE STRING "Debian package architecture")
 set(APP_MAINTAINER "Holden <netholden@gmail.com>" CACHE STRING "Debian package maintainer" FORCE)
 set(APP_PACKAGE_DESCRIPTION "AlicePET OS: Navi home, chat with Alice, net scan, battle chips" CACHE STRING "Debian package summary" FORCE)
@@ -74,6 +74,7 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
 # JACK IN: the USB gadget script (run through sudo, see the sudoers example),
 # the PC app that goes on the PET's USB drive, and the protocol notes.
 install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/jackin/usb-gadget.sh"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libexec/set-clock.sh"
     DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/alicepet"
 )
 # macOS/Linux client, launchers and README; usb-gadget.sh copies these onto the drive.

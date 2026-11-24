@@ -33,6 +33,9 @@ const PET_CARD_STYLE = [
   "Be warm and NetNavi-like, but keep it useful."
 ].join('\n');
 const PET_MAX_DEVICE_REPLY_CHARS = Number(process.env.PET_MAX_DEVICE_REPLY_CHARS || 900);
+// How much of an ask reaches the Navi (was a fixed 600). The PET learns this from
+// `max_input` in each ask reply and sizes its prompts (command output, long questions) to it.
+const PET_MAX_INPUT_CHARS = Math.max(600, Number(process.env.PET_MAX_INPUT_CHARS || 4000));
 const PET_SLOW_ACTION_FALLBACK_MS = Number(process.env.PET_SLOW_ACTION_FALLBACK_MS || 12000);
 
 let activeOpenClawSessionKey = DEFAULT_OPENCLAW_SESSION_KEY;
@@ -608,9 +611,9 @@ const server = http.createServer(async (req, res) => {
       if (!input) return sendJson(res, 400, { ok: false, error: 'Missing string field: input' });
       stats.ask_count++;
       stats.last_ask_at = new Date().toISOString();
-      const reply = deviceReply(await sendToOpenClaw(input.slice(0, 600)));
+      const reply = deviceReply(await sendToOpenClaw(input.slice(0, PET_MAX_INPUT_CHARS)));
       const mood = inferMood(reply, { surface: 'ask', ok: true });
-      return sendJson(res, 200, { ok: true, reply, mood: mood.mood, mood_reason: mood.reason, at: new Date().toISOString() });
+      return sendJson(res, 200, { ok: true, reply, mood: mood.mood, mood_reason: mood.reason, max_input: PET_MAX_INPUT_CHARS, at: new Date().toISOString() });
     }
 
     if (req.method === 'POST' && pathname === '/api/pet/action') {

@@ -1,5 +1,5 @@
-// Preload for cardputer-pet-terminal bridge/server.mjs (loaded by bin/alicepet-bridge.sh):
-// adds the AlicePET push-to-talk endpoint without editing that project.
+// Preload for cardputer-pet-terminal bridge/server.mjs (loaded by bin/pet-os-bridge.sh):
+// adds the PET-os push-to-talk endpoint without editing that project.
 //
 //   POST /api/pet/voice            body: a WAV (or any ffmpeg-readable audio), max 8 MB
 //   Authorization: Bearer <PET_BRIDGE_TOKEN>   (same rule as the other /api routes)
@@ -65,7 +65,7 @@ function run(cmd, args) {
 }
 
 export async function transcribe(audio) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'alicepet-voice-'));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'pet-os-voice-'));
   try {
     const input = path.join(dir, 'ptt.wav');
     await writeFile(input, audio);

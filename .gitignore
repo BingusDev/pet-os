@@ -1,5 +1,5 @@
 sdk/
-alicepet/.cache/
-alicepet/build/
+pet-os/.cache/
+pet-os/build/
 .DS_Store
-alicepet/config/*.local.conf
+pet-os/config/*.local.conf

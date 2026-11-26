@@ -1,6 +1,0 @@
-# JACK IN: let the AlicePET app switch the USB port to device mode and back,
-# and set the clock (the PET has no battery clock) from a trusted PC or RomM.
-# Install on the PET (as root), replacing "pet" with the user APPLaunch runs the app as:
-#   install -m 0440 alicepet-jackin.sudoers /etc/sudoers.d/alicepet-jackin && visudo -c
-pet ALL=(root) NOPASSWD: /usr/libexec/alicepet/usb-gadget.sh up, /usr/libexec/alicepet/usb-gadget.sh down, /usr/libexec/alicepet/usb-gadget.sh status
-pet ALL=(root) NOPASSWD: /usr/libexec/alicepet/set-clock.sh [0-9]*

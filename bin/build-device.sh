@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build a CardputerZero app for the device (aarch64) on a remote Linux host with Docker,
 # inside debian:trixie. BUILD_HOST=<ssh host> picks the host (default grandworld-pi).
-# Usage: bin/build-device.sh <local-project-dir> [--package]   (e.g. sdk/Template, alicepet)
+# Usage: bin/build-device.sh <local-project-dir> [--package]   (e.g. sdk/Template, pet-os)
 #   --package  also run CPack (cp0-cross-deb preset), list the .deb contents, and copy
 #              the .deb back to <project>/dist/ on this Mac.
 set -euo pipefail

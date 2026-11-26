@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AlicePET device-day checks (BUILD-PLAN Phase 0). Run ON the CardputerZero:
+# PET-os device-day checks (BUILD-PLAN Phase 0). Run ON the CardputerZero:
 #
 #   scp bin/device-day.sh <user>@<pet>:~ && ssh -t <user>@<pet> 'sudo bash ~/device-day.sh'
 #
@@ -71,7 +71,7 @@ writef() {  # writef file value: write as root, remembering the old value to res
 }
 
 : > "$REPORT"
-out "# AlicePET device day: $(hostname) $(date '+%Y-%m-%d %H:%M')"
+out "# PET-os device day: $(hostname) $(date '+%Y-%m-%d %H:%M')"
 out ""
 out "Run as $(id -un)$( (( IS_ROOT )) && echo ' (root)')$( (( AUTO )) && echo ', --auto (interactive checks skipped)')."
 (( IS_ROOT )) || echo "Not root: backlight, CPU and power checks will only read. Re-run with sudo for the full set."
@@ -263,8 +263,8 @@ evidence "LEDs" ls /sys/class/leds
 (( IS_ROOT )) && result PASS "Power profile writes" "root can write cpu online / cpufreq / rfkill: profiles=on will work when the app runs as root" \
     || result CHECK "Power profile writes" "needs root or udev rules for the app's user"
 
-# --- 10. AlicePET dependencies ----------------------------------------------
-section "AlicePET dependencies"
+# --- 10. PET-os dependencies ----------------------------------------------
+section "PET-os dependencies"
 for tool in arecord aplay ssh curl mpv ir-ctl retroarch iw evtest; do
     have "$tool" && result PASS "$tool" "$(command -v "$tool")" || result FAIL "$tool" "not installed"
 done
@@ -278,19 +278,19 @@ fi
 
 # --- 11. JACK IN and LAN TECH ------------------------------------------------
 section "JACK IN and LAN TECH"
-GADGET=/usr/libexec/alicepet/usb-gadget.sh
+GADGET=/usr/libexec/pet-os/usb-gadget.sh
 APP_USER="${SUDO_USER:-$(id -un)}"
-[[ -x "$GADGET" ]] && result PASS "JACK IN gadget script" "$GADGET" || result FAIL "JACK IN gadget script" "missing; install the AlicePET .deb"
+[[ -x "$GADGET" ]] && result PASS "JACK IN gadget script" "$GADGET" || result FAIL "JACK IN gadget script" "missing; install the PET-os .deb"
 if sudo -n -l -U "$APP_USER" 2>/dev/null | grep -q "usb-gadget.sh"; then
     result PASS "JACK IN sudo rule" "$APP_USER may run the gadget script"
 else
-    result FAIL "JACK IN sudo rule" "run bin/pet-setup.sh (or install alicepet-jackin.sudoers)"
+    result FAIL "JACK IN sudo rule" "run bin/pet-setup.sh (or install pet-os-jackin.sudoers)"
 fi
 for tool in mkfs.vfat mcopy dnsmasq; do
     have "$tool" && result PASS "$tool" "$(command -v "$tool")" || result FAIL "$tool" "not installed (apt install dosfstools mtools dnsmasq-base)"
 done
 if (( IS_ROOT )); then
-    ip link add alicepet-bt type bridge 2>/dev/null && ip link del alicepet-bt && result PASS "Network bridges" "JACK IN's br-jack can be made" \
+    ip link add pet-os-bt type bridge 2>/dev/null && ip link del pet-os-bt && result PASS "Network bridges" "JACK IN's br-jack can be made" \
         || result FAIL "Network bridges" "ip link add type bridge failed (bridge module missing?)"
 fi
 if [[ -x "$GADGET" ]] && ls /sys/class/udc/* >/dev/null 2>&1 && (( IS_ROOT )); then
@@ -299,11 +299,11 @@ if [[ -x "$GADGET" ]] && ls /sys/class/udc/* >/dev/null 2>&1 && (( IS_ROOT )); t
     if ask "Bring the JACK IN gadget up now?"; then
         before="$(lsusb 2>/dev/null | wc -l)"
         evidence "usb-gadget.sh up" "$GADGET" up
-        if [[ -d /sys/kernel/config/usb_gadget/alicepet ]]; then
+        if [[ -d /sys/kernel/config/usb_gadget/pet-os ]]; then
             result PASS "JACK IN gadget up" "UDC state $(cat /sys/class/udc/*/state 2>/dev/null | head -n 1)"
             evidence "Gadget status" "$GADGET" status
             echo "  Plug the PET's USB-C into a Windows PC now."
-            judge "PC sees the ALICEPET drive" "Does an ALICEPET drive with JackIn.cmd appear on the PC?" "read-only drive from jackin.img"
+            judge "PC sees the PET-OS drive" "Does an PET-OS drive with JackIn.cmd appear on the PC?" "read-only drive from jackin.img"
             judge "PC gets a network adapter" "Does the PC show a new network adapter with address 10.55.0.2 (ipconfig)?" "RNDIS + dnsmasq"
             judge "Jack In app links" "Run JackIn.cmd from that drive and slot JACK IN on the PET: does the PET show the PC?" "first real test of the Windows app"
         else

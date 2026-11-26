@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# AlicePET first-boot setup. Run ON the CardputerZero, once, after flashing:
+# PET-os first-boot setup. Run ON the CardputerZero, once, after flashing:
 #
-#   scp bin/pet-setup.sh alicepet/dist/AlicePET_*.deb <user>@<pet>:~
-#   ssh -t <user>@<pet> 'sudo bash ~/pet-setup.sh ~/AlicePET_*.deb'
+#   scp bin/pet-setup.sh pet-os/dist/PET-os_*.deb <user>@<pet>:~
+#   ssh -t <user>@<pet> 'sudo bash ~/pet-setup.sh ~/PET-os_*.deb'
 #
 # What it does (each step says what it changed; nothing secret is written):
-#   1. installs the AlicePET .deb (if given) and the tools the chips use
+#   1. installs the PET-os .deb (if given) and the tools the chips use
 #   2. lets the app user read keys and set the backlight (input, video groups)
 #   3. installs the JACK IN sudo rule (only usb-gadget.sh up|down|status and set-clock.sh, as root)
-#   4. builds the JACK IN drive image (/var/lib/alicepet/jackin.img)
-#   5. starts /etc/alicepet.local.conf with your Navi's name, your name and picture, and
+#   4. builds the JACK IN drive image (/var/lib/pet-os/jackin.img)
+#   5. starts /etc/pet-os.local.conf with your Navi's name, your name and picture, and
 #      your bridge URL and token (you type them); adds [navi] to an older file
 #   6. with --usb-otg: adds dtoverlay=dwc2,dr_mode=peripheral so JACK IN can work (reboot after;
 #      USB-A and Ethernet stop working, since they need host mode)
@@ -36,8 +36,8 @@ done
 
 [[ $(id -u) -eq 0 ]] || { echo "run with sudo" >&2; exit 1; }
 # A pattern that matched nothing arrives here unexpanded: say so before changing anything.
-[[ -z "$DEB" || -f "$DEB" ]] || { echo "no such .deb: $DEB (the package is named AlicePET_<version>_arm64.deb)" >&2; exit 1; }
-[[ -n "$APP_USER" ]] && id "$APP_USER" >/dev/null 2>&1 || { echo "which user runs AlicePET? use --user <name>" >&2; exit 1; }
+[[ -z "$DEB" || -f "$DEB" ]] || { echo "no such .deb: $DEB (the package is named PET-os_<version>_arm64.deb)" >&2; exit 1; }
+[[ -n "$APP_USER" ]] && id "$APP_USER" >/dev/null 2>&1 || { echo "which user runs PET-os? use --user <name>" >&2; exit 1; }
 
 step() { printf '\n\033[1;36m== %s ==\033[0m\n' "$1"; }
 done_() { printf '  \033[32mdone\033[0m %s\n' "$1"; }
@@ -54,7 +54,7 @@ if (( APT )); then
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$(realpath "$DEB")" >/dev/null
         done_ "installed $(basename "$DEB")"
     else
-        note "no .deb given; install it later with: sudo apt install ./AlicePET_<version>_arm64.deb"
+        note "no .deb given; install it later with: sudo apt install ./PET-os_<version>_arm64.deb"
     fi
     # dnsmasq-base only; make sure no system dnsmasq service grabs port 53 or every interface.
 else
@@ -71,17 +71,19 @@ done
 note "group changes apply at the next login (or reboot)"
 
 step "3. JACK IN sudo rule"
-GADGET=/usr/libexec/alicepet/usb-gadget.sh
-RULE=/etc/sudoers.d/alicepet-jackin
+GADGET=/usr/libexec/pet-os/usb-gadget.sh
+RULE=/etc/sudoers.d/pet-os-jackin
 TMP_RULE="$(mktemp)"
-CLOCK=/usr/libexec/alicepet/set-clock.sh
-printf '# AlicePET JACK IN: switch the USB-C port to device mode and back.\n%s ALL=(root) NOPASSWD: %s up, %s down, %s status\n' \
+CLOCK=/usr/libexec/pet-os/set-clock.sh
+printf '# PET-os JACK IN: switch the USB-C port to device mode and back.\n%s ALL=(root) NOPASSWD: %s up, %s down, %s status\n' \
     "$APP_USER" "$GADGET" "$GADGET" "$GADGET" >"$TMP_RULE"
 # The PET has no battery clock: the app may set it from a trusted Jack In PC or RomM.
 printf '%s ALL=(root) NOPASSWD: %s [0-9]*\n' "$APP_USER" "$CLOCK" >>"$TMP_RULE"
 if visudo -cf "$TMP_RULE" >/dev/null; then
     install -m 0440 "$TMP_RULE" "$RULE"
     done_ "$RULE (only usb-gadget.sh up/down/status and set-clock.sh)"
+    # The rule from before the rename (AlicePET, rev30 and older) points at paths that are gone.
+    [[ -f /etc/sudoers.d/alicepet-jackin ]] && rm -f /etc/sudoers.d/alicepet-jackin && done_ "removed the old /etc/sudoers.d/alicepet-jackin"
 else
     note "visudo rejected the rule; nothing installed"
 fi
@@ -89,13 +91,19 @@ rm -f "$TMP_RULE"
 
 step "4. JACK IN drive image"
 if [[ -x "$GADGET" ]]; then
-    "$GADGET" image && done_ "/var/lib/alicepet/jackin.img"
+    "$GADGET" image && done_ "/var/lib/pet-os/jackin.img"
 else
     note "$GADGET missing (install the .deb first, then run: sudo $GADGET image)"
 fi
 
 step "5. Your settings"
-LOCAL=/etc/alicepet.local.conf
+LOCAL=/etc/pet-os.local.conf
+# Settings from before the rename (AlicePET): the package copies them too, but not with --no-apt.
+if [[ -f /etc/alicepet.local.conf && ! -e "$LOCAL" ]]; then
+    cp -p /etc/alicepet.local.conf "$LOCAL"
+    sed -i 's#/usr/libexec/alicepet/#/usr/libexec/pet-os/#g; s#/\.local/share/alicepet#/.local/share/pet-os#g; s#/\.config/alicepet#/.config/pet-os#g' "$LOCAL"
+    done_ "copied /etc/alicepet.local.conf to $LOCAL"
+fi
 # [navi]: your Navi's name and picture and your name (asked once, only on a terminal).
 ask_navi() {
     navi_name=""
@@ -132,7 +140,7 @@ else
     fi
     umask 077
     {
-        echo "# AlicePET settings for this PET only (read after /etc/alicepet.conf). Never commit this file."
+        echo "# PET-os settings for this PET only (read after /etc/pet-os.conf). Never commit this file."
         ask_navi
         echo "[bridge]"
         echo "url=$url"
@@ -183,10 +191,10 @@ else
     if [[ -n "$DEVICE_LINE" ]]; then
         done_ "device mode already set: $DEVICE_LINE"
     elif (( USB_OTG )); then
-        [[ -f "$CONFIG.alicepet-bak" ]] || cp "$CONFIG" "$CONFIG.alicepet-bak"  # keep the first, untouched copy
+        [[ -f "$CONFIG.pet-os-bak" ]] || cp "$CONFIG" "$CONFIG.pet-os-bak"  # keep the first, untouched copy
         # [all] first, so the line applies whatever section the file ends in.
-        printf '\n# AlicePET JACK IN: USB-C2 acts as a device (added by pet-setup.sh)\n[all]\ndtoverlay=dwc2,dr_mode=peripheral\n' >>"$CONFIG"
-        done_ "added [all] dtoverlay=dwc2,dr_mode=peripheral to $CONFIG (backup: $CONFIG.alicepet-bak). Reboot to apply."
+        printf '\n# PET-os JACK IN: USB-C2 acts as a device (added by pet-setup.sh)\n[all]\ndtoverlay=dwc2,dr_mode=peripheral\n' >>"$CONFIG"
+        done_ "added [all] dtoverlay=dwc2,dr_mode=peripheral to $CONFIG (backup: $CONFIG.pet-os-bak). Reboot to apply."
         [[ -z "$HOST_LINE" ]] || note "the new line follows '$HOST_LINE'; if JACK IN finds no USB device controller after the reboot, comment that older line out"
         note "USB-A, USB-C1 and Ethernet are host-only and stop working; restore the backup to get them back"
         note "to JACK IN: cable in USB-C2 (not C1 beside USB-A) and the USB-SW slider set to C2"
@@ -222,7 +230,7 @@ monitor.alsa.rules = [
 WPEOF
 chown "$APP_USER:$APP_USER" "$WP_DIR/70-es8389-suspend.conf"
 done_ "$WP_DIR/70-es8389-suspend.conf (idle speaker suspends)"
-# fn+D / fn+S / fn+A -> PipeWire volume, and the state file AlicePET's volume bar reads.
+# fn+D / fn+S / fn+A -> PipeWire volume, and the state file PET-os's volume bar reads.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "$HERE/volkeys.py" ]]; then
     install -D -o "$APP_USER" -g "$APP_USER" -m 755 "$HERE/volkeys.py" "$APP_HOME/.local/bin/volkeys.py"
@@ -240,7 +248,8 @@ SVCEOF
     chown "$APP_USER:$APP_USER" "$APP_HOME/.config/systemd/user/volkeys.service"
     loginctl enable-linger "$APP_USER" >/dev/null 2>&1 || true
     runuser -u "$APP_USER" -- env XDG_RUNTIME_DIR="/run/user/$APP_UID" systemctl --user daemon-reload >/dev/null 2>&1 || true
-    runuser -u "$APP_USER" -- env XDG_RUNTIME_DIR="/run/user/$APP_UID" systemctl --user enable --now volkeys.service >/dev/null 2>&1 \
+    runuser -u "$APP_USER" -- env XDG_RUNTIME_DIR="/run/user/$APP_UID" systemctl --user enable volkeys.service >/dev/null 2>&1 \
+        && runuser -u "$APP_USER" -- env XDG_RUNTIME_DIR="/run/user/$APP_UID" systemctl --user restart volkeys.service >/dev/null 2>&1 \
         && done_ "volkeys.service (fn+D up, fn+S down, fn+A mute)" \
         || note "volkeys.service installed; it starts at the next login"
     runuser -u "$APP_USER" -- env XDG_RUNTIME_DIR="/run/user/$APP_UID" systemctl --user restart wireplumber pipewire pipewire-pulse >/dev/null 2>&1 || true

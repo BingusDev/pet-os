@@ -12,14 +12,15 @@ It started as AlicePET, built for one Navi, **Alice**, and her operator. Your
 Navi's name, picture and your own name are settings, so it can be yours
 instead (see [Making it yours](#making-it-yours)).
 
-> **About the name:** the project is now PET-os, but the app itself still
-> installs as **AlicePET**. That covers the package (`AlicePET_*.deb`), the
-> launcher entry, the `alicepet/` source folder and the config files
-> (`/etc/alicepet.conf`). The commands below use those names.
+> **Coming from AlicePET?** Install the PET-os package over it. It replaces the
+> `alicepet` package and copies `/etc/alicepet.local.conf` and the Jack In sudo
+> rule to their new names. The app moves its saved files (ROMs, remotes,
+> trusted PCs) from `alicepet/` to `pet-os/` the first time it starts. Then
+> reboot, and run `pet-setup.sh` once more so the volume keys use the new name.
 
 <p align="center">
-  <img src="alicepet/screenshots/home@3x.png" width="48%" alt="Navi Home">
-  <img src="alicepet/screenshots/folder@3x.png" width="48%" alt="Battle Chip folder">
+  <img src="pet-os/screenshots/home@3x.png" width="48%" alt="Navi Home">
+  <img src="pet-os/screenshots/folder@3x.png" width="48%" alt="Battle Chip folder">
 </p>
 
 > **Status:** active development, version 0.5.0. It runs daily on one
@@ -44,7 +45,7 @@ SSH hosts, an IR transmitter.
 CardputerZero  (PET-os app, C++ / LVGL)
    │  HTTP + JSON, bearer token, over Tailscale or your LAN
    ▼
-Your computer: PET bridge   (bin/alicepet-bridge.sh → vendor/cardputer-pet-terminal/bridge)
+Your computer: PET bridge   (bin/pet-os-bridge.sh → vendor/cardputer-pet-terminal/bridge)
    │  openclaw gateway call   (its own session, agent:main:pet by default)
    ▼
 Your Navi  (an OpenClaw agent)
@@ -62,25 +63,25 @@ On a Linux machine:
 
 ```sh
 git clone https://github.com/BingusDev/PET-os
-cd PET-os/alicepet
+cd PET-os/pet-os
 sudo apt install g++-aarch64-linux-gnu ninja-build pkg-config dpkg-dev curl   # plus CMake 3.31 or newer
 cmake --workflow --preset cp0-cross-package
 ```
 
 The first configure downloads the CardputerZero SDK (about 435 MB) and LVGL into
-`alicepet/.cache/`. The result is `alicepet/dist/AlicePET_0.5.0_<revision>_arm64.deb`.
+`pet-os/.cache/`. The result is `pet-os/dist/PET-os_0.5.0_<revision>_arm64.deb`.
 
-No Linux machine handy? `BUILD_HOST=<ssh host> bin/build-device.sh alicepet --package`
+No Linux machine handy? `BUILD_HOST=<ssh host> bin/build-device.sh pet-os --package`
 (from the repo root) builds inside a `debian:trixie` Docker container on any SSH
-host that has Docker, and copies the .deb back to `alicepet/dist/`.
+host that has Docker, and copies the .deb back to `pet-os/dist/`.
 
 ### 2. Install it on the PET
 
 Copy the package and the setup script over, then run the script on the PET:
 
 ```sh
-scp bin/pet-setup.sh bin/volkeys.py alicepet/dist/AlicePET_*_arm64.deb <user>@<pet>:~
-ssh -t <user>@<pet> 'sudo bash ~/pet-setup.sh ~/AlicePET_*_arm64.deb'
+scp bin/pet-setup.sh bin/volkeys.py pet-os/dist/PET-os_*_arm64.deb <user>@<pet>:~
+ssh -t <user>@<pet> 'sudo bash ~/pet-setup.sh ~/PET-os_*_arm64.deb'
 ```
 
 `pet-setup.sh` is safe to run again, and says what it changed at each step. It:
@@ -89,15 +90,15 @@ ssh -t <user>@<pet> 'sudo bash ~/pet-setup.sh ~/AlicePET_*_arm64.deb'
 2. adds your user to the `input`, `video` and `audio` groups (keys, backlight, mic),
 3. installs a narrow sudo rule for the Jack In USB switch and the clock setter,
 4. builds the Jack In USB drive image,
-5. creates `/etc/alicepet.local.conf` and asks for your Navi's name, your name,
+5. creates `/etc/pet-os.local.conf` and asks for your Navi's name, your name,
    a Navi picture, and your bridge URL and token,
 6. with `--usb-otg` only: switches the USB-C2 port to device mode for Jack In
    (this turns off USB-A and Ethernet; it backs up `config.txt` first),
 7. fixes speaker audio and sets up the fn volume keys.
 
-Reboot (or log out and in) so the group changes apply. AlicePET then shows up in
+Reboot (or log out and in) so the group changes apply. PET-os then shows up in
 the launcher. To install a newer build later, run
-`SKIP_BUILD=1 INSTALL=1 REMOTE_USER=<user> REMOTE_HOST=<pet> alicepet/deploy.sh`.
+`SKIP_BUILD=1 INSTALL=1 REMOTE_USER=<user> REMOTE_HOST=<pet> pet-os/deploy.sh`.
 
 ### 3. Start the bridge on your Navi's computer
 
@@ -113,7 +114,7 @@ Then start the bridge with your Navi's name:
 PET_NAVI_NAME=<YourNavi> \
 PET_BRIDGE_TOKEN=<token> \
 BIND_HOST=$(tailscale ip -4) \
-bin/alicepet-bridge.sh
+bin/pet-os-bridge.sh
 ```
 
 | Variable | Default | What it does |
@@ -131,7 +132,7 @@ manager (launchd, systemd) if you want it to start on boot.
 
 ### 4. Point the PET at the bridge
 
-If you skipped the questions in `pet-setup.sh`, edit `/etc/alicepet.local.conf`
+If you skipped the questions in `pet-setup.sh`, edit `/etc/pet-os.local.conf`
 on the PET:
 
 ```ini
@@ -140,15 +141,15 @@ url=http://<your-computer>.<tailnet>.ts.net:8797
 token=<token>
 ```
 
-Open AlicePET, type on Navi Home and press Enter. Your Navi should answer.
+Open PET-os, type on Navi Home and press Enter. Your Navi should answer.
 
 ## Configure
 
 The app reads two files on the PET:
 
-- `/etc/alicepet.conf` ships with the app and has every option, commented. It
+- `/etc/pet-os.conf` ships with the app and has every option, commented. It
   holds no personal hosts or secrets.
-- `/etc/alicepet.local.conf` is yours. It is read second, its values win, and its
+- `/etc/pet-os.local.conf` is yours. It is read second, its values win, and its
   `host=` lines are added to the shipped ones. Put your servers, tokens and API
   keys here, and keep it `chmod 640` (`pet-setup.sh` does that).
 
@@ -194,18 +195,18 @@ The main sections:
 Navi and use the Terminal chip (with the PET's SSH keys) without a key press on
 the PET. Only jack into PCs you trust. Changes on the PC (Full Access, admin,
 sharing the PC's internet) are always clicked on the PC itself. Setup:
-[alicepet/jackin/SETUP-GADGET.md](alicepet/jackin/SETUP-GADGET.md).
+[pet-os/jackin/SETUP-GADGET.md](pet-os/jackin/SETUP-GADGET.md).
 
 <p align="center">
-  <img src="alicepet/screenshots/netscan@3x.png" width="32%" alt="NET SCAN">
-  <img src="alicepet/screenshots/terminal-hosts@3x.png" width="32%" alt="TERMINAL chip">
-  <img src="alicepet/screenshots/jellyfin@3x.png" width="32%" alt="JELLYFIN chip">
+  <img src="pet-os/screenshots/netscan@3x.png" width="32%" alt="NET SCAN">
+  <img src="pet-os/screenshots/terminal-hosts@3x.png" width="32%" alt="TERMINAL chip">
+  <img src="pet-os/screenshots/jellyfin@3x.png" width="32%" alt="JELLYFIN chip">
 </p>
 
 ## Making it yours
 
 Your Navi's name and picture and your own name are settings. `pet-setup.sh`
-asks for them, or put them in `/etc/alicepet.local.conf`:
+asks for them, or put them in `/etc/pet-os.local.conf`:
 
 ```ini
 [navi]
@@ -219,23 +220,20 @@ picture=/home/pi/norm.png
   operator, and to tell your Navi who it is helping. Leave it empty to use no name.
 - `picture`: any PNG, scaled to 110×110 and 44×44. Leave it empty for the packaged art.
 
-Restart AlicePET (leave and reopen it from the launcher) to see the change.
+Restart PET-os (leave and reopen it from the launcher) to see the change.
 On your Navi's computer, start the bridge with the same name
 (`PET_NAVI_NAME=Norm`), so your Navi answers as Norm.
 
 <p align="center">
-  <img src="alicepet/screenshots/navi-norm-home@3x.png" width="48%" alt="Navi Home with a Navi named Norm">
-  <img src="alicepet/screenshots/navi-norm-voice@3x.png" width="48%" alt="VOICE chip with Norm">
+  <img src="pet-os/screenshots/navi-norm-home@3x.png" width="48%" alt="Navi Home with a Navi named Norm">
+  <img src="pet-os/screenshots/navi-norm-voice@3x.png" width="48%" alt="VOICE chip with Norm">
 </p>
 
 A transparent background looks best for the picture. Make sure the PET's user
 can read the file.
 
-Still built in:
-
-- The Jack In apps on the PC (Windows, macOS, Linux) still say "Alice" and
-  show their own copy of Alice's picture.
-- The app is named AlicePET in the launcher.
+Still built in: the Jack In apps on the PC (Windows, macOS, Linux) still say
+"Alice" and show their own copy of Alice's picture.
 
 ## Development
 
@@ -243,22 +241,22 @@ Still built in:
 libjpeg, zlib, fmt):
 
 ```sh
-cd alicepet
+cd pet-os
 cmake --preset linux-x86-64 && cmake --build --preset linux-x86-64-dbg   # or darwin-arm64 / darwin-arm64-rel
-./build/linux-x86-64/Debug/alicepet
+./build/linux-x86-64/Debug/pet-os
 ctest --test-dir build/linux-x86-64 -C Debug
 ```
 
-The simulator reads `alicepet/config/alicepet.conf` and then
-`alicepet/config/alicepet.local.conf` (git-ignored). `ALICEPET_SNAPSHOT=<dir>`
-renders screens to PNGs without a window; [alicepet/README.md](alicepet/README.md)
+The simulator reads `pet-os/config/pet-os.conf` and then
+`pet-os/config/pet-os.local.conf` (git-ignored). `PETOS_SNAPSHOT=<dir>`
+renders screens to PNGs without a window; [pet-os/README.md](pet-os/README.md)
 lists the snapshot switches, the source layout and the CMake options.
 
 ```
-alicepet/        the app (CMake, LVGL; src/{app,model,view,viewmodel,platform}, tests/)
-  config/        alicepet.conf, installed as /etc/alicepet.conf
+pet-os/        the app (CMake, LVGL; src/{app,model,view,viewmodel,platform}, tests/)
+  config/        pet-os.conf, installed as /etc/pet-os.conf
   jackin/        the Jack In PC apps (Windows, macOS, Linux) and USB gadget script
-bin/             pet-setup.sh, alicepet-bridge.sh, voice-route.mjs, build-device.sh, device-day.sh
+bin/             pet-setup.sh, pet-os-bridge.sh, voice-route.mjs, build-device.sh, device-day.sh
 vendor/          the PET bridge (from cardputer-pet-terminal)
 mockups/         approved designs; chip art is rendered from chips.html
 CHIPS.md         the Battle Chip folder and ideas
@@ -268,7 +266,7 @@ HANDOFF.md       current status for whoever picks this up next
 ## Secrets
 
 The repo has none and should never get any. Tokens and API keys live only in
-`/etc/alicepet.local.conf` on the PET and in the bridge's environment on your
+`/etc/pet-os.local.conf` on the PET and in the bridge's environment on your
 computer.
 
 ## Credits
@@ -277,4 +275,4 @@ computer.
   project and is not affiliated with Capcom.
 - [Departure Mono](https://departuremono.com/) font, SIL Open Font License.
 - Built on the M5Stack CardputerZero app template and [LVGL](https://lvgl.io).
-- License: MIT (see [alicepet/LICENSE](alicepet/LICENSE)).
+- License: MIT (see [pet-os/LICENSE](pet-os/LICENSE)).

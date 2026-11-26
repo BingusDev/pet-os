@@ -107,6 +107,8 @@ rules.ninja
 *.so
 *.so.*
 *.dll
+# Microsoft's WebView2 SDK, shipped with Jack In for Windows (Retro games in the app).
+!jackin/windows/webview2/**/*.dll
 *.dylib
 *.exe
 *.out

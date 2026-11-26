@@ -878,7 +878,7 @@ void RetroChip::play_on_pc(const Game& game) {
     pc_link::send("{\"t\":\"play\",\"kind\":\"game\",\"title\":\"" + platform::net::json_escape(game.name) +
                   "\",\"url\":\"" + platform::net::json_escape(url) + "\",\"direct\":\"" +
                   platform::net::json_escape(base_ + path) + "\"}");
-    status_ = "playing in the browser on " + pc_link::host();
+    status_ = "playing on " + pc_link::host();
     touch();
 }
 

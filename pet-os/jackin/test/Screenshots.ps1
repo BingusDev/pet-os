@@ -27,8 +27,10 @@ public static class ShotWin {
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
-    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
-    [DllImport("user32.dll")] public static extern void mouse_event(int f, int x, int y, int d, IntPtr e);
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 }
 '@
 [void][ShotWin]::SetProcessDPIAware()
@@ -117,14 +119,23 @@ function Wait-App([int]$seconds, [scriptblock]$done) {
 function Find-Msg([string]$type) { foreach ($m in $script:got) { if ($m.t -eq $type) { return $m } }; return $null }
 
 function Save-Window([IntPtr]$hwnd, [string]$name) {
+    # Render the window itself (PW_RENDERFULLCONTENT), so other windows on top of it
+    # never end up in the shot.
+    [void][ShotWin]::ShowWindow($hwnd, 9)
     [void][ShotWin]::SetForegroundWindow($hwnd)
+    # Keep it on top while the script clicks it: WinForms only raises Click when the
+    # control is the window actually under that point.
+    [void][ShotWin]::SetWindowPos($hwnd, [IntPtr](-1), 0, 0, 0, 0, 0x13)
     Start-Sleep -Milliseconds 600
     $r = New-Object ShotWin+RECT
     [void][ShotWin]::GetWindowRect($hwnd, [ref]$r)
     $bmp = New-Object System.Drawing.Bitmap -ArgumentList ($r.R - $r.L), ($r.B - $r.T)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.CopyFromScreen($r.L, $r.T, 0, 0, $bmp.Size)
+    $dc = $g.GetHdc()
+    $ok = [ShotWin]::PrintWindow($hwnd, $dc, 2)
+    $g.ReleaseHdc($dc)
     $g.Dispose()
+    if (-not $ok) { $bmp.Dispose(); throw "could not render the window for $name" }
     $path = Join-Path $Out $name
     $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
     $bmp.Dispose()
@@ -136,11 +147,14 @@ function Click-Text([IntPtr]$hwnd, [string]$text) {
     $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $text)
     $el = $win.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
     if (-not $el) { throw "no '$text' in the window" }
+    # Click the label's own window with messages: the real mouse never moves, so a
+    # window on top of the app cannot take the click.
+    $h = [IntPtr]$el.Current.NativeWindowHandle
+    if ($h -eq [IntPtr]::Zero) { throw "'$text' has no window to click" }
     $b = $el.Current.BoundingRectangle
-    [void][ShotWin]::SetCursorPos([int]($b.X + $b.Width / 2), [int]($b.Y + $b.Height / 2))
-    Start-Sleep -Milliseconds 100
-    [ShotWin]::mouse_event(2, 0, 0, 0, [IntPtr]::Zero)
-    [ShotWin]::mouse_event(4, 0, 0, 0, [IntPtr]::Zero)
+    $lp = [IntPtr](([int]($b.Height / 2) -shl 16) -bor [int]($b.Width / 2))
+    [void][ShotWin]::PostMessage($h, 0x0201, [IntPtr]1, $lp)
+    [void][ShotWin]::PostMessage($h, 0x0202, [IntPtr]::Zero, $lp)
 }
 
 # The app reads the PC's name and user from the environment: show made-up ones.

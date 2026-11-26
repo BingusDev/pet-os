@@ -249,8 +249,8 @@ On your Navi's computer, start the bridge with the same name
 A transparent background looks best for the picture. Make sure the PET's user
 can read the file.
 
-Still built in: the Jack In apps on the PC (Windows, macOS, Linux) still say
-"Alice" and show their own copy of Alice's picture.
+The Jack In app on the PC gets your Navi's name and picture from the PET when
+it links (until then, and with a PET older than rev32, it shows Alice).
 
 ## Development
 

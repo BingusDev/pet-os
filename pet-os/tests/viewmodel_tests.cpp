@@ -782,6 +782,8 @@ void test_jack_session() {
     CHECK(jack.connected() && jack.view() == JackInChip::View::Session);
     // The PET names its operator (never the Windows user) right after hello.
     CHECK(!jack.sent.empty() && jack.sent[0] == R"({"t":"pet","operator":"Operator","control":false,"terminal":false,"trusted":false})");
+    // Then the Navi's name; no [navi] picture, so the PC keeps its packaged art.
+    CHECK(jack.sent.size() > 1 && jack.sent[1] == R"({"t":"navi","name":"Alice","art":""})");
     jack.sent.clear();
     CHECK(!jack.full() && !jack.admin());
     CHECK(jack.keep_awake());
@@ -1832,6 +1834,30 @@ void test_navi_identity() {
     const std::string asked(380, 'q');
     const std::string chat = JackInChip::chat_prompt("LAPTOP-FRONT", "full", asked);
     CHECK(chat.size() <= viewmodel::chips::kBridgeMaxInput && chat.find(asked) != std::string::npos);
+    // Jack In sends the [navi] picture to the PC as base64 ("PNG" -> "UE5H").
+    {
+        const auto png = std::filesystem::temp_directory_path() / "pet-os-test-navi.png";
+        { std::ofstream(png, std::ios::binary) << "PNG"; }
+        model::set_navi({"Norm", "Sam", png.string()});
+        model::PetConfig config;
+        config.jack_gadget_up.clear();
+        config.jack_gadget_down.clear();
+        config.bridge_url.clear();
+        viewmodel::chips::JackInChip jack(config);
+        jack.capture_sent = true;
+        jack.on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk"})");
+        bool found = false;
+        for (const auto& line : jack.sent) found = found || line == R"({"t":"navi","name":"Norm","art":"UE5H"})";
+        CHECK(found);
+        // A missing picture sends no art.
+        model::set_navi({"Norm", "Sam", "/nonexistent/norm.png"});
+        jack.sent.clear();
+        jack.on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk"})");
+        found = false;
+        for (const auto& line : jack.sent) found = found || line == R"({"t":"navi","name":"Norm","art":""})";
+        CHECK(found);
+        std::filesystem::remove(png);
+    }
     model::set_navi({});
 }
 

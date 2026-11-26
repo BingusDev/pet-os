@@ -10,7 +10,7 @@ include(GNUInstallDirs)
 # "TemplateApp" values that would otherwise silently win.
 
 set(APP_DISPLAY_NAME "PET-os" CACHE STRING "Human-readable application name used by launchers and package filename" FORCE)
-set(APP_DEBIAN_REVISION "rev31" CACHE STRING "Debian package revision/vendor suffix")
+set(APP_DEBIAN_REVISION "rev32" CACHE STRING "Debian package revision/vendor suffix")
 set(APP_DEBIAN_ARCHITECTURE "arm64" CACHE STRING "Debian package architecture")
 set(APP_MAINTAINER "Holden <netholden@gmail.com>" CACHE STRING "Debian package maintainer" FORCE)
 set(APP_PACKAGE_DESCRIPTION "PET-os: Navi home, chat with Alice, net scan, battle chips" CACHE STRING "Debian package summary" FORCE)

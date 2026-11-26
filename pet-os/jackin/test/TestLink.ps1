@@ -100,9 +100,19 @@ try {
 
     # What the PET sends next: who runs it, no chip control yet, and one mirror frame band.
     Send-App ([ordered]@{ t = 'pet'; operator = 'Tester'; control = $false; terminal = $false })
+    # The PET's [navi] name and picture replace Alice in the window.
+    Add-Type -AssemblyName System.Drawing
+    $bmp = New-Object System.Drawing.Bitmap 4, 4
+    $ms = New-Object System.IO.MemoryStream
+    $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+    $naviArt = [Convert]::ToBase64String($ms.ToArray())
+    $bmp.Dispose(); $ms.Dispose()
+    Send-App ([ordered]@{ t = 'navi'; name = 'Norm'; art = $naviArt })
     Send-App ([ordered]@{ t = 'frame'; screen = 'test'; w = 4; h = 2; y = 0; n = 2; rle = [Convert]::ToBase64String([byte[]](8, 0, 31)) })
     [void](Wait-App 6 { $false })
     Check 'the first link stays up (rev26 dropped it and dialed again)' ($links -eq 1 -and $null -eq (Find-Msg 'bye')) "links=$links"
+    $proc.Refresh()
+    Check 'the window is named after the PET''s Navi' ($proc.MainWindowTitle -eq 'Jack In - Norm.exe') "title=$($proc.MainWindowTitle)"
 
     Send-App ([ordered]@{ t = 'run'; id = 1; cmd = '(Get-Date).Year' })
     [void](Wait-App 30 { $null -ne (Find-Msg 'result' 1) })

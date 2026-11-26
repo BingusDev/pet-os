@@ -205,12 +205,12 @@ asks for them, or put them in `/etc/alicepet.local.conf`:
 ```ini
 [navi]
 name=Norm
-owner=Holden
+owner=[USER]
 picture=/home/pi/norm.png
 ```
 
 - `name`: up to 12 characters. It shows as NORM.EXE, "Ask Norm" and "Norm: ...".
-- `owner`: your name, up to 16 characters. It's used for "Hi Holden!", as the Jack In
+- `owner`: your name, up to 16 characters. It's used for "Hi [USER]!", as the Jack In
   operator, and to tell your Navi who it is helping. Leave it empty to use no name.
 - `picture`: any PNG, scaled to 110×110 and 44×44. Leave it empty for the packaged art.
 

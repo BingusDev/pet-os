@@ -1,4 +1,4 @@
-# PET-os ⚡🐇
+# PET-os
 
 A Mega Man Battle Network-style **P.E.T.** (PErsonal Terminal) app for the
 [M5Stack CardputerZero](https://github.com/CardputerZero). It turns the pocket
@@ -8,15 +8,8 @@ Navi on the PET, and you slot **Battle Chips** that each open a small tool
 (SSH terminal, Jellyfin player, network tester, IR remote, retro games, and a
 USB sidekick for PCs).
 
-It started as AlicePET, built for one Navi, **Alice**, and her operator. Your
-Navi's name, picture and your own name are settings, so it can be yours
-instead (see [Making it yours](#making-it-yours)).
-
-> **Coming from AlicePET?** Install the PET-os package over it. It replaces the
-> `alicepet` package and copies `/etc/alicepet.local.conf` and the Jack In sudo
-> rule to their new names. The app moves its saved files (ROMs, remotes,
-> trusted PCs) from `alicepet/` to `pet-os/` the first time it starts. Then
-> reboot, and run `pet-setup.sh` once more so the volume keys use the new name.
+Your Navi's name and picture and your own name are settings, and the setup
+script asks for them (see [Making it yours](#making-it-yours)).
 
 <p align="center">
   <img src="pet-os/screenshots/home@3x.png" width="48%" alt="Navi Home">
@@ -124,7 +117,7 @@ bin/pet-os-bridge.sh
 | `PET_BRIDGE_TOKEN` | (none) | Required for any address other than 127.0.0.1. The PET sends it with every request. |
 | `BIND_HOST` | `127.0.0.1` | Where the bridge listens. Your Tailscale address is the safe choice. |
 | `PET_BRIDGE_PORT` | `8797` | The bridge port. |
-| `PET_VOICE_PROMPT` | Alice's vocabulary | Words Whisper should expect, such as your Navi's name, your name and your host names. Set this for good voice transcription. |
+| `PET_VOICE_PROMPT` | the original owner's word list | Words Whisper should expect, such as your Navi's name, your name and your host names. Set this for good voice transcription. |
 | `PET_VOICE_MODEL` | `large-v3-turbo` | Whisper model for push-to-talk. |
 
 The bridge runs in the foreground; stop it with Ctrl-C. Use your OS's service
@@ -200,7 +193,7 @@ sharing the PC's internet) are always clicked on the PC itself. Setup:
 <p align="center">
   <img src="pet-os/screenshots/netscan@3x.png" width="32%" alt="NET SCAN">
   <img src="pet-os/screenshots/terminal-hosts@3x.png" width="32%" alt="TERMINAL chip">
-  <img src="pet-os/screenshots/jellyfin@3x.png" width="32%" alt="JELLYFIN chip">
+  <img src="pet-os/screenshots/slotted@3x.png" width="32%" alt="Slotting the JELLYFIN chip">
 </p>
 
 ## Making it yours
@@ -225,7 +218,6 @@ On your Navi's computer, start the bridge with the same name
 (`PET_NAVI_NAME=Norm`), so your Navi answers as Norm.
 
 <p align="center">
-  <img src="pet-os/screenshots/navi-norm-home@3x.png" width="48%" alt="Navi Home with a Navi named Norm">
   <img src="pet-os/screenshots/navi-norm-voice@3x.png" width="48%" alt="VOICE chip with Norm">
 </p>
 
@@ -262,6 +254,14 @@ mockups/         approved designs; chip art is rendered from chips.html
 CHIPS.md         the Battle Chip folder and ideas
 HANDOFF.md       current status for whoever picks this up next
 ```
+
+## Upgrading from AlicePET
+
+PET-os used to be called AlicePET. Install the PET-os package over it. It replaces the
+`alicepet` package and copies `/etc/alicepet.local.conf` and the Jack In sudo
+rule to their new names. The app moves its saved files (ROMs, remotes,
+trusted PCs) from `alicepet/` to `pet-os/` the first time it starts. Then
+reboot, and run `pet-setup.sh` once more so the volume keys use the new name.
 
 ## Secrets
 

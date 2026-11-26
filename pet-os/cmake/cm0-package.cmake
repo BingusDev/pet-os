@@ -1,0 +1,141 @@
+#
+# SPDX-FileCopyrightText: 2026 M5Stack Technology CO LTD
+#
+# SPDX-License-Identifier: MIT
+# Packaging and install layout for CardputerZero Debian builds.
+
+include(GNUInstallDirs)
+
+# Package identity is FORCEd: build trees first configured from the template cached
+# "TemplateApp" values that would otherwise silently win.
+
+set(APP_DISPLAY_NAME "PET-os" CACHE STRING "Human-readable application name used by launchers and package filename" FORCE)
+set(APP_DEBIAN_REVISION "rev31" CACHE STRING "Debian package revision/vendor suffix")
+set(APP_DEBIAN_ARCHITECTURE "arm64" CACHE STRING "Debian package architecture")
+set(APP_MAINTAINER "Holden <netholden@gmail.com>" CACHE STRING "Debian package maintainer" FORCE)
+set(APP_PACKAGE_DESCRIPTION "PET-os: Navi home, chat with Alice, net scan, battle chips" CACHE STRING "Debian package summary" FORCE)
+# APPLaunch starts the app from its .desktop entry; a unit file would only compete with it.
+set(APP_INSTALL_SYSTEMD_SERVICE OFF CACHE BOOL "Install a systemd service file for embedded deployments" FORCE)
+
+set(APP_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/package")
+configure_file(
+    "${CMAKE_CURRENT_LIST_DIR}/templates/app.desktop.in"
+    "${APP_GENERATED_DIR}/${PROJECT_NAME}.desktop"
+    @ONLY
+)
+
+if(APP_INSTALL_SYSTEMD_SERVICE)
+    configure_file(
+        "${CMAKE_CURRENT_LIST_DIR}/templates/app.service.in"
+        "${APP_GENERATED_DIR}/${PROJECT_NAME}.service"
+        @ONLY
+    )
+endif()
+
+install(TARGETS ${PROJECT_NAME}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/config/pet-os.conf"
+    DESTINATION "/etc"
+)
+
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets/audio/"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/${APP_NAME}/audio"
+    PATTERN ".DS_Store" EXCLUDE
+)
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/${APP_NAME}/fonts"
+    PATTERN ".DS_Store" EXCLUDE
+)
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets/images/"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/${APP_NAME}/images"
+    PATTERN ".DS_Store" EXCLUDE
+    PATTERN "cp0-*.png" EXCLUDE
+)
+# 48x48 launcher icon, referenced by the .desktop entry as share/images/pet-os.png.
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/images/pet-os.png"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/APPLaunch/share/images"
+)
+
+install(FILES "${APP_GENERATED_DIR}/${PROJECT_NAME}.desktop"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/APPLaunch/applications"
+)
+
+if(APP_INSTALL_SYSTEMD_SERVICE)
+    install(FILES "${APP_GENERATED_DIR}/${PROJECT_NAME}.service"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/systemd/system"
+    )
+endif()
+
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+    DESTINATION "${CMAKE_INSTALL_DOCDIR}"
+)
+# JACK IN: the USB gadget script (run through sudo, see the sudoers example),
+# the PC app that goes on the PET's USB drive, and the protocol notes.
+install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/jackin/usb-gadget.sh"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libexec/set-clock.sh"
+    DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/pet-os"
+)
+# macOS/Linux client, launchers and README; usb-gadget.sh copies these onto the drive.
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/jackin/unix/"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/pet-os/jackin/unix"
+    FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+)
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/jackin/windows"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/pet-os/jackin"
+)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/jackin/PROTOCOL.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/jackin/SETUP-GADGET.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/jackin/pet-os-jackin.sudoers"
+    DESTINATION "${CMAKE_INSTALL_DOCDIR}/jackin"
+)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/LICENSE.txt"
+    DESTINATION "${CMAKE_INSTALL_DOCDIR}"
+    RENAME "third-party-assets-license.txt"
+)
+
+set(CPACK_GENERATOR "DEB")
+set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
+set(CPACK_OUTPUT_FILE_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/dist")
+set(CPACK_PACKAGE_NAME "${APP_DISPLAY_NAME}")
+set(CPACK_PACKAGE_VENDOR "${APP_MAINTAINER}")
+set(CPACK_PACKAGE_CONTACT "${APP_MAINTAINER}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${APP_PACKAGE_DESCRIPTION}")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_FILE_NAME "${APP_DISPLAY_NAME}_${PROJECT_VERSION}_${APP_DEBIAN_REVISION}_${APP_DEBIAN_ARCHITECTURE}")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/LICENSE.txt")
+
+string(TOLOWER "${APP_DISPLAY_NAME}" APP_DEBIAN_PACKAGE_NAME)
+string(REGEX REPLACE "[^a-z0-9+.-]" "-" APP_DEBIAN_PACKAGE_NAME "${APP_DEBIAN_PACKAGE_NAME}")
+set(CPACK_DEBIAN_PACKAGE_NAME "${APP_DEBIAN_PACKAGE_NAME}")
+set(CPACK_DEBIAN_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_DEBIAN_PACKAGE_RELEASE "${APP_DEBIAN_REVISION}")
+set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "${APP_DEBIAN_ARCHITECTURE}")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "${APP_MAINTAINER}")
+set(CPACK_DEBIAN_PACKAGE_SECTION "utils")
+set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+set(APP_DEBIAN_DEPENDS "libc6, libstdc++6, libgcc-s1, libfreetype6, libpng16-16, libjpeg62-turbo, zlib1g")
+if(FMT_INCLUDE_DIR AND FMT_LIBRARY)
+    string(APPEND APP_DEBIAN_DEPENDS ", libfmt10")
+endif()
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "${APP_DEBIAN_DEPENDS}")
+# Programs the chips start: VOICE (arecord), TERMINAL (ssh), JELLYFIN (mpv),
+# https:// requests (curl), JACK IN's USB drive image and DHCP (dosfstools,
+# mtools, dnsmasq-base). Recommends, so the launcher still installs without them.
+set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "alsa-utils, openssh-client, mpv, curl, dosfstools, mtools, dnsmasq-base")
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS OFF)
+set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION TRUE)
+
+configure_file(
+    "${CMAKE_CURRENT_LIST_DIR}/templates/conffiles.in"
+    "${APP_GENERATED_DIR}/conffiles"
+    @ONLY
+)
+# Before rev31 the package was "alicepet": installing pet-os removes it (dpkg -i
+# does this too, since we declare Replaces), and postinst carries its settings over.
+set(CPACK_DEBIAN_PACKAGE_CONFLICTS "alicepet")
+set(CPACK_DEBIAN_PACKAGE_REPLACES "alicepet")
+set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA "${APP_GENERATED_DIR}/conffiles;${CMAKE_CURRENT_LIST_DIR}/templates/postinst")
+
+include(CPack)

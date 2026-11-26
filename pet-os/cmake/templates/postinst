@@ -1,0 +1,37 @@
+#!/bin/sh
+# PET-os postinst. Before rev31 the package was "alicepet": carry its settings
+# over once. The old files are left where they are.
+set -e
+
+if [ "$1" = "configure" ]; then
+    # Personal settings (bridge, token, hosts, [navi]).
+    if [ -f /etc/alicepet.local.conf ] && [ ! -e /etc/pet-os.local.conf ]; then
+        cp -p /etc/alicepet.local.conf /etc/pet-os.local.conf
+        sed -i 's#/usr/libexec/alicepet/#/usr/libexec/pet-os/#g; s#/\.local/share/alicepet#/.local/share/pet-os#g; s#/\.config/alicepet#/.config/pet-os#g' /etc/pet-os.local.conf
+        echo "pet-os: copied /etc/alicepet.local.conf to /etc/pet-os.local.conf"
+    fi
+    # The Jack In / clock sudo rule from pet-setup.sh, pointed at the new paths.
+    if [ -f /etc/sudoers.d/alicepet-jackin ] && [ ! -e /etc/sudoers.d/pet-os-jackin ]; then
+        tmp=/etc/sudoers.d/.pet-os-jackin.new
+        sed 's#/usr/libexec/alicepet/#/usr/libexec/pet-os/#g; s#AlicePET#PET-os#g' /etc/sudoers.d/alicepet-jackin >"$tmp"
+        chmod 0440 "$tmp"
+        if command -v visudo >/dev/null 2>&1 && visudo -cf "$tmp" >/dev/null 2>&1; then
+            mv "$tmp" /etc/sudoers.d/pet-os-jackin
+            rm -f /etc/sudoers.d/alicepet-jackin
+            echo "pet-os: moved the Jack In sudo rule to /etc/sudoers.d/pet-os-jackin"
+        else
+            rm -f "$tmp"
+            echo "pet-os: run pet-setup.sh again to install the Jack In sudo rule" >&2
+        fi
+    fi
+    # Hand edits to the old main config are not merged: say so.
+    if [ -f /etc/alicepet.conf ]; then
+        shipped=$(dpkg-query -W -f='${Conffiles}\n' alicepet 2>/dev/null | awk '$1 == "/etc/alicepet.conf" { print $2 }')
+        now=$(md5sum /etc/alicepet.conf | cut -d' ' -f1)
+        if [ -n "$shipped" ] && [ "$shipped" != "$now" ]; then
+            echo "pet-os: /etc/alicepet.conf has your own changes; copy them into /etc/pet-os.local.conf" >&2
+        fi
+    fi
+fi
+
+exit 0

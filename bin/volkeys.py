@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # CardputerZero volume keys: fn+D / fn+S / fn+A arrive as KEY_VOLUMEUP / KEY_VOLUMEDOWN /
 # KEY_MUTE on the tca8418c keypad. Map them to PipeWire (5% steps, capped at 100%) and
-# write "<percent> <muted>" to $XDG_RUNTIME_DIR/alicepet-volume for AlicePET's volume bar.
+# write "<percent> <muted>" to $XDG_RUNTIME_DIR/pet-os-volume for PET-os's volume bar.
 import glob, os, re, struct, subprocess, time
 
 EV_KEY, MUTE, DOWN, UP = 1, 113, 114, 115
@@ -9,7 +9,7 @@ SINK = "@DEFAULT_AUDIO_SINK@"
 ACT = {UP: ["wpctl", "set-volume", "-l", "1.0", SINK, "5%+"],
        DOWN: ["wpctl", "set-volume", SINK, "5%-"],
        MUTE: ["wpctl", "set-mute", SINK, "toggle"]}
-STATE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "alicepet-volume")
+STATE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "pet-os-volume")
 
 
 def keypad():

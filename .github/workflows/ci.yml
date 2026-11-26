@@ -29,23 +29,23 @@ jobs:
       - name: Cache fetched dependencies
         uses: actions/cache@v4
         with:
-          path: alicepet/.cache/linux-x86_64-deps
-          key: deps-linux-${{ hashFiles('alicepet/CMakeLists.txt', 'alicepet/cmake/**', 'alicepet/CMakePresets.json') }}
+          path: pet-os/.cache/linux-x86_64-deps
+          key: deps-linux-${{ hashFiles('pet-os/CMakeLists.txt', 'pet-os/cmake/**', 'pet-os/CMakePresets.json') }}
       - name: Build
-        working-directory: alicepet
+        working-directory: pet-os
         run: |
           cmake --preset linux-x86-64
           cmake --build --preset linux-x86-64-dbg
       - name: App tests
-        working-directory: alicepet
+        working-directory: pet-os
         run: ctest --test-dir build/linux-x86-64 -C Debug --output-on-failure
       - name: Jack In client tests (Mac/Linux client)
-        run: bash alicepet/jackin/test/unix/run-tests.sh
+        run: bash pet-os/jackin/test/unix/run-tests.sh
       - name: Shell scripts
         run: |
           shellcheck -S warning -e SC2034 \
-            alicepet/jackin/unix/jackin-client.sh alicepet/jackin/usb-gadget.sh \
-            alicepet/jackin/test/unix/run-tests.sh alicepet/libexec/set-clock.sh bin/pet-setup.sh
+            pet-os/jackin/unix/jackin-client.sh pet-os/jackin/usb-gadget.sh \
+            pet-os/jackin/test/unix/run-tests.sh pet-os/libexec/set-clock.sh bin/pet-setup.sh
       - name: Bridge scripts parse
         run: |
           node --check vendor/cardputer-pet-terminal/bridge/server.mjs
@@ -59,4 +59,4 @@ jobs:
       - uses: actions/checkout@v4
       - name: TestPolicy.ps1
         shell: cmd
-        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File alicepet\jackin\test\TestPolicy.ps1
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File pet-os\jackin\test\TestPolicy.ps1

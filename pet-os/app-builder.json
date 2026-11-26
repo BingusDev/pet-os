@@ -1,0 +1,37 @@
+{
+  "app_name": "PET-os",
+  "package_name": "pet-os",
+  "version": "0.5.0",
+  "description": "PET-os launcher for CardputerZero: Navi Home with Alice chat, NET SCAN, the chip folder, and the VOICE, TERMINAL and JELLYFIN chips.",
+  "store": {
+    "summary": "Personal terminal home screen with Alice, your Navi companion, and a browsable battle chip folder.",
+    "description": "PET-os v0.5 for CardputerZero. A P.E.T. boot screen, then NAVI HOME where you type to Alice (your OpenClaw Navi, reached through a small HTTP bridge over Tailscale) and page through her replies. [1] NET SCAN checks your hosts. [2] opens the CHIP FOLDER. Chips: VOICE (push-to-talk; the mic only records while SPACE is held), TERMINAL (SSH bookmarks with Ask-Alice command suggestions that only run when you press Enter), and JELLYFIN (browse and play your library, transcoded for the 320x170 screen). LAN TECH, JACK IN, REMOTE and RETRO are in progress.",
+    "categories": [
+      "TODO: pick 1-2 real categories from docs/APP_BUILDER_JSON.md"
+    ],
+    "screenshots": [
+      "screenshots/boot@3x.png",
+      "screenshots/home-reply@3x.png",
+      "screenshots/netscan@3x.png",
+      "screenshots/folder@3x.png",
+      "screenshots/slotted@3x.png"
+    ],
+    "icon": "assets/images/pet-os.png (48x48; TODO 256x256 store icon)",
+    "license": "MIT",
+    "source_repo": "https://github.com/BingusDev/PET-os",
+    "author": {
+      "github": "BingusDev",
+      "display_name": "Holden"
+    },
+    "share_code": "TODO",
+    "permissions": {
+      "camera": false,
+      "microphone": true,
+      "imu": false,
+      "network": true,
+      "additional_hardware": false,
+      "background_service": false,
+      "external_display": false
+    }
+  }
+}

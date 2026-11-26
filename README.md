@@ -1,4 +1,4 @@
-# AlicePET OS ⚡🐇
+# PET-os ⚡🐇
 
 A Mega Man Battle Network-style **P.E.T.** (PErsonal Terminal) app for the
 [M5Stack CardputerZero](https://github.com/CardputerZero). It turns the pocket
@@ -8,9 +8,14 @@ Navi on the PET, and you slot **Battle Chips** that each open a small tool
 (SSH terminal, Jellyfin player, network tester, IR remote, retro games, and a
 USB sidekick for PCs).
 
-It was built for one Navi, **Alice**, and her operator. Your Navi's name,
-picture and your own name are settings, so it can be yours instead (see
-[Making it yours](#making-it-yours)).
+It started as AlicePET, built for one Navi, **Alice**, and her operator. Your
+Navi's name, picture and your own name are settings, so it can be yours
+instead (see [Making it yours](#making-it-yours)).
+
+> **About the name:** the project is now PET-os, but the app itself still
+> installs as **AlicePET**. That covers the package (`AlicePET_*.deb`), the
+> launcher entry, the `alicepet/` source folder and the config files
+> (`/etc/alicepet.conf`). The commands below use those names.
 
 <p align="center">
   <img src="alicepet/screenshots/home@3x.png" width="48%" alt="Navi Home">
@@ -25,7 +30,7 @@ picture and your own name are settings, so it can be yours instead (see
 
 | Where | What |
 |---|---|
-| **The PET** | An M5Stack CardputerZero on its stock Debian 13 (trixie) image, with Wi-Fi and SSH working. AlicePET installs as an app that the stock launcher (APPLaunch) starts. |
+| **The PET** | An M5Stack CardputerZero on its stock Debian 13 (trixie) image, with Wi-Fi and SSH working. PET-os installs as an app that the stock launcher (APPLaunch) starts. |
 | **Your Navi's computer** | A Mac or Linux machine that runs OpenClaw with an agent you want on the PET, plus Node.js 20 or newer. Optional for voice: `openai-whisper` (`pip install openai-whisper`). |
 | **Between them** | A network path from the PET to that computer. [Tailscale](https://tailscale.com) on both is the easy way, and lets the PET reach your Navi away from home. |
 | **To build** | A Linux machine (x86-64 or arm64) for cross-compiling, or any machine with Docker and SSH to one. There is no prebuilt download yet. |
@@ -36,7 +41,7 @@ SSH hosts, an IR transmitter.
 ## How it fits together
 
 ```
-CardputerZero  (AlicePET app, C++ / LVGL)
+CardputerZero  (PET-os app, C++ / LVGL)
    │  HTTP + JSON, bearer token, over Tailscale or your LAN
    ▼
 Your computer: PET bridge   (bin/alicepet-bridge.sh → vendor/cardputer-pet-terminal/bridge)
@@ -56,8 +61,8 @@ same bridge and are transcribed on your computer with Whisper, not in the cloud.
 On a Linux machine:
 
 ```sh
-git clone https://github.com/BingusDev/alicepet-os
-cd alicepet-os/alicepet
+git clone https://github.com/BingusDev/PET-os
+cd PET-os/alicepet
 sudo apt install g++-aarch64-linux-gnu ninja-build pkg-config dpkg-dev curl   # plus CMake 3.31 or newer
 cmake --workflow --preset cp0-cross-package
 ```
@@ -139,7 +144,7 @@ Open AlicePET, type on Navi Home and press Enter. Your Navi should answer.
 
 ## Configure
 
-AlicePET reads two files on the PET:
+The app reads two files on the PET:
 
 - `/etc/alicepet.conf` ships with the app and has every option, commented. It
   holds no personal hosts or secrets.

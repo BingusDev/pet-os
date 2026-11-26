@@ -216,6 +216,14 @@ drive and the PET and PC link up over the same cable, no Wi-Fi or install needed
 3. **The PC can drive the PET.** From the PC app you can chat with your Navi
    and open chips (Jellyfin, Retro, Terminal, LAN Tech) on the PET.
 
+The app on the PC shows your Navi, a chat box, the PC's health and the chips
+you can open on the PET:
+
+<p align="center">
+  <img src="pet-os/screenshots/jackin-pc-home.png" width="49%" alt="Jack In app on the PC: Norm, chat and PC status">
+  <img src="pet-os/screenshots/jackin-pc-chip.png" width="49%" alt="Jack In app on the PC driving the LAN TECH chip">
+</p>
+
 <p align="center">
   <img src="pet-os/screenshots/jackin-full@3x.png" width="48%" alt="Jack In with Full Access and admin">
   <img src="pet-os/screenshots/jackin-pc-driving@3x.png" width="48%" alt="The PC operating the JELLYFIN chip">

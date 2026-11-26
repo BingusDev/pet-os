@@ -3,6 +3,7 @@
  */
 
 #include "viewmodel/chips/lan_tech_chip.h"
+#include "model/navi.h"
 
 #include "platform/lan_info.h"
 #include "platform/net.h"
@@ -273,8 +274,8 @@ void LanTechChip::ask_alice() {
     alice_text_.clear();
     // Instructions first: the bridge keeps only the first kBridgeMaxInput characters.
     std::string report =
-        "PET LAN TECH jack test. In 2-3 short sentences for a tiny screen, tell Holden (the store IT person) "
-        "what is wrong and what to try next. Results on " + iface_ + ":\n";
+        "PET LAN TECH jack test. In 2-3 short sentences for a tiny screen, tell " + model::owner_or("the tech") +
+        " what is wrong and what to try next. Results on " + iface_ + ":\n";
     for (const auto& c : checks_) {
         const char* mark = c.state == State::Ok ? "OK" : c.state == State::Warn ? "WARN" : c.state == State::Fail ? "FAIL" : "?";
         report += "- " + c.label + ": " + mark + " " + c.value + "\n";
@@ -388,7 +389,7 @@ std::string LanTechChip::report_text(const std::string& when) const {
         out += std::string(mark) + "  " + c.label + ": " + c.value + "\n";
     }
     out += "\nVerdict: " + headline_ + ". " + verdict_ + "\n";
-    if (!alice_text_.empty()) out += "\nAlice: " + alice_text_ + "\n";
+    if (!alice_text_.empty()) out += "\n" + model::navi_name() + ": " + alice_text_ + "\n";
     if (!devices_.empty()) {
         out += "\nDevices (" + std::to_string(devices_.size()) + "):\n";
         for (const auto& d : devices_) {

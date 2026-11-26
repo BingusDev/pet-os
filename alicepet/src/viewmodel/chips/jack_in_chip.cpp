@@ -3,6 +3,7 @@
  */
 
 #include "viewmodel/chips/jack_in_chip.h"
+#include "model/navi.h"
 
 #include "platform/clock_sync.h"
 #include "platform/json.h"
@@ -324,7 +325,7 @@ void JackInChip::on_line(const std::string& line) {
             trusted_ = jack_store::find_trusted(jack_store::load_trusted(dir), token) >= 0;
             if (trusted_) {
                 pc_control_ = true;
-                note("trusted PC: it may open chips and talk to Alice");
+                note("trusted PC: it may open chips and talk to " + model::navi_name());
             } else {
                 send(R"({"t":"trust","token":""})");
             }
@@ -391,7 +392,7 @@ void JackInChip::on_line(const std::string& line) {
                 note("Keep going: yes");
                 agent_run(held);
             } else {
-                agent_stop("Holden said stop after " + std::to_string(agent_steps_) + " commands");
+                agent_stop(model::owner_or("You") + " said stop after " + std::to_string(agent_steps_) + " commands");
             }
         }
     } else if (t == "open") {
@@ -455,7 +456,7 @@ void JackInChip::on_line(const std::string& line) {
             if (chat_waiting_) {
                 agent_stop("busy");
             } else {
-                note("Alice reads the output (step " + std::to_string(agent_steps_) + ")");
+                note(model::navi_name() + " reads the output (step " + std::to_string(agent_steps_) + ")");
                 ask_chat(output_prompt(mode_, agent_cmd_, ok, msg["reason"].str(), msg["out"].str()));
             }
         }
@@ -467,10 +468,11 @@ void JackInChip::on_line(const std::string& line) {
                 pc_wants_ = "control";
                 pc_wants_chip_.clear();
                 attention_ = true;
-                note("PC wants to talk to Alice: waiting for [K] here", LogLine::Kind::Fail);
+                note("PC wants to talk to " + model::navi_name() + ": waiting for [K] here", LogLine::Kind::Fail);
             }
-            status_ = "PC wants to talk to Alice: [K] allows it";
-            send(R"({"t":"alice","ok":false,"text":"Press [K] on the PET to let this PC talk to Alice.","heard":"","cmd":""})");
+            status_ = "PC wants to talk to " + model::navi_name() + ": [K] allows it";
+            send("{\"t\":\"alice\",\"ok\":false,\"text\":\"Press [K] on the PET to let this PC talk to " + json_escape(model::navi_name()) +
+                 ".\",\"heard\":\"\",\"cmd\":\"\"}");
         } else if (chat_waiting_) {
             send(R"({"t":"alice","ok":false,"text":"Still answering the last one...","heard":"","cmd":""})");
         } else if (t == "chat") {
@@ -480,7 +482,7 @@ void JackInChip::on_line(const std::string& line) {
                 // Say so when the bridge's 600 characters won't hold all of it.
                 const std::string prompt = chat_prompt(host_, mode_, text);
                 if (clip_for_bridge(prompt).size() < prompt.size()) {
-                    note("that message was too long: Alice only got the start of it", LogLine::Kind::Fail);
+                    note("that message was too long: " + model::navi_name() + " only got the start of it", LogLine::Kind::Fail);
                 }
                 agent_running_ = true;
                 agent_steps_ = 0;
@@ -732,7 +734,7 @@ void JackInChip::trust_key() {
     trusted_ = true;
     pc_control_ = true;
     send("{\"t\":\"trust\",\"token\":\"" + token + "\"}");
-    note("you trusted this PC: it may open chips and talk to Alice every time");
+    note("you trusted this PC: it may open chips and talk to " + model::navi_name() + " every time");
     status_ = "Trusted. [T] twice forgets it again";
     send_pet();
     if (!pc_wants_chip_.empty() && pc_wants_chip_ != "terminal") opening_.push_back(pc_wants_chip_);
@@ -759,7 +761,7 @@ std::string JackInChip::report_text(const std::string& why) const {
         }
     }
     if (last_visit_.have) out += "Before:  " + jack_store::last_text(last_visit_, scan_.disk) + "\n";
-    if (!alice_text_.empty()) out += "Alice:   " + alice_text_ + "\n";
+    if (!alice_text_.empty()) out += model::navi_name() + ": " + alice_text_ + "\n";
     if (!suggestion_.empty()) out += "Fix not run: " + suggestion_ + "\n";
     out += "\nSession log\n";
     const size_t count = std::min(session_lines_, log_.size());
@@ -817,7 +819,7 @@ void JackInChip::on_alice_reply(const BridgeReply& reply) {
     ++alice_generation_;
     alice_waiting_ = false;
     if (!reply.ok) {
-        alice_text_ = "(can't reach Alice: " + reply.error + ")";
+        alice_text_ = "(can't reach " + model::navi_name() + ": " + reply.error + ")";
         suggestion_.clear();
     } else {
         split_reply(reply.reply, alice_text_, suggestion_);
@@ -835,9 +837,9 @@ void JackInChip::on_chat_reply(const BridgeReply& reply) {
     if (!reply.transcript.empty()) note(config_.jack_operator + " (heard): " + AliceViewModel::screen_text(reply.transcript));
     if (reply.ok) {
         alice_text_ = words;
-        note("Alice: " + words);
+        note(model::navi_name() + ": " + words);
     } else {
-        note("Alice: (can't reach her: " + reply.error + ")", LogLine::Kind::Fail);
+        note(model::navi_name() + ": (unreachable: " + reply.error + ")", LogLine::Kind::Fail);
     }
     // Her command goes straight to the PC while the loop runs; the PC applies its
     // mode (Read: read-only list, Ask: Yes/No each, Full: Yes/No only if destructive).
@@ -845,7 +847,7 @@ void JackInChip::on_chat_reply(const BridgeReply& reply) {
     // At the cap the command waits and the PC asks Holden "Keep going?" (agent_more).
     const bool hold = run && agent_steps_ >= agent_limit_;
     if (hold) run = false;
-    const std::string text = reply.ok ? words : "Can't reach Alice: " + reply.error;
+    const std::string text = reply.ok ? words : "Can't reach " + model::navi_name() + ": " + reply.error;
     if (!command.empty() && !run && !hold && reply.ok) suggestion_ = command;
     send("{\"t\":\"alice\",\"ok\":" + std::string(reply.ok ? "true" : "false") + ",\"text\":\"" +
          json_escape(text) + "\",\"heard\":\"" + json_escape(reply.transcript) + "\",\"cmd\":\"" +
@@ -854,7 +856,7 @@ void JackInChip::on_chat_reply(const BridgeReply& reply) {
         agent_run(command);
     } else if (hold) {
         agent_held_ = command;
-        note("Alice ran " + std::to_string(agent_steps_) + " commands: asking the PC to keep going");
+        note(model::navi_name() + " ran " + std::to_string(agent_steps_) + " commands: asking the PC to keep going");
         send("{\"t\":\"agent_more\",\"steps\":" + std::to_string(agent_steps_) + ",\"next\":\"" +
              json_escape(command) + "\"}");
     } else {
@@ -885,7 +887,7 @@ void JackInChip::agent_stop(const std::string& why) {
     agent_held_.clear();
     agent_running_ = false;
     agent_id_ = 0;
-    note("Alice's command loop stopped (" + why + ")");
+    note(model::navi_name() + "'s command loop stopped (" + why + ")");
     send("{\"t\":\"agent_stop\",\"why\":\"" + json_escape(why) + "\"}");
 }
 
@@ -1097,10 +1099,11 @@ std::string JackInChip::scan_summary(const Scan& scan) {
 
 std::string JackInChip::alice_prompt(const std::string& host, const std::string& os, const Scan& scan,
                                      const std::string& last) {
+    const std::string who = model::owner_or("Your operator");
     std::string p =
-        "PET JACK IN. Holden (store IT) plugged the PET into a PC; read-only scan below. Reply for a tiny screen: "
+        "PET JACK IN. " + who + " plugged the PET into a PC; read-only scan below. Reply for a tiny screen: "
         "1-2 short sentences on the worst problem, then optionally one line 'CMD: <one PowerShell command>' that "
-        "fixes it (Holden decides; it needs Full Access). No markdown. PC: " +
+        "fixes it (" + who + " decides; it needs Full Access). No markdown. PC: " +
         host + " (" + os + "). " + scan_summary(scan);
     if (scan.startup >= 0) p += " · startup items " + std::to_string(scan.startup);
     p += " · Defender " + scan.defender + (scan.defender_since.empty() ? "" : " since " + scan.defender_since);
@@ -1115,10 +1118,11 @@ std::string JackInChip::alice_prompt(const std::string& host, const std::string&
 }
 
 namespace {
-const char* mode_rule(const std::string& mode) {
-    // Kept short: the bridge takes 600 characters and the rest is Holden's message.
-    if (mode == "full") return "FULL: commands run at once; destructive ones need Holden's OK";
-    if (mode == "ask") return "ASK: Holden OKs each command";
+std::string mode_rule(const std::string& mode) {
+    // Kept short: the bridge takes 600 characters and the rest is the owner's message.
+    const std::string who = model::owner_or("the user");
+    if (mode == "full") return "FULL: runs at once; destructive needs " + who + "'s OK";
+    if (mode == "ask") return "ASK: " + who + " OKs each command";
     return "READ: only read-only commands run (Get-*, Test-*, ipconfig...)";
 }
 std::string upper(std::string v) {
@@ -1137,7 +1141,7 @@ std::string JackInChip::chat_prompt(const std::string& host, const std::string& 
 std::string JackInChip::output_prompt(const std::string& mode, const std::string& cmd, bool ok,
                                       const std::string& reason, const std::string& out) {
     std::string head = "[JACK IN, mode " + upper(mode) + "] ";
-    if (!ok && reason == "declined") return head + "Holden declined `" + cmd + "` on the PC. Continue without it, or stop.";
+    if (!ok && reason == "declined") return head + model::owner_or("The operator") + " declined `" + cmd + "` on the PC. Continue without it, or stop.";
     if (!ok && reason == "read-only")
         return head + "Not run: `" + cmd + "` is not read-only and the PC is in READ mode. Use a read-only command or stop.";
     std::string body = trim(out);

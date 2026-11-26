@@ -91,6 +91,7 @@ std::string HostConfig::probe_label() const {
 
 PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* warnings) {
     PetConfig config;
+    bool operator_set = false;
     std::istringstream input(text);
     std::string section;
     std::string line;
@@ -112,7 +113,11 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
         const std::string key = lowercase(trim(line.substr(0, separator)));
         const std::string value = trim(line.substr(separator + 1));
 
-        if (section == "bridge") {
+        if (section == "navi") {
+            if (key == "name" && !value.empty()) config.navi_name = value;
+            else if (key == "owner") config.navi_owner = value;
+            else if (key == "picture") config.navi_picture = value;
+        } else if (section == "bridge") {
             if (key == "url") {
                 config.bridge_url = value;
             } else if (key == "token") {
@@ -213,13 +218,17 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
             else if (key == "proxy_port") config.jack_proxy_port = std::atoi(value.c_str());
             else if (key == "gadget_up") config.jack_gadget_up = value;
             else if (key == "gadget_down") config.jack_gadget_down = value;
-            else if ((key == "operator" || key == "owner") && !value.empty()) config.jack_operator = value;
+            else if ((key == "operator" || key == "owner") && !value.empty()) {
+                config.jack_operator = value;
+                operator_set = true;
+            }
             else if (key == "state_dir" && !value.empty()) config.jack_state_dir = value;
             else if (key == "reports") config.jack_reports = !(value == "off" || value == "false" || value == "0" || value == "no");
             else if (key == "ask_on_pet") config.jack_pc_ask = value == "on" || value == "true" || value == "1" || value == "yes";
             else if (key == "pc_control") {}  // rev27/rev28 key: [K] is no longer asked for unless ask_on_pet=on
         }
     }
+    if (!operator_set && !config.navi_owner.empty()) config.jack_operator = config.navi_owner;
     return config;
 }
 

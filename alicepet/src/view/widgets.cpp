@@ -4,7 +4,15 @@
 
 #include "view/widgets.h"
 
+#include "logger/logger.h"
+#include "model/navi.h"
+
 #include <png.h>
+
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <string>
 
 namespace view {
 
@@ -31,6 +39,70 @@ bool load_png(const std::filesystem::path& path, ImageAsset& out) {
     out.desc.data = out.pixels.data();
     out.loaded = true;
     return true;
+}
+
+bool load_png_fit(const std::filesystem::path& path, int w, int h, ImageAsset& out) {
+    ImageAsset src;
+    if (w <= 0 || h <= 0 || !load_png(path, src)) return false;
+    const int sw = static_cast<int>(src.desc.header.w);
+    const int sh = static_cast<int>(src.desc.header.h);
+    if (sw <= 0 || sh <= 0) return false;
+    // Fit inside w x h, keeping the aspect ratio.
+    const double scale = std::min(static_cast<double>(w) / sw, static_cast<double>(h) / sh);
+    const int dw = std::max(1, static_cast<int>(sw * scale + 0.5));
+    const int dh = std::max(1, static_cast<int>(sh * scale + 0.5));
+    const int ox = (w - dw) / 2;
+    const int oy = h - dh;
+    out.pixels.assign(static_cast<size_t>(w) * h * 4, 0);
+    for (int y = 0; y < dh; ++y) {
+        // Source rows/columns covered by this destination pixel (at least one).
+        const int y0 = y * sh / dh;
+        const int y1 = std::max(y0 + 1, (y + 1) * sh / dh);
+        for (int x = 0; x < dw; ++x) {
+            const int x0 = x * sw / dw;
+            const int x1 = std::max(x0 + 1, (x + 1) * sw / dw);
+            // Box filter with premultiplied alpha, so transparent edges don't darken.
+            uint64_t b = 0, g = 0, r = 0, a = 0, n = 0;
+            for (int sy = y0; sy < y1; ++sy) {
+                const uint8_t* row = src.pixels.data() + static_cast<size_t>(sy) * sw * 4;
+                for (int sx = x0; sx < x1; ++sx) {
+                    const uint8_t* p = row + sx * 4;
+                    b += p[0] * p[3];
+                    g += p[1] * p[3];
+                    r += p[2] * p[3];
+                    a += p[3];
+                    ++n;
+                }
+            }
+            uint8_t* d = out.pixels.data() + (static_cast<size_t>(oy + y) * w + ox + x) * 4;
+            if (a > 0) {
+                d[0] = static_cast<uint8_t>(b / a);
+                d[1] = static_cast<uint8_t>(g / a);
+                d[2] = static_cast<uint8_t>(r / a);
+            }
+            d[3] = static_cast<uint8_t>(a / n);
+        }
+    }
+    out.desc = lv_image_dsc_t{};
+    out.desc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    out.desc.header.cf = LV_COLOR_FORMAT_ARGB8888;
+    out.desc.header.w = w;
+    out.desc.header.h = h;
+    out.desc.header.stride = w * 4;
+    out.desc.data_size = static_cast<uint32_t>(out.pixels.size());
+    out.desc.data = out.pixels.data();
+    out.loaded = true;
+    return true;
+}
+
+void load_navi_picture(const std::filesystem::path& fallback, int w, int h, ImageAsset& out) {
+    std::string picture = model::navi().picture;
+    if (!picture.empty() && picture[0] == '~') {
+        if (const char* home = std::getenv("HOME")) picture = std::string(home) + picture.substr(1);
+    }
+    if (!picture.empty() && load_png_fit(picture, w, h, out)) return;
+    if (!picture.empty()) LOG_WARN("[navi] picture {} could not be read; using the packaged art", picture);
+    load_png(fallback, out);
 }
 
 lv_obj_t* box(lv_obj_t* parent, int x, int y, int w, int h, uint32_t bg) {

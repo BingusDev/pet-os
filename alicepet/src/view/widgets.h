@@ -60,6 +60,11 @@ struct ChipTheme {
 constexpr int kGlyphW = 7;
 
 bool load_png(const std::filesystem::path& path, ImageAsset& out);
+// Loads any PNG and scales it to fit a w x h box (aspect kept, transparent
+// padding, bottom-centred like a portrait). False if it can't be read.
+bool load_png_fit(const std::filesystem::path& path, int w, int h, ImageAsset& out);
+// The Navi picture at w x h: [navi] picture= if set and readable, else `fallback`.
+void load_navi_picture(const std::filesystem::path& fallback, int w, int h, ImageAsset& out);
 lv_obj_t* box(lv_obj_t* parent, int x, int y, int w, int h, uint32_t bg);
 // An invisible click target over a list row/tile for the Jack In mouse: a PC
 // click on it moves the selection `steps` rows (negative = up/left) along the

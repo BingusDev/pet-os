@@ -32,6 +32,11 @@ struct SshBookmark {
 };
 
 struct PetConfig {
+    // [navi]: the Navi's name and picture and the owner's name (model/navi.h).
+    std::string navi_name{"Alice"};
+    std::string navi_owner;
+    std::string navi_picture;
+
     // Talk-to-Alice bridge (cardputer-pet-terminal protocol).
     std::string bridge_url;
     std::string bridge_token;
@@ -138,8 +143,9 @@ struct PetConfig {
     std::string jack_gadget_up{"sudo -n /usr/libexec/alicepet/usb-gadget.sh up"};
     std::string jack_gadget_down{"sudo -n /usr/libexec/alicepet/usb-gadget.sh down"};
     // Who runs the PET: the PC app shows "OPERATOR: <name>" and labels chat with it
-    // (never the Windows user name). [jackin] operator= (or owner=).
-    std::string jack_operator{"Holden"};
+    // (never the Windows user name). [jackin] operator= (or owner=); when unset,
+    // [navi] owner, else "Operator".
+    std::string jack_operator{"Operator"};
     // [jackin] ask_on_pet = off | on. "off" (default): a linked PC may open and
     // drive chips, open Terminal and talk to Alice at once. "on": none of that
     // until [K] is pressed on the PET, and Terminal needs its own [K] every

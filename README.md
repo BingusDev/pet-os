@@ -288,14 +288,6 @@ CHIPS.md         the Battle Chip folder and ideas
 HANDOFF.md       current status for whoever picks this up next
 ```
 
-## Upgrading from AlicePET
-
-PET-os used to be called AlicePET. Install the PET-os package over it. It replaces the
-`alicepet` package and copies `/etc/alicepet.local.conf` and the Jack In sudo
-rule to their new names. The app moves its saved files (ROMs, remotes,
-trusted PCs) from `alicepet/` to `pet-os/` the first time it starts. Then
-reboot, and run `pet-setup.sh` once more so the volume keys use the new name.
-
 ## Secrets
 
 The repo has none and should never get any. Tokens and API keys live only in

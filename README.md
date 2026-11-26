@@ -204,19 +204,24 @@ asks for them, or put them in `/etc/alicepet.local.conf`:
 
 ```ini
 [navi]
-name=Rex
-owner=Sam
-picture=/home/pi/rex.png
+name=Norm
+owner=Holden
+picture=/home/pi/norm.png
 ```
 
-- `name`: up to 12 characters. It shows as REX.EXE, "Ask Rex" and "Rex: ...".
-- `owner`: your name, up to 16 characters. It's used for "Hi Sam!", as the Jack In
+- `name`: up to 12 characters. It shows as NORM.EXE, "Ask Norm" and "Norm: ...".
+- `owner`: your name, up to 16 characters. It's used for "Hi Holden!", as the Jack In
   operator, and to tell your Navi who it is helping. Leave it empty to use no name.
 - `picture`: any PNG, scaled to 110×110 and 44×44. Leave it empty for the packaged art.
 
 Restart AlicePET (leave and reopen it from the launcher) to see the change.
 On your Navi's computer, start the bridge with the same name
-(`PET_NAVI_NAME=Rex`), so your Navi answers as Rex.
+(`PET_NAVI_NAME=Norm`), so your Navi answers as Norm.
+
+<p align="center">
+  <img src="alicepet/screenshots/navi-norm-home@3x.png" width="48%" alt="Navi Home with a Navi named Norm">
+  <img src="alicepet/screenshots/navi-norm-voice@3x.png" width="48%" alt="VOICE chip with Norm">
+</p>
 
 A transparent background looks best for the picture. Make sure the PET's user
 can read the file.

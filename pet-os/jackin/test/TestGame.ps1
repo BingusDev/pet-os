@@ -144,6 +144,7 @@ public static class TestGameWin {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
 }
 '@
 
@@ -161,7 +162,7 @@ try {
     $r = Find-Hit '/report'
     Check 'it loads inside the app (WebView2), not in a browser' ([bool]($r -and $r.Contains('webview=true'))) "$r"
     Check 'the page is cross-origin isolated (SharedArrayBuffer for EmulatorJS)' ([bool]($r -and $r.Contains('isolated=true') -and $r.Contains('sab=function'))) "$r"
-    $kids = Get-WebProcs $proc.Id
+    $kids = @(Get-WebProcs $proc.Id)
     Check 'WebView2 runs under the Jack In app' ($kids.Count -gt 0) "msedgewebview2 children: $($kids.Count)"
 
     if ($Shot) {
@@ -176,10 +177,15 @@ try {
             [void][TestGameWin]::GetWindowRect($h, [ref]$rc)
             Add-Type -AssemblyName System.Drawing
             $bmp = New-Object System.Drawing.Bitmap ($rc.R - $rc.L), ($rc.B - $rc.T)
+            # The window renders itself (PW_RENDERFULLCONTENT), so windows on top never get in the shot.
             $g = [System.Drawing.Graphics]::FromImage($bmp)
-            $g.CopyFromScreen($rc.L, $rc.T, 0, 0, $bmp.Size)
-            $bmp.Save($Shot, [System.Drawing.Imaging.ImageFormat]::Png)
-            $g.Dispose(); $bmp.Dispose()
+            $dc = $g.GetHdc()
+            $ok = [TestGameWin]::PrintWindow($h, $dc, 2)
+            $g.ReleaseHdc($dc)
+            $g.Dispose()
+            if ($ok) { $bmp.Save($Shot, [System.Drawing.Imaging.ImageFormat]::Png) }
+            $bmp.Dispose()
+            if (-not $ok) { throw 'PrintWindow failed' }
             Write-Host "  screenshot: $Shot"
         } catch { Write-Host "  (no screenshot: $($_.Exception.Message))" }
     }
@@ -206,7 +212,7 @@ try {
     }
     Check 'JACK OUT closes the app' $proc.HasExited
     [void](Wait-App 5 { $false })
-    Check 'WebView2 is gone after JACK OUT' ((Get-WebProcs $proc.Id).Count -eq 0)
+    Check 'WebView2 is gone after JACK OUT' (@(Get-WebProcs $proc.Id).Count -eq 0)
     if (-not $proc.HasExited) { try { $proc.Kill() } catch { } }
     if ($client) { try { $client.Close() } catch { } }
     $listener.Stop()

@@ -3,8 +3,9 @@
 # PET-os Jack In for Windows. Runs from the PET's USB drive with the
 # PowerShell 5.1 that ships with Windows 10/11; nothing is installed. The only
 # files it writes are small diagnostics in %TEMP% (JackIn-ready.txt,
-# JackIn-launch.txt, JackIn-error.txt, JackIn-timing.log, capped at 256 KB); the
-# session log is only saved if you click Save Log.
+# JackIn-launch.txt, JackIn-error.txt, JackIn-timing.log, capped at 256 KB) and the
+# WebView2 cache for Retro games (%TEMP%\JackIn-WebView2); the session log is only
+# saved if you click Save Log. webview2\ holds Microsoft's WebView2 SDK (its LICENSE.txt).
 #
 #  - Starts READ-ONLY: a scan (CPU, RAM, disk, startup items, Defender, top RAM users).
 #  - Access: READ (look only), ASK (PET commands run as you after you OK each one),
@@ -27,8 +28,9 @@
 #    for one message you are asked whether it keeps going.
 #  - Jellyfin video and Retro games picked on the PET's chip play HERE: video in a
 #    NOW PLAYING player in the chip area (Windows Media Player; Esc or STOP
-#    comes back to the chip and tells Jellyfin where you stopped), games in your
-#    browser (RomM's web player, on http://127.0.0.1 so the browser treats it as secure). Both come
+#    comes back to the chip and tells Jellyfin where you stopped), games in the same
+#    area (RomM's web player in a WebView2, on http://127.0.0.1 so it counts as secure;
+#    Shift+Esc or STOP comes back; in your browser if WebView2 is missing). Both come
 #    through the PET's relay on 10.55.0.1, so no server passwords reach this PC. (Only if the PET
 #    is set to [jellyfin] pc_direct=on does it also offer a direct Jellyfin link with a key for that play.)
 #  - Every command is shown in the live log. JACK OUT ends everything at once.
@@ -91,7 +93,7 @@ if ($env:JACKIN_SCALE) { $K = [double]$env:JACKIN_SCALE }
 $K = [Math]::Max(0.7, $K)
 [JackInUi]::K = $K
 
-$AppVersion = '0.9.6'
+$AppVersion = '0.9.7'
 $Here = Split-Path -Parent $PSCommandPath
 
 # --- trusted PC ----------------------------------------------------------------------
@@ -292,7 +294,15 @@ $Play = [ordered]@{
     Opened   = [datetime]::MinValue
     Reported = [datetime]::MinValue
     Ax       = $null
+    Game     = $false  # a Retro game (RomM's web player) in the WebView2 below, not a video
+    Web      = $null   # that WebView2 control (kept between games, closed after a minute unused)
+    WebReady = $false  # ... and its Edge engine has started
+    WebIdle  = [datetime]::MinValue
+    GameUrl  = ''      # the game's link, for the browser if the WebView2 can't start
+    Origin   = ''      # the only site the game's WebView2 may navigate to
+    WebError = ''      # set by WebView2 events, handled by the UI timer
 }
+$script:WebMissing = ''   # why WebView2 can't be used here (then games go to the browser)
 $EscFilter = New-Object JackInEsc
 [System.Windows.Forms.Application]::AddMessageFilter($EscFilter)
 $Loop = New-Object JackInLoopback
@@ -820,7 +830,8 @@ function Update-Ui {
     $playing = [bool]($Play.On -and $S.View -eq 'chip')
     $playPanel.Visible = $playing
     $mirror.Visible = ($S.View -eq 'chip') -and -not $playing
-    foreach ($b in @($btnBack10, $btnFwd10, $btnStop)) { $b.Visible = $playing }
+    foreach ($b in @($btnBack10, $btnFwd10)) { $b.Visible = $playing -and -not $Play.Game }
+    $btnStop.Visible = $playing
     if ($playing) { $playPanel.BringToFront(); foreach ($b in @($btnBack10, $btnFwd10, $btnStop)) { $b.BringToFront() } }
     if ($playing -or $S.View -ne 'chip' -or (Input-Allowed)) { $readHint.Visible = $false }
     $EscFilter.Armed = [bool]$Play.On
@@ -1987,6 +1998,147 @@ function Test-DirectUrl([string]$link) {
     }
 }
 
+# Retro games play here too: RomM's web player in a WebView2 (the Edge engine
+# Windows 10/11 already have) in the NOW PLAYING area. The SDK DLLs come with
+# this app (webview2\); without them or the WebView2 runtime the game opens in
+# the default browser as before. Shift+Esc in the game, or STOP, comes back.
+$GameKeys = @'
+(function () {
+  if (window.__petJackIn) return;
+  window.__petJackIn = 1;
+  window.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && e.shiftKey) {
+      e.preventDefault(); e.stopPropagation();
+      try { window.chrome.webview.postMessage('stop'); } catch (x) { }
+    }
+  }, true);
+})();
+'@
+
+# A new WebView2 control in the play panel, or $null (and why in $script:WebMissing).
+function New-GameView {
+    if ($script:WebMissing) { return $null }
+    try {
+        if (-not ('Microsoft.Web.WebView2.WinForms.WebView2' -as [type])) {
+            $dir = Join-Path $Here 'webview2'
+            Add-Type -Path (Join-Path $dir 'Microsoft.Web.WebView2.Core.dll')
+            Add-Type -Path (Join-Path $dir 'Microsoft.Web.WebView2.WinForms.dll')
+            # The loader DLL for this PowerShell's own architecture (x86 PowerShell on x64 says x86).
+            $arch = switch ([string]$env:PROCESSOR_ARCHITECTURE) { 'ARM64' { 'arm64' } 'x86' { 'x86' } default { 'x64' } }
+            [Microsoft.Web.WebView2.Core.CoreWebView2Environment]::SetLoaderDllFolderPath((Join-Path $dir $arch))
+        }
+        # Throws when the WebView2 runtime isn't installed.
+        $ver = [Microsoft.Web.WebView2.Core.CoreWebView2Environment]::GetAvailableBrowserVersionString()
+        if (-not $ver) { throw 'the WebView2 runtime is not installed' }
+    } catch {
+        $script:WebMissing = $_.Exception.Message
+        Add-Log "can't play games in this window ($($script:WebMissing)); they open in your browser"
+        return $null
+    }
+    $w = New-Object Microsoft.Web.WebView2.WinForms.WebView2
+    $props = New-Object Microsoft.Web.WebView2.WinForms.CoreWebView2CreationProperties
+    # Its cache and cookies (the relay's login, which dies with the link) stay in %TEMP%.
+    $props.UserDataFolder = Join-Path ([IO.Path]::GetTempPath()) 'JackIn-WebView2'
+    $w.CreationProperties = $props
+    $w.DefaultBackgroundColor = [System.Drawing.Color]::Black
+    [JackInUi]::B($w, 0, 28, 826, 438)
+    $w.add_CoreWebView2InitializationCompleted({
+        param($ctl, $e)
+        try {
+            if (-not $e.IsSuccess) { $Play.WebError = [string]$e.InitializationException.Message; return }
+            $Play.WebReady = $true
+            $Play.Started = $true
+            $c = $ctl.CoreWebView2
+            $c.Settings.AreDevToolsEnabled = $false
+            $c.Settings.AreDefaultContextMenusEnabled = $false
+            $c.Settings.IsStatusBarEnabled = $false
+            $c.Settings.IsZoomControlEnabled = $false
+            [void]$c.AddScriptToExecuteOnDocumentCreatedAsync($GameKeys)
+            # Only RomM through the PET's relay: no pop-ups, no other sites.
+            $c.add_NewWindowRequested({ param($x, $a) $a.Handled = $true })
+            $c.add_ProcessFailed({ param($x, $a) $Play.WebError = 'the game page crashed (' + [string]$a.ProcessFailedKind + ')' })
+        } catch { $Play.WebError = $_.Exception.Message }
+    })
+    $w.add_NavigationStarting({
+        param($ctl, $e)
+        $u = [string]$e.Uri
+        if ($u -eq 'about:blank' -or $u -eq $Play.Origin -or $u.StartsWith($Play.Origin + '/')) { return }
+        $e.Cancel = $true
+        Add-Log "the game page tried to leave RomM ($u); blocked"
+    })
+    $w.add_NavigationCompleted({
+        param($ctl, $e)
+        try {
+            # Also here: the first page can load before the script above is registered.
+            [void]$ctl.CoreWebView2.ExecuteScriptAsync($GameKeys)
+            if ($Play.On -and $Play.Game) { $ctl.Focus() | Out-Null }
+        } catch { }
+    })
+    $w.add_WebMessageReceived({
+        param($ctl, $e)
+        try { if ($e.TryGetWebMessageAsString() -eq 'stop') { $EscFilter.Pressed = $true } } catch { }
+    })
+    # Like WMP, it needs the visible panel to start up in.
+    $playPanel.Visible = $true
+    $playPanel.BringToFront()
+    $playPanel.Controls.Add($w)
+    return $w
+}
+
+# Plays the game at `link` in this window; $false sends it to the browser instead.
+function Start-Game([string]$title, [string]$link) {
+    if ($Play.On) { Stop-Play }
+    # One WebView2 for the session's games: a new one right after the last one
+    # closed can find its Edge profile still in use and fail.
+    $w = $Play.Web
+    if ($null -eq $w) { $w = New-GameView }
+    if ($null -eq $w) { return $false }
+    $Play.On = $true
+    $Play.Game = $true
+    $Play.Web = $w
+    $Play.Item = ''
+    $Play.Title = $title
+    $Play.GameUrl = $link
+    $Play.Origin = ([Uri]$link).GetLeftPart([UriPartial]::Authority)
+    $Play.WebError = ''
+    $Play.Started = $Play.WebReady
+    $Play.Opened = Get-Date
+    $nowLabel.Text = '  PLAYING: ' + $title + '   (Shift+Esc or STOP comes back)'
+    try {
+        $w.Source = [Uri]$link
+    } catch {
+        $Play.WebError = $_.Exception.Message
+    }
+    Add-Log "playing $title here (RomM's web player via the PET)"
+    if ($S.View -ne 'chip') { Set-View 'chip' } else { Update-Ui }
+    $w.Focus() | Out-Null
+    return $true
+}
+
+# Lets the game's WebView2 go (its Edge processes end with it).
+function Close-GameView {
+    if (-not $Play.Web) { return }
+    $w = $Play.Web
+    $Play.Web = $null
+    $Play.WebReady = $false
+    $Play.WebError = ''
+    try { $playPanel.Controls.Remove($w); $w.Dispose() } catch { }
+}
+
+# Called by the UI timer while a game is up: a WebView2 that fails sends the game to the browser.
+function Step-Game {
+    $why = $Play.WebError
+    if (-not $why -and -not $Play.Started -and ((Get-Date) - $Play.Opened).TotalSeconds -gt 30) { $why = "WebView2 didn't start" }
+    if (-not $why) { return }
+    $link = $Play.GameUrl
+    $title = $Play.Title
+    Stop-Play 'stopped' $false
+    Close-GameView
+    if (-not $Play.Started) { $script:WebMissing = $why }
+    Add-Log "couldn't play $title in this window ($why); opening it in your browser"
+    try { Start-Process $link | Out-Null } catch { Add-Log "browser: $($_.Exception.Message)" }
+}
+
 function Start-Play($msg) {
     $kind = [string](Get-Field $msg 'kind')
     $title = [string](Get-Field $msg 'title')
@@ -2010,6 +2162,7 @@ function Start-Play($msg) {
                 else { Add-Log "couldn't open a local port for the game; trying the PET's address (some cores need HTTPS there)" }
             }
         } catch { Add-Log "game link: $($_.Exception.Message)" }
+        if (Start-Game $title $open) { return }
         Start-Process $open | Out-Null
         Add-Log "opened $title in your browser (RomM web player via the PET, $open)"
         $direct = [string](Get-Field $msg 'direct')
@@ -2017,6 +2170,7 @@ function Start-Play($msg) {
         return
     }
     $item = [string](Get-Field $msg 'item')
+    if ($Play.Game) { Stop-Play }
     $same = $Play.On -and $Play.Item -eq $item
     $Play.Item = $item
     $Play.Title = $title
@@ -2060,7 +2214,9 @@ function Stop-Play([string]$state = 'stopped', [bool]$tell = $true, [string]$err
     if (-not $Play.On) { return }
     # Off first: Send-Progress can re-enter (a dropped link runs Stop-Play again).
     $Play.On = $false
-    if ($tell) { Send-Progress $state $err }
+    $wasGame = $Play.Game
+    $Play.Game = $false
+    if ($tell -and -not $wasGame) { Send-Progress $state $err }
     $EscFilter.Armed = $false
     $EscFilter.Pressed = $false
     try { $Play.Ax.Player.controls.stop(); $Play.Ax.Player.URL = '' } catch { }
@@ -2069,6 +2225,12 @@ function Stop-Play([string]$state = 'stopped', [bool]$tell = $true, [string]$err
         $ax = $Play.Ax
         $Play.Ax = $null
         try { $playPanel.Controls.Remove($ax); $ax.Dispose() } catch { }
+    }
+    # The game's page goes (and its sound); the WebView2 waits a minute for another game.
+    if ($wasGame -and $Play.Web) {
+        $Play.WebIdle = Get-Date
+        if ($Play.WebReady) { try { $Play.Web.CoreWebView2.Navigate('about:blank') } catch { Close-GameView } }
+        else { Close-GameView }
     }
     Add-Log $(switch ($state) { 'ended' { "$($Play.Title) finished" } 'error' { "couldn't play $($Play.Title): $err" } default { "stopped $($Play.Title)" } })
     Update-Ui
@@ -2102,6 +2264,7 @@ function On-PlayerCommand($msg) {
 
 # Called by the UI timer: seek once open, notice the end or an error, report every 10 s.
 function Step-Play {
+    if ($Play.On -and $Play.Game) { Step-Game; return }
     if (-not $Play.On -or -not $Play.Ax) { return }
     $p = $Play.Ax.Player
     try { $ps = [int]$p.playState } catch { Stop-Play 'error' $true 'the player stopped answering'; return }
@@ -2146,6 +2309,7 @@ function Drop-Link([string]$why) {
         $S.PetTrusted = $false
         Hide-Ask
         Stop-Play 'stopped' $false
+        Close-GameView
         Stop-Mic $false
         Stop-Jobs
         Stop-Sharing
@@ -2163,6 +2327,7 @@ function Jack-Out([string]$why) {
     $S.Closing = $true
     Stop-Mic $false
     Stop-Play
+    Close-GameView
     if ($S.Agent) { Send-Pet ([ordered]@{ t = 'abort' }) }
     Send-Pet ([ordered]@{ t = 'bye'; why = $why })
     $S.Full = $false
@@ -2542,6 +2707,7 @@ $timer.Add_Tick({
         if ($S.Tunnels.Count) { Step-Tunnels }
         if ($EscFilter.Pressed) { $EscFilter.Pressed = $false; Stop-Play }
         if ($Play.On) { Step-Play }
+        elseif ($Play.Web -and ($Play.WebError -or ((Get-Date) - $Play.WebIdle).TotalSeconds -gt 60)) { Close-GameView }
         if ($readHint.Visible -and (Get-Date) -gt $script:ReadHintUntil) { $readHint.Visible = $false }
         Sync-Mirror
         # PC STATUS every 3 s, only while someone can see it.

@@ -182,7 +182,7 @@ The main sections:
 | **RETRO** | Your RomM library, downloads, RetroArch with per-platform cores, save sync |
 | **LAN TECH** | Wall-jack tester: link, DHCP, gateway, DNS, speed, switch port, device list with "who's new" |
 | **REMOTE** | Learn and replay IR remotes and macros with LIRC `ir-ctl` |
-| **JACK IN** | Plug the PET into a PC by USB: it scans the PC, your Navi suggests fixes, and the PC app can chat, play Jellyfin and RetroArch, and drive chips |
+| **JACK IN** | Plug the PET into a PC by USB: it scans the PC, your Navi suggests fixes, and the PC app can chat, play Jellyfin videos and RomM games in its own window, and drive chips |
 
 **Jack In and security:** once a PC is linked, it can open chips, talk to your
 Navi and use the Terminal chip (with the PET's SSH keys) without a key press on

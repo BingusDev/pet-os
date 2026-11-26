@@ -27,10 +27,11 @@ The PET can also ask Alice to show things, play a movie in your default
 player, or open a RomM game in your browser. Those open in the apps you
 already have.
 
-Chat with Alice needs [K] pressed on the PET first. For a computer you use
-often, press [T] twice on the PET while linked: it then trusts this computer
-(the token is kept in ~/.config/alicepet/jackin-trust, for your user only) and
-needs no [K] next time. [T] twice again forgets it.
+Chat with Alice works as soon as the client is linked (unless the PET is set to
+ask first with ask_on_pet=on; then press [K] on the PET). [T] twice on the PET
+while linked trusts this computer (the token is kept in
+~/.config/alicepet/jackin-trust, for your user only): its clock may then set
+the PET's. [T] twice again forgets it.
 
 Read mode only
 --------------

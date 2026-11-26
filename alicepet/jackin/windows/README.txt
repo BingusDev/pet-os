@@ -11,13 +11,12 @@ small diagnostics in %TEMP% (JackIn-*.txt and JackIn-timing.log).
 - Request Admin shows the normal Windows UAC prompt. Nothing gets admin unless
   you click Yes.
 - Share PC Internet lets the PET use this PC's internet while it is on.
-- Opening a chip (Jellyfin, Retro, LAN Tech, Terminal) from this window needs
-  [K] pressed on the PET first. Terminal needs its own [K] every time you
-  jack in, because it uses the PET's SSH keys. The window tells you when the
-  PET is waiting. Chat with Alice needs that first [K] too.
-- A PC you use often: press [T] twice on the PET while linked. The PET then
-  trusts this PC (for your Windows account only) and it needs no [K] next
-  time. [T] twice again forgets it. Terminal still asks every time.
+- Chips (Jellyfin, Retro, LAN Tech, Terminal) and chat with Alice work from
+  this window as soon as it is linked. [K] on the PET takes that away for the
+  session. If the PET is set to ask first (ask_on_pet=on in its settings), the
+  window tells you when it is waiting for [K].
+- [T] twice on the PET while linked trusts this PC (for your Windows account
+  only): its clock may then set the PET's. [T] twice again forgets it.
 - When you jack out, the PET saves a short text report of the visit (the scan,
   what Alice said, every command that ran).
 - Chat with Alice: type in the box and press Enter, or hold "Hold to talk"

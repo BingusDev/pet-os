@@ -773,6 +773,7 @@ void test_jack_session() {
     config.jack_gadget_up.clear();
     config.jack_gadget_down.clear();
     config.bridge_url.clear();
+    config.jack_pc_ask = true;  // the [K] gate is opt-in since rev29
     JackInChip jack(config);
     jack.capture_sent = true;
     CHECK(jack.view() == JackInChip::View::Waiting);
@@ -1022,9 +1023,8 @@ void test_pc_input_reaches_open_chip() {
         // The lines JackIn.ps1 sends (ConvertTo-Json -Compress of its ordered hashtables).
         jack.on_line(R"({"t":"hello","host":"HK-DESKTOP","os":"Windows 11","user":"hkrip","admin":false,"full":true,"input":true,"mode":"ask","app":"0.8"})");
         jack.on_line(R"({"t":"state","full":true,"admin":false,"net":false,"input":true,"mode":"ask"})");
-        jack.handle_char("k");  // the PET lets this PC open and drive chips
+        // No [K] on the PET: a linked PC may open and drive chips, Terminal included.
         jack.on_line(std::string(R"({"t":"open","chip":")") + id + "\"}");
-        if (std::string(id) == "terminal") jack.handle_char("k");  // Terminal needs its own [K]
         jack.on_line(R"({"t":"mirror","on":true})");
         viewmodel::drain_pc_requests(vm, nullptr);
         CHECK(vm.active_chip() == &probe);
@@ -1064,6 +1064,7 @@ void test_jack_pc_control_is_granted_on_the_pet() {
     config.jack_gadget_up.clear();
     config.jack_gadget_down.clear();
     config.bridge_url.clear();
+    config.jack_pc_ask = true;
     JackInChip jack(config);
     jack.capture_sent = true;
     std::string id;
@@ -1111,18 +1112,29 @@ void test_jack_pc_control_is_granted_on_the_pet() {
     CHECK(jack.pc_terminal());
     jack.on_line(R"({"t":"hello","host":"STORE-PC","os":"Windows 11","user":"x","full":true,"input":true,"mode":"full"})");
     CHECK(!jack.pc_control() && !jack.pc_terminal() && jack.pc_wants().empty());
-    // [jackin] pc_control=on: chips from the start, Terminal still asks every session.
-    config.jack_pc_control = true;
-    JackInChip trusted(config);
-    trusted.capture_sent = true;
-    trusted.on_line(R"({"t":"hello","host":"HK-DESKTOP","os":"Windows 11","user":"hk","full":true,"input":true,"mode":"ask"})");
-    CHECK(trusted.pc_control() && !trusted.pc_terminal());
-    trusted.on_line(R"({"t":"open","chip":"retro"})");
-    CHECK(trusted.take_open(id) && id == "retro");
-    trusted.on_line(R"({"t":"open","chip":"terminal"})");
-    CHECK(!trusted.take_open(id) && trusted.pc_wants() == "terminal");
-    trusted.handle_char("k");
-    CHECK(trusted.take_open(id) && id == "terminal");
+    // The default (no ask_on_pet): chips, Terminal and Alice from the start, nothing pressed.
+    config.jack_pc_ask = false;
+    JackInChip open_pet(config);
+    open_pet.capture_sent = true;
+    open_pet.on_line(R"({"t":"hello","host":"HK-DESKTOP","os":"Windows 11","user":"hk","full":true,"input":true,"mode":"ask"})");
+    CHECK(open_pet.pc_control() && open_pet.pc_terminal());
+    CHECK(open_pet.sent[0] == R"({"t":"pet","operator":"Holden","control":true,"terminal":true,"trusted":false})");
+    open_pet.on_line(R"({"t":"open","chip":"retro"})");
+    CHECK(open_pet.take_open(id) && id == "retro");
+    open_pet.on_line(R"({"t":"open","chip":"terminal"})");
+    CHECK(open_pet.take_open(id) && id == "terminal" && open_pet.pc_wants().empty());
+    open_pet.on_line(R"({"t":"key","k":"Down"})");
+    CHECK(open_pet.take_input(input) && input.key == viewmodel::Key::Down);
+    open_pet.on_line(R"({"t":"chat","text":"hi"})");
+    CHECK(open_pet.chat_waiting() && open_pet.pc_wants().empty());
+    // [K] is still there to take it all back, and to give it again (Terminal with it).
+    open_pet.handle_char("k");
+    CHECK(!open_pet.pc_control() && !open_pet.pc_terminal());
+    open_pet.handle_char("k");
+    CHECK(open_pet.pc_control() && open_pet.pc_terminal());
+    // An old config file that still says pc_control=ask changes nothing; ask_on_pet=on brings the gate back.
+    CHECK(!model::parse_pet_config("[jackin]\npc_control=ask\n").jack_pc_ask);
+    CHECK(model::parse_pet_config("[jackin]\nask_on_pet=on\n").jack_pc_ask);
     // The chat header leaves most of the bridge's 600 characters to the message.
     const std::string asked(380, 'q');
     const std::string prompt = JackInChip::chat_prompt("LAPTOP-FRONT", "full", asked);
@@ -1619,6 +1631,7 @@ void test_jack_trust_and_report() {
     config.jack_gadget_up.clear();
     config.jack_gadget_down.clear();
     config.bridge_url.clear();
+    config.jack_pc_ask = true;
     config.clock_set.clear();
     config.jack_state_dir = dir.string();
     const char* hello = R"({"t":"hello","host":"HK-DESKTOP","os":"Windows 11","user":"hk","full":true,"input":true,"mode":"ask"})";

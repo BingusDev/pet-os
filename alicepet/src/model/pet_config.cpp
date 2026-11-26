@@ -216,7 +216,8 @@ PetConfig parse_pet_config(const std::string& text, std::vector<std::string>* wa
             else if ((key == "operator" || key == "owner") && !value.empty()) config.jack_operator = value;
             else if (key == "state_dir" && !value.empty()) config.jack_state_dir = value;
             else if (key == "reports") config.jack_reports = !(value == "off" || value == "false" || value == "0" || value == "no");
-            else if (key == "pc_control") config.jack_pc_control = value == "on" || value == "true" || value == "1" || value == "yes";
+            else if (key == "ask_on_pet") config.jack_pc_ask = value == "on" || value == "true" || value == "1" || value == "yes";
+            else if (key == "pc_control") {}  // rev27/rev28 key: [K] is no longer asked for unless ask_on_pet=on
         }
     }
     return config;

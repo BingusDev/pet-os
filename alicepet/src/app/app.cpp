@@ -837,7 +837,7 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         vm.handle_char("l");
         // The PC opens JELLYFIN: it renders for the PC's mirror (jack-pc-jellyfin)
         // while the PET panel shows the Jack In card on the top layer (jack-pet-operating).
-        jack->handle_char("k");  // PET-side grant: the PC may open and drive chips
+        if (!jack->pc_control()) jack->handle_char("k");  // ask_on_pet=on: the PET allows this PC
         jack->on_line(R"({"t":"open","chip":"jellyfin"})");
         drain_pc_requests(vm);
         update_pc_overlay(vm, fonts, art_dir);
@@ -854,7 +854,7 @@ void run_snapshot(const std::string& dir, viewmodel::AliceViewModel& vm, view::A
         jack->on_line(R"({"t":"state","full":true,"admin":true,"net":true,"input":true,"mode":"ask"})");
         for (const char* chip : {"lan-tech", "retro", "terminal", "jellyfin"}) {
             jack->on_line(std::string(R"({"t":"open","chip":")") + chip + "\"}");
-            if (std::string(chip) == "terminal") jack->handle_char("k");  // Terminal needs its own [K]
+            if (std::string(chip) == "terminal" && !jack->pc_terminal()) jack->handle_char("k");  // ask_on_pet=on
             drain_pc_requests(vm);
             update_pc_overlay(vm, fonts, art_dir);
             advance(virtual_now + 400);

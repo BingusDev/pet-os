@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Start the Talk-to-Alice bridge for AlicePET (cardputer-pet-terminal bridge/server.mjs).
 #
-# It reuses that project's .env (PET_BRIDGE_TOKEN, names) but always talks to the
-# dedicated OpenClaw session agent:main:pet (delivery: none), never the Telegram
-# session that .env's OPENCLAW_SESSION_KEY points at, so PET chats stay off Telegram.
+# It reuses that project's .env (PET_BRIDGE_TOKEN, names) if there is one, but always
+# talks to its own OpenClaw session (PET_SESSION_KEY, default agent:main:pet; delivery:
+# none), never the chat session that .env's OPENCLAW_SESSION_KEY points at, so PET
+# chats stay off Telegram and other channels.
+#
+# Your own Navi: PET_NAVI_NAME (default Alice) is the name the AI answers as, and
+# PET_SESSION_KEY=agent:<your agent id>:pet picks another OpenClaw agent.
 #
 #   BIND_HOST=<mac tailscale ip> bin/alicepet-bridge.sh   tailnet only (for the device)
 #   bin/alicepet-bridge.sh                               127.0.0.1 only (desktop testing)
@@ -24,6 +28,9 @@ BRIDGE_ROOT="${BRIDGE_ROOT:-$HERE/../vendor/cardputer-pet-terminal}"
 cd "$BRIDGE_ROOT"
 
 CALLER_TOKEN="${PET_BRIDGE_TOKEN:-}"
+# Names come from the caller's environment only, never from .env (which may name another Navi).
+NAVI_NAME="${PET_NAVI_NAME:-Alice}"
+DEVICE_NAME="${PET_DEVICE_NAME:-AlicePET}"
 if [[ -f .env ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -z "$line" || "$line" == \#* ]] && continue
@@ -36,12 +43,13 @@ fi
 
 # A token from the caller's environment wins over .env (whose value is currently empty).
 if [[ -n "$CALLER_TOKEN" ]]; then export PET_BRIDGE_TOKEN="$CALLER_TOKEN"; fi
-export OPENCLAW_SESSION_KEY="agent:main:pet"
+SESSION_KEY="${PET_SESSION_KEY:-agent:main:pet}"
+export OPENCLAW_SESSION_KEY="$SESSION_KEY"
 export PET_SESSION_COMMANDS=0
 export PET_ARTIFACT_DIR="${PET_ARTIFACT_DIR_ALICEPET:-/tmp/alicepet-bridge}"
 export PET_SESSION_STATE_PATH="$PET_ARTIFACT_DIR/session-state.json"
-export PET_NAVI_NAME="Alice"
-export PET_DEVICE_NAME="AlicePET"
+export PET_NAVI_NAME="$NAVI_NAME"
+export PET_DEVICE_NAME="$DEVICE_NAME"
 
 export BIND_HOST="${BIND_HOST:-127.0.0.1}"
 if [[ "$BIND_HOST" != "127.0.0.1" && -z "${PET_BRIDGE_TOKEN:-}" ]]; then
@@ -50,7 +58,7 @@ if [[ "$BIND_HOST" != "127.0.0.1" && -z "${PET_BRIDGE_TOKEN:-}" ]]; then
 fi
 
 # Create the session once; delivery stays "none", so replies are only read back by the bridge.
-openclaw gateway call sessions.create --json --params '{"key":"agent:main:pet"}' >/dev/null 2>&1 || true
+openclaw gateway call sessions.create --json --params "{\"key\":\"$SESSION_KEY\"}" >/dev/null 2>&1 || true
 
 # voice-route.mjs adds POST /api/pet/voice (local whisper -> same session); see that file.
 exec node --import "$HERE/bind-host.mjs" --import "$HERE/voice-route.mjs" bridge/server.mjs

@@ -3,3 +3,4 @@ pet-os/.cache/
 pet-os/build/
 .DS_Store
 pet-os/config/*.local.conf
+pet-os/jackin/test/shots/

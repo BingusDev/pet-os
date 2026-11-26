@@ -10,7 +10,7 @@
 #  - Access: READ (look only), ASK (PET commands run as you after you OK each one),
 #    FULL (PET commands run as you without asking). Typing into the PET's screen
 #    works in ASK and FULL only; every mode can watch it.
-#  - FOLDER: HOME (Alice, chat and PC status) or one chip at a time: Terminal,
+#  - FOLDER: HOME (your Navi, chat and PC status) or one chip at a time: Terminal,
 #    Jellyfin, Retro or LAN Tech. The PET decides whether this PC may open chips:
 #    [K] on the PET allows it, and Terminal needs its own [K] every session (this
 #    window says so when it is waiting). The PET closes the open chip (and its player or
@@ -19,11 +19,12 @@
 #    (Esc goes to the chip while you type into its screen; use Shift+Esc there.)
 #  - Run as admin...: relaunches this app through the Windows UAC prompt that you click.
 #  - NET: the PET borrows this PC's internet (outbound connections only).
-#  - Chat with Alice: type (Enter sends), or hold MIC (or F9) to talk; her answers can be read aloud.
-#    Alice can run PowerShell here to answer you: each command she sends goes through the access
+#  - Chat with your Navi (the PET's [navi] name and picture; Alice and alice.png until it says):
+#    type (Enter sends), or hold MIC (or F9) to talk; answers can be read aloud.
+#    The Navi can run PowerShell here to answer you: each command it sends goes through the access
 #    mode (READ: read-only commands only, run in a locked-down session; ASK: Yes/No for each; FULL: Yes/No only for destructive
-#    ones) and its output goes back to her automatically; after 25 commands (8 in Read/Ask)
-#    for one message you are asked whether she keeps going.
+#    ones) and its output goes back to it automatically; after 25 commands (8 in Read/Ask)
+#    for one message you are asked whether it keeps going.
 #  - Jellyfin video and Retro games picked on the PET's chip play HERE: video in a
 #    NOW PLAYING player in the chip area (Windows Media Player; Esc or STOP
 #    comes back to the chip and tells Jellyfin where you stopped), games in your
@@ -90,7 +91,7 @@ if ($env:JACKIN_SCALE) { $K = [double]$env:JACKIN_SCALE }
 $K = [Math]::Max(0.7, $K)
 [JackInUi]::K = $K
 
-$AppVersion = '0.9.5'
+$AppVersion = '0.9.6'
 $Here = Split-Path -Parent $PSCommandPath
 
 # --- trusted PC ----------------------------------------------------------------------
@@ -263,7 +264,8 @@ $S = [ordered]@{
     Closing    = $false
     Busy       = $false   # a scan or a confirm box is up (they pump UI events)
     Confirm    = ($StartMode -ne 'Full')  # Ask mode: OK each PET command first
-    Speak      = $false   # read Alice's answers aloud (muted until the speaker button)
+    Speak      = $false   # read the Navi's answers aloud (muted until the speaker button)
+    Navi       = 'Alice'  # the Navi's name; the PET sends its [navi] name (and picture) after hello
     Linked     = $false
     Chips      = @()      # chips the PET can open: {id, name, number, code, desc, art}
     ChipId     = ''       # the chip the PC last asked the PET to open
@@ -642,7 +644,7 @@ $btnVoice.Add_Paint({
 })
 $tips = New-Object System.Windows.Forms.ToolTip
 $tips.SetToolTip($btnStopVideo, 'Stop the video (Esc)')
-$tips.SetToolTip($btnVoice, 'Alice is muted (click to hear her)')
+$tips.SetToolTip($btnVoice, 'Alice is muted (click to hear answers)')
 $tips.SetToolTip($btnMic, 'Hold to talk (or hold F9)')
 $tips.SetToolTip($btnHome, 'Back to HOME (Esc; Shift+Esc while typing into the PET screen)')
 $tips.SetToolTip($chatBox, 'Send mail to Alice (Enter)')
@@ -711,9 +713,9 @@ function Add-Log([string]$line) {
 
 function Add-Chat([string]$who, [string]$text) {
     $stamp = (Get-Date).ToString('HH:mm:ss')
-    $S.Log.Add("$stamp  ${who}: $text")
-    if ($who -eq 'Alice') {
-        Write-Rich $chatLog 'ALICE: ' (RGB 0xc0 0x28 0x80) $true $null 11
+    $S.Log.Add("$stamp  $(if ($who -eq 'navi') { $S.Navi } else { $who }): $text")
+    if ($who -eq 'navi') {
+        Write-Rich $chatLog "$($S.Navi.ToUpper()): " (RGB 0xc0 0x28 0x80) $true $null 11
         Write-Rich $chatLog "$text`n" (RGB 0x10 0x20 0x40) $false $null 11
         $aliceLine.Text = ($text -replace '\s+', ' ')
         $tips.SetToolTip($aliceLine, $text)
@@ -889,6 +891,36 @@ function Scale-Art($img, [int]$boxW, [int]$boxH) {
     return $bmp
 }
 
+# The PET's [navi] name and picture, sent once after hello. An older PET sends no
+# 'navi' line, and a PET with no [navi] picture sends no art: then alice.png stays.
+function Set-Navi([string]$name, [string]$art) {
+    $name = ($name -replace '[^\x20-\x7e]', '').Trim()
+    if ($name.Length -gt 12) { $name = $name.Substring(0, 12).Trim() }
+    if ($name) { $S.Navi = $name }
+    $img = Decode-Art $art
+    if ($img) {
+        if ($script:AliceImg) { $script:AliceImg.Dispose() }
+        $script:AliceImg = $img
+        foreach ($p in @($portrait, $miniFace)) { if ($p.Image) { $p.Image.Dispose() } }
+        $portrait.Image = Crop-Cover $script:AliceImg 230 342 0.5 0.2
+        $miniFace.Image = Crop-Cover $script:AliceImg 32 32 0.5 0.12
+    }
+    $up = $S.Navi.ToUpper()
+    $form.Text = "Jack In - $($S.Navi).exe"
+    $aliceName.Font = Pix $(if ($up.Length -gt 11) { 7 } else { 8 })
+    $aliceName.Text = "$up.EXE"
+    # The chip view's speaker label grows with the name; the answer line takes the rest.
+    $aliceWho.Text = "${up}:"
+    $right = $aliceLine.Right
+    $aliceWho.Width = [Math]::Max([JackInUi]::S(80), [System.Windows.Forms.TextRenderer]::MeasureText($aliceWho.Text, $aliceWho.Font).Width + [JackInUi]::S(10))
+    $aliceLine.Left = $aliceWho.Right
+    $aliceLine.Width = $right - $aliceLine.Left
+    $tips.SetToolTip($chatBox, "Send mail to $($S.Navi) (Enter)")
+    $tips.SetToolTip($btnVoice, $(if ($S.Speak) { "$($S.Navi) reads answers aloud (click to mute)" } else { "$($S.Navi) is muted (click to hear answers)" }))
+    Add-Log "Navi: $($S.Navi)$(if ($img) { ' (picture from the PET)' })"
+    Update-Folder
+}
+
 function Decode-Art([string]$b64) {
     if (-not $b64) { return $null }
     try {
@@ -929,7 +961,7 @@ function Build-Chips([object[]]$list) {
     foreach ($r in $rows) {
         $id = $r.id
         if ($r.home) {
-            $chip = [ordered]@{ id = 'home'; name = 'HOME'; number = ''; code = 'H'; desc = 'Alice, chat and PC status'; art = '' }
+            $chip = [ordered]@{ id = 'home'; name = 'HOME'; number = ''; code = 'H'; desc = "$($S.Navi), chat and PC status"; art = '' }
         } else {
             $c = $r.src
             $chip = [ordered]@{
@@ -999,7 +1031,7 @@ function Update-Folder {
         $infoText.Text = "$($c.name.ToUpper())`nCODE $($c.code)`n$($c.desc)"
     } else {
         $infoArt.Image = Crop-Cover $AliceImg 90 114 0.5 0.15
-        $infoText.Text = $(if ($S.Linked) { "HOME`nCODE H`nAlice and`nPC status" } else { 'waiting for the PET...' })
+        $infoText.Text = $(if ($S.Linked) { "HOME`nCODE H`n$($S.Navi) and`nPC status" } else { 'waiting for the PET...' })
     }
     Update-Ui
 }
@@ -1283,7 +1315,7 @@ function Invoke-Scan {
     if ($scan.Contains('disk_free')) { $summary += "C: $($scan.disk_free)% free" }
     if ($scan.Contains('startup')) { $summary += "$($scan.startup) startup apps" }
     $summary += "Defender $($scan.defender)"
-    Add-Log ('scan done (read-only): ' + ($summary -join ', ') + '. Look at the PET for what Alice thinks.')
+    Add-Log ('scan done (read-only): ' + ($summary -join ', ') + '. Look at the PET for what ' + $S.Navi + ' thinks.')
     Add-Log 'read-only checks complete'
     } finally {
         $form.Cursor = [System.Windows.Forms.Cursors]::Default
@@ -1519,7 +1551,7 @@ function Test-Destructive([string]$cmd) {
 
 function Start-PetCommand($id, [string]$cmd, [bool]$agent = $false) {
     $mode = Get-Mode
-    $who = $(if ($agent) { 'Alice' } else { 'The PET' })
+    $who = $(if ($agent) { $S.Navi } else { 'The PET' })
     if ($mode -eq 'Read' -and -not (Test-ReadOnly $cmd)) {
         Add-Log "$who asked to run (refused, not read-only in Read mode): $cmd"
         if ($agent) { Add-ChatCmd $cmd 'not run: Read mode only runs read-only commands (pick Ask or Full to allow it)' }
@@ -1557,7 +1589,7 @@ function Start-PetCommand($id, [string]$cmd, [bool]$agent = $false) {
             return
         }
     }
-    Add-Log "$(if ($agent) { 'Alice' } else { 'PET' }) > $cmd   ($mode)"
+    Add-Log "$(if ($agent) { $S.Navi } else { 'PET' }) > $cmd   ($mode)"
     $ps = [PowerShell]::Create()
     $rs = $null
     if ($mode -eq 'Read') {
@@ -2202,7 +2234,7 @@ function On-Line([string]$line) {
             # [T] twice on the PET: keep its token for the next link, or forget it.
             $token = [string](Get-Field $msg 'token')
             if (Set-TrustToken $token) {
-                Add-Log $(if ($token -match '^[0-9a-f]{64}$') { 'the PET trusts this PC now: next time chips and Alice work without [K]' } else { 'the PET no longer trusts this PC' })
+                Add-Log $(if ($token -match '^[0-9a-f]{64}$') { 'the PET trusts this PC now: next time chips and ' + $S.Navi + ' work without [K]' } else { 'the PET no longer trusts this PC' })
             } else {
                 Add-Log 'the PET trusted this PC, but the token could not be saved here'
             }
@@ -2222,30 +2254,31 @@ function On-Line([string]$line) {
             Add-Log "the PET is waiting for [K] before it opens $(Chip-Name $chipAsked)"
         }
         'agent_more' {
-            # Alice hit her step cap (25 in Full, 8 otherwise): Holden decides.
+            # The Navi hit its step cap (25 in Full, 8 otherwise): the operator decides.
             $steps = [string](Get-Field $msg 'steps')
             $next = [string](Get-Field $msg 'next')
             $S.AskStale = $false
             $S.Busy = $true
             try {
                 $answer = [System.Windows.Forms.MessageBox]::Show($form,
-                    "Alice has run $steps commands for this message.`r`n`r`nNext she wants:`r`n$next`r`n`r`nKeep going?",
+                    "$($S.Navi) has run $steps commands for this message.`r`n`r`nNext it wants:`r`n$next`r`n`r`nKeep going?",
                     'Jack In: keep going?', 'YesNo', 'Question', 'Button1')
             } finally {
                 $S.Busy = $false
             }
             $yes = ($answer -eq 'Yes') -and $S.Linked -and -not $S.AskStale
-            Add-Log $(if ($yes) { "you let Alice keep going after $steps commands" } else { "you stopped Alice after $steps commands" })
+            Add-Log $(if ($yes) { "you let $($S.Navi) keep going after $steps commands" } else { "you stopped $($S.Navi) after $steps commands" })
             if (-not $yes) { $S.Agent = $false; Add-ChatResult $false "stopped after $steps commands" }
             Send-Pet ([ordered]@{ t = 'agent_more'; yes = $yes })
         }
         'agent_stop' {
             $S.Agent = $false
-            Add-Log "Alice's command loop stopped ($([string](Get-Field $msg 'why')))"
+            Add-Log "$($S.Navi)'s command loop stopped ($([string](Get-Field $msg 'why')))"
         }
         'scan' { Invoke-Scan }
         'net_open' { Open-Tunnel (Get-Field $msg 'id') ([string](Get-Field $msg 'host')) ([int](Get-Field $msg 'port')) }
         'jackout' { Add-Log 'PET pressed JACK OUT'; Jack-Out 'PET' }
+        'navi' { Set-Navi ([string](Get-Field $msg 'name')) ([string](Get-Field $msg 'art')) }
         'chips' { Build-Chips @(Get-Field $msg 'list') }
         'frame' { Apply-Frame $msg }
         'play' { Start-Play $msg }
@@ -2256,11 +2289,11 @@ function On-Line([string]$line) {
             $text = [string](Get-Field $msg 'text')
             $cmd = [string](Get-Field $msg 'cmd')
             if ($heard) { Add-Chat 'you' $heard }
-            if ($text -or -not $cmd) { Add-Chat 'Alice' $text }
+            if ($text -or -not $cmd) { Add-Chat 'navi' $text }
             if ((Get-Field $msg 'ok') -and $text) { Speak-Alice $text }
             # Her command (if any) arrives next as a 'run' with agent=true; the mode decides.
             $S.Agent = [bool]$cmd
-            if ($cmd) { Add-Log "Alice step $([string](Get-Field $msg 'step')): $cmd" }
+            if ($cmd) { Add-Log "$($S.Navi) step $([string](Get-Field $msg 'step')): $cmd" }
         }
     }
 }
@@ -2452,7 +2485,7 @@ $btnVoice.Add_Click({
     if (-not $S.Speak -and $script:Voice) { $script:Voice.SpeakAsyncCancelAll() }
     $btnVoice.Invalidate()
     $btnVoice.BackColor = $(if ($S.Speak) { RGB 0x40 0x80 0xd0 } else { $cIdle })
-    $tips.SetToolTip($btnVoice, $(if ($S.Speak) { 'Alice reads answers aloud (click to mute)' } else { 'Alice is muted (click to hear her)' }))
+    $tips.SetToolTip($btnVoice, $(if ($S.Speak) { "$($S.Navi) reads answers aloud (click to mute)" } else { "$($S.Navi) is muted (click to hear answers)" }))
 })
 
 $btnOut.Add_Click({ Add-Log 'you pressed JACK OUT'; Jack-Out 'PC' })

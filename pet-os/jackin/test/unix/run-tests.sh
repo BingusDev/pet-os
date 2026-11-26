@@ -76,8 +76,9 @@ start_pet "$WORK/pet1.out"
 run_client
 sleep 1
 say '{"t":"pet","operator":"Holden"}'
+say '{"t":"navi","name":"Norm","art":"UE5H"}'
 say '{"t":"chips","list":[{"id":"jellyfin","name":"Jellyfin"},{"id":"retro","name":"Retro"}]}'
-say '{"t":"alice","ok":true,"text":"Hi, I am Alice.","heard":"","cmd":"","step":0}'
+say '{"t":"alice","ok":true,"text":"Hi, I am Norm.","heard":"","cmd":"","step":0}'
 say '{"t":"run","id":"r1","cmd":"Get-Process","agent":true}'
 say '{"t":"ask","what":"full"}'
 say '{"t":"net_open","id":"n1","host":"example.invalid","port":80}'
@@ -106,7 +107,7 @@ check "video handed off (transcode left running)" "$WORK/pet1.out" '"state":"han
 check "bye sent on quit" "$WORK/pet1.out" '"t":"bye"'
 check "client shows the operator" "$WORK/client.out" 'operator: Holden'
 check "client shows chips" "$WORK/client.out" 'PET chips: Jellyfin,Retro'
-check "client shows Alice" "$WORK/client.out" 'alice: Hi, I am Alice.'
+check "client shows the PET's Navi" "$WORK/client.out" 'Norm: Hi, I am Norm.'
 check "client says the run was not run" "$WORK/client.out" 'not run'
 check "client says the share was refused" "$WORK/client.out" "doesn't do that"
 check "video handed to the opener" "$WORK/opened" 'http://127.0.0.1:9/x.mp4'

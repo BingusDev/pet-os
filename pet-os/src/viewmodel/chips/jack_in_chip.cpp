@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -338,6 +339,7 @@ void JackInChip::on_line(const std::string& line) {
         }
         if (!dir.empty()) last_visit_ = jack_store::load_last(dir, host_);
         send_pet();
+        send_navi();
         send_chips();
     } else if (t == "scan") {
         scan_ = Scan{};
@@ -1174,6 +1176,24 @@ void JackInChip::split_reply(const std::string& reply, std::string& words, std::
         }
     }
     words = AliceViewModel::screen_text(words);
+}
+
+// The Navi's name and picture ([navi] name/picture), sent once per link so the PC app
+// shows your Navi instead of its packaged art. `art` is empty when no picture is set,
+// it can't be read, or it is too big for one line (the PC then keeps its own art).
+void JackInChip::send_navi() {
+    std::string art;
+    std::string picture = model::navi().picture;
+    if (!picture.empty() && picture[0] == '~') {
+        if (const char* home = std::getenv("HOME")) picture = std::string(home) + picture.substr(1);
+    }
+    if (!picture.empty()) {
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(picture, ec);
+        if (!ec && size > 0 && size <= kMaxNaviArtBytes) art = read_file_base64(picture);
+        if (art.empty()) LOG_WARN("[navi] picture {} not sent to the PC (missing or over 1 MB)", picture);
+    }
+    send("{\"t\":\"navi\",\"name\":\"" + json_escape(model::navi_name()) + "\",\"art\":\"" + art + "\"}");
 }
 
 // The chips the PC can open, with their label art, sent once per link.

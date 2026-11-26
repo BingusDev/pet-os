@@ -87,6 +87,8 @@ host_name() {
 # the list and can forget this computer at any time.
 TRUST_FILE=${JACKIN_TRUST_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/pet-os/jackin-trust}
 # Before rev31 the app was called AlicePET: carry this computer's trust over once.
+# The Navi's name; the PET sends its [navi] name after hello.
+NAVI=Alice
 OLD_TRUST_FILE=${XDG_CONFIG_HOME:-$HOME/.config}/alicepet/jackin-trust
 if [ -z "${JACKIN_TRUST_FILE:-}" ] && [ ! -e "$TRUST_FILE" ] && [ -r "$OLD_TRUST_FILE" ]; then
     mkdir -p "$(dirname "$TRUST_FILE")" && (umask 077 && cp "$OLD_TRUST_FILE" "$TRUST_FILE") 2>/dev/null || true
@@ -203,8 +205,8 @@ handle_alice() {
     cmd=$(json_str cmd "$line")
     ok=$(json_raw ok "$line")
     [ -n "$heard" ] && log "you (voice): $heard"
-    if [ "$ok" = true ]; then log "alice: $text"; else log "alice couldn't answer: $text"; fi
-    [ -n "$cmd" ] && log "alice wants to run: $cmd (not run: this client runs no PET commands)"
+    if [ "$ok" = true ]; then log "$NAVI: $text"; else log "$NAVI couldn't answer: $text"; fi
+    [ -n "$cmd" ] && log "$NAVI wants to run: $cmd (not run: this client runs no PET commands)"
 }
 
 handle_run() {
@@ -250,6 +252,7 @@ handle() {
     t=$(json_str t "$line")
     case "$t" in
         pet) log "operator: $(json_str operator "$line")" ;;
+        navi) NAVI=$(json_str name "$line" | tr -cd '[:print:]' | cut -c1-12); [ -n "$NAVI" ] || NAVI=Alice; log "Navi: $NAVI" ;;
         trust) save_trust "$(json_str token "$line")" ;;
         denied) log "the PET wants [K] pressed on it before a chip opens for this computer." ;;
         chips)
@@ -260,8 +263,8 @@ handle() {
         ask) log "PET asks for $(json_str what "$line") access. This client can't grant it and stays in Read mode (see README.txt)." ;;
         agent_more)
             send '{"t":"agent_more","yes":false}'
-            log "Alice wanted more steps; declined (no commands run here)." ;;
-        agent_stop) log "Alice stopped early: $(json_str why "$line")" ;;
+            log "$NAVI wanted more steps; declined (no commands run here)." ;;
+        agent_stop) log "$NAVI stopped early: $(json_str why "$line")" ;;
         net_open)
             send "{\"t\":\"net_fail\",\"id\":$(json_raw id "$line")}"
             log "PET asked to share this computer's Internet; the Mac/Linux client doesn't do that (see README.txt)." ;;
@@ -284,7 +287,7 @@ reader_loop() {
 # ---- keyboard ----------------------------------------------------------------
 
 show_help() {
-    log "keys: c = say something to Alice   s = scan again   h = this help   q = jack out"
+    log "keys: c = say something to $NAVI   s = scan again   h = this help   q = jack out"
 }
 
 shutdown_now() {
@@ -301,7 +304,7 @@ keyboard_loop() {
     while printf '> '; IFS= read -r key; do
         case "$key" in
             c|C)
-                printf 'to Alice: '
+                printf 'to %s: ' "$NAVI"
                 IFS= read -r text || break
                 if [ -n "$text" ]; then
                     send "{\"t\":\"chat\",\"text\":$(jstr "$text")}"

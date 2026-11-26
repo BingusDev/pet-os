@@ -253,6 +253,8 @@ private:
     void set_sharing(bool on);
     void try_listen();
     void send_chips();
+    void send_navi();
+    static constexpr std::uintmax_t kMaxNaviArtBytes = 1024 * 1024;
     bool send_frame_band(const std::string& screen, int w, int h, const std::vector<uint16_t>& px, int y0, int y1);
 
     model::PetConfig config_;

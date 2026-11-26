@@ -61,8 +61,10 @@ bool take_progress(Progress& progress);
 // is decided on the PC: Full Access, admin (UAC) and Share PC Internet are
 // clicked there. The PET can only ask ([F] [A] [N]), take access away again,
 // or [X] JACK OUT, which closes the PC app. Everything that lets the PC use the
-// PET is decided on the PET: [K] lets the PC open and drive chips, and Terminal
-// (the PET's SSH keys) needs its own [K] in every session. [T] (twice) trusts
+// PET is decided on the PET. By default a linked PC may use the chips, Terminal
+// and Alice at once, and [K] takes that back (or gives it again). With
+// [jackin] ask_on_pet=on nothing is allowed until [K], and Terminal (the PET's
+// SSH keys) needs its own [K] in every session. [T] (twice) trusts
 // this PC: from then on it gets chip control as soon as it links, and its clock
 // may set the PET's. Each session ends with a text report in [jackin] state_dir.
 // Protocol: alicepet/jackin/PROTOCOL.md.

@@ -140,10 +140,11 @@ struct PetConfig {
     // Who runs the PET: the PC app shows "OPERATOR: <name>" and labels chat with it
     // (never the Windows user name). [jackin] operator= (or owner=).
     std::string jack_operator{"Holden"};
-    // [jackin] pc_control = ask | on. "ask" (default): a linked PC can't open or
-    // drive chips until [K] is pressed on the PET. "on": chips are allowed from
-    // the start of every session. Terminal always needs its own [K].
-    bool jack_pc_control{false};
+    // [jackin] ask_on_pet = off | on. "off" (default): a linked PC may open and
+    // drive chips, open Terminal and talk to Alice at once. "on": none of that
+    // until [K] is pressed on the PET, and Terminal needs its own [K] every
+    // session. (The older pc_control= key is read and ignored.)
+    bool jack_pc_ask{false};
     // Where the PET keeps what it remembers about PCs: the trusted list
     // (jack-trusted.conf) and one report per session (jack-reports/).
     std::string jack_state_dir{"~/.local/share/alicepet"};

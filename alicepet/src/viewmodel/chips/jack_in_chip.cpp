@@ -317,7 +317,7 @@ void JackInChip::on_line(const std::string& line) {
         session_began_ = now_text();
         note("linked to " + host_ + (admin_ ? " (admin)" : "") + (full_ ? ", full access" : ", read-only"));
         // A token Holden gave this PC with [T]: chip control is on from the start.
-        // (Terminal keeps its own [K].) A token the PET no longer knows is dropped there too.
+        // (With ask_on_pet=on; Terminal keeps its own [K].) A token the PET no longer knows is dropped there too.
         const std::string token = msg["trust"].str();
         const std::string dir = state_dir();
         if (!token.empty() && !dir.empty()) {
@@ -548,8 +548,9 @@ void JackInChip::reset_session() {
     agent_held_.clear();
     mode_ = "read";
     input_ok_ = false;
-    pc_control_ = config_.jack_pc_control;
-    pc_terminal_ = false;
+    // Nothing is asked for on the PET unless [jackin] ask_on_pet=on.
+    pc_control_ = !config_.jack_pc_ask;
+    pc_terminal_ = !config_.jack_pc_ask;
     pc_wants_.clear();
     pc_wants_chip_.clear();
     trusted_ = false;
@@ -638,8 +639,9 @@ void JackInChip::grant_key() {
     } else if (!pc_control_) {
         pc_control_ = true;
         note("you let the PC open and drive chips");
-        // Terminal is never part of the first [K]: it is asked for by name.
-        if (pc_wants_chip_ == "terminal") {
+        if (!config_.jack_pc_ask) pc_terminal_ = true;
+        // With ask_on_pet=on Terminal is never part of the first [K]: it is asked for by name.
+        if (pc_wants_chip_ == "terminal" && !pc_terminal_) {
             pc_wants_ = "terminal";
             status_ = "PC wants TERMINAL (your SSH keys): [K] allows";
             attention_ = true;
@@ -660,7 +662,7 @@ void JackInChip::grant_key() {
     }
     status_.clear();
     // The one place [T] is advertised: right after Holden allowed this PC once.
-    if (pc_control_ && !pc_terminal_ && !trusted_ && !state_dir().empty()) status_ = "PC allowed. [T] twice trusts it every time";
+    if (config_.jack_pc_ask && pc_control_ && !pc_terminal_ && !trusted_ && !state_dir().empty()) status_ = "PC allowed. [T] twice trusts it every time";
     send_pet();
     if (!pc_wants_chip_.empty() && (pc_wants_chip_ != "terminal" || pc_terminal_)) opening_.push_back(pc_wants_chip_);
     pc_wants_.clear();

@@ -36,10 +36,13 @@ the next turn, until she answers without a command. After 25 commands (Full;
 the app's live log and on the PET. The PC's microphone records only while
 the person holds the app's talk button; the PET can't start it.
 
-Alice is reached with the PET's own login, so `chat` and `voice` are answered
-only once the PET allowed this PC: [K] this session, a trusted PC, or
-`[jackin] pc_control=on`. Until then the PET answers `alice` `ok: false`
-("Press [K] on the PET...") and shows the request on its screen.
+Since rev29 the PET asks for nothing by default: a linked PC gets `control` and
+`terminal` in the first `pet` line and may talk to Alice at once. [K] on the PET
+takes that back for the session, or gives it again. `[jackin] ask_on_pet=on`
+brings the rev27/rev28 gate back: `open`, keys, `chat` and `voice` are refused
+(`denied`, or `alice` `ok: false` "Press [K] on the PET...") until [K] is
+pressed, and Terminal needs its own [K] every session. What is said about [K]
+below applies to that setting. The older `pc_control=` key is ignored.
 
 Trusted PCs: [T] twice on the PET's Jack In screen makes a random token, stores
 it in `[jackin] state_dir`/`jack-trusted.conf` (0600, at most 16 PCs) and sends

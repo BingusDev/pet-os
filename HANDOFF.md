@@ -20,7 +20,8 @@ Done since 2026-11-18 (on `main`):
 - JACK IN drive image carries `JackIn.cmd`/`.ps1` plus `JackIn.command` (macOS; right-click → Open the first time), `JackIn.sh` and `jackin-client.sh` (Linux/macOS: bash and curl only, Read mode only). Gaps are listed in `alicepet/jackin/unix/README.txt`.
 - Jellyfin on the PC: navigation matches Retro (←/→ one row, ↑/↓ three, Enter, `/` search, TAB movies/shows or season switch, Esc clears the filter then leaves; 7-row list). MKV now transcodes to MP4; H.264 MP4 plays direct. Item IDs are URL-encoded.
 - Retro: reloads the first tab when its platform vanishes; server-supplied names are sanitized; search Backspace drops a whole UTF-8 character.
-- Tests: Debug `alicepet_tests` passes 616 checks (re-run 2026-11-23 on the rev28 branch).
+- Tests: Debug `alicepet_tests` passes 622 checks (re-run 2026-11-25 on the rev29 branch).
+- rev29 (2026-11-25, Holden's call: the [K] prompt made the PET hard to use): a linked PC may use the chips, Terminal and Alice at once, nothing pressed on the PET. `[K]` on the Jack In screen now only takes that back (or gives it again). The rev27/rev28 gate is opt-in with `[jackin] ask_on_pet=on`; the old `pc_control=` key is ignored, so an older `/etc/alicepet.conf` needs no edit. Where the rev27/rev28 notes below say `[K]` is needed, read "with `ask_on_pet=on`".
 - rev28 / Jack In 0.9.5 (2026-11-23, seven features; see `alicepet/jackin/PROTOCOL.md` and `alicepet/config/alicepet.conf`):
   - Trusted PCs: `[T]` twice on the PET's Jack In screen trusts the linked PC (token made on the PET, kept in `[jackin] state_dir`/`jack-trusted.conf`; the PC app keeps its copy with DPAPI). A trusted PC gets chip control and Alice without `[K]`; Terminal still asks. `[T]` twice again forgets it.
   - Chat and voice from a PC now need the PET's OK first (`[K]`, a trusted PC, or `pc_control=on`), because Alice is reached with the PET's login.

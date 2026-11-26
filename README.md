@@ -174,15 +174,15 @@ The main sections:
 
 ### Battle Chips
 
-| Chip | What it does | Tested |
-|---|---|---|
-| **VOICE** | Push-to-talk to your Navi, transcribed on your computer | on the PET |
-| **TERMINAL** | SSH bookmarks with a built-in terminal; "Ask" has your Navi suggest one command, which runs only if you press Enter | on the PET |
-| **JELLYFIN** | Browse your library and play it, transcoded down for the 320×170 screen | on the PET |
-| **RETRO** | Your RomM library, downloads, RetroArch with per-platform cores, save sync | on the PET; save sync not yet against a live RomM |
-| **LAN TECH** | Wall-jack tester: link, DHCP, gateway, DNS, speed, switch port, device list with "who's new" | simulator |
-| **REMOTE** | Learn and replay IR remotes and macros with LIRC `ir-ctl` | simulator |
-| **JACK IN** | Plug the PET into a PC by USB: it scans the PC, your Navi suggests fixes, and the PC app can chat, play Jellyfin and RetroArch, and drive chips | Windows on a real PC; macOS and Linux only against a test stand-in |
+| Chip | What it does |
+|---|---|
+| **VOICE** | Push-to-talk to your Navi, transcribed on your computer |
+| **TERMINAL** | SSH bookmarks with a built-in terminal; "Ask" has your Navi suggest one command, which runs only if you press Enter |
+| **JELLYFIN** | Browse your library and play it, transcoded down for the 320×170 screen |
+| **RETRO** | Your RomM library, downloads, RetroArch with per-platform cores, save sync |
+| **LAN TECH** | Wall-jack tester: link, DHCP, gateway, DNS, speed, switch port, device list with "who's new" |
+| **REMOTE** | Learn and replay IR remotes and macros with LIRC `ir-ctl` |
+| **JACK IN** | Plug the PET into a PC by USB: it scans the PC, your Navi suggests fixes, and the PC app can chat, play Jellyfin and RetroArch, and drive chips |
 
 **Jack In and security:** once a PC is linked, it can open chips, talk to your
 Navi and use the Terminal chip (with the PET's SSH keys) without a key press on

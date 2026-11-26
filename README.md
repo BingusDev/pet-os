@@ -196,6 +196,31 @@ sharing the PC's internet) are always clicked on the PC itself. Setup:
   <img src="pet-os/screenshots/slotted@3x.png" width="32%" alt="Slotting the JELLYFIN chip">
 </p>
 
+### Jack In
+
+Jack In is the PET's party trick. Plug it into a Windows PC with a USB-C cable
+and it shows up as a small drive called `PET-OS`. Run `JackIn.cmd` from that
+drive and the PET and PC link up over the same cable, no Wi-Fi or install needed.
+
+<p align="center">
+  <img src="pet-os/screenshots/jackin-waiting@3x.png" width="48%" alt="Jack In waiting for the PC">
+  <img src="pet-os/screenshots/jackin-scan@3x.png" width="48%" alt="Jack In read-only scan of the PC">
+</p>
+
+1. **It starts read-only.** The PET scans the PC (Windows version, CPU, RAM,
+   disk, startup apps, Defender) and your Navi says what looks wrong. Every
+   command it ran is listed on screen.
+2. **Fixes are your call.** Your Navi suggests one fix at a time. `Enter`
+   runs it once you've clicked **Full Access** on the PC, and admin rights need
+   their own click there too.
+3. **The PC can drive the PET.** From the PC app you can chat with your Navi
+   and open chips (Jellyfin, Retro, Terminal, LAN Tech) on the PET.
+
+<p align="center">
+  <img src="pet-os/screenshots/jackin-full@3x.png" width="48%" alt="Jack In with Full Access and admin">
+  <img src="pet-os/screenshots/jackin-pc-driving@3x.png" width="48%" alt="The PC operating the JELLYFIN chip">
+</p>
+
 ## Making it yours
 
 Your Navi's name and picture and your own name are settings. `pet-setup.sh`

@@ -3,6 +3,7 @@
  */
 
 #include "view/chips/lan_tech_view.h"
+#include "model/navi.h"
 
 #include <string>
 
@@ -114,9 +115,9 @@ void LanTechView::render_test(const LanTechChip& lan) {
     if (lan.running()) {
         lv_label_set_text(frame_.footer, "testing the jack... [ESC]chips");
     } else if (lan.can_try_static()) {
-        lv_label_set_text(frame_.footer, "[R]retest [V]try static IP [A]ask Alice");
+        lv_label_set_text(frame_.footer, ("[R]retest [V]try static IP [A]ask " + model::navi_name()).c_str());
     } else {
-        lv_label_set_text(frame_.footer, "[R]retest [D]devices [A]Alice [S]save");
+        lv_label_set_text(frame_.footer, ("[R]retest [D]devices [A]" + model::navi_name() + " [S]save").c_str());
     }
 }
 
@@ -129,9 +130,9 @@ void LanTechView::render_alice(const LanTechChip& lan) {
     for (size_t i = 0; i < checks.size() && i < 3; ++i) y = check_row(checks[i], y);
     y += 4;
     if (lan.alice_waiting()) {
-        wrapped("Alice is reading the results...", kLanTheme.text, y, 0);
+        wrapped(model::navi_name() + " is reading the results...", kLanTheme.text, y, 0);
     } else {
-        wrapped("Alice: " + lan.alice_text(), kWhite, y, 139 - y - 2);
+        wrapped(model::navi_name() + ": " + lan.alice_text(), kWhite, y, 139 - y - 2);
     }
     if (!lan.status().empty()) text(body_, clip_cols(lan.status(), 43), fonts_.small, kYellow, kLeft, 139 - 14);
     lv_label_set_text(frame_.footer, "[R]retest [A]ask again [S]save [ESC]back");

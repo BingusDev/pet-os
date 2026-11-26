@@ -1,4 +1,4 @@
-# AlicePET OS ⚡🐇
+# PET-os ⚡🐇
 
 A Mega Man Battle Network-style **P.E.T.** (PErsonal Terminal) app for the
 [M5Stack CardputerZero](https://github.com/CardputerZero). It turns the pocket
@@ -8,9 +8,14 @@ Navi on the PET, and you slot **Battle Chips** that each open a small tool
 (SSH terminal, Jellyfin player, network tester, IR remote, retro games, and a
 USB sidekick for PCs).
 
-It was built for one Navi, **Alice**, and her operator. This README explains how
-to set it up for yours, and what still says "Alice" (see
-[Making it yours](#making-it-yours)).
+It started as AlicePET, built for one Navi, **Alice**, and her operator. Your
+Navi's name, picture and your own name are settings, so it can be yours
+instead (see [Making it yours](#making-it-yours)).
+
+> **About the name:** the project is now PET-os, but the app itself still
+> installs as **AlicePET**. That covers the package (`AlicePET_*.deb`), the
+> launcher entry, the `alicepet/` source folder and the config files
+> (`/etc/alicepet.conf`). The commands below use those names.
 
 <p align="center">
   <img src="alicepet/screenshots/home@3x.png" width="48%" alt="Navi Home">
@@ -25,7 +30,7 @@ to set it up for yours, and what still says "Alice" (see
 
 | Where | What |
 |---|---|
-| **The PET** | An M5Stack CardputerZero on its stock Debian 13 (trixie) image, with Wi-Fi and SSH working. AlicePET installs as an app that the stock launcher (APPLaunch) starts. |
+| **The PET** | An M5Stack CardputerZero on its stock Debian 13 (trixie) image, with Wi-Fi and SSH working. PET-os installs as an app that the stock launcher (APPLaunch) starts. |
 | **Your Navi's computer** | A Mac or Linux machine that runs OpenClaw with an agent you want on the PET, plus Node.js 20 or newer. Optional for voice: `openai-whisper` (`pip install openai-whisper`). |
 | **Between them** | A network path from the PET to that computer. [Tailscale](https://tailscale.com) on both is the easy way, and lets the PET reach your Navi away from home. |
 | **To build** | A Linux machine (x86-64 or arm64) for cross-compiling, or any machine with Docker and SSH to one. There is no prebuilt download yet. |
@@ -36,7 +41,7 @@ SSH hosts, an IR transmitter.
 ## How it fits together
 
 ```
-CardputerZero  (AlicePET app, C++ / LVGL)
+CardputerZero  (PET-os app, C++ / LVGL)
    │  HTTP + JSON, bearer token, over Tailscale or your LAN
    ▼
 Your computer: PET bridge   (bin/alicepet-bridge.sh → vendor/cardputer-pet-terminal/bridge)
@@ -56,8 +61,8 @@ same bridge and are transcribed on your computer with Whisper, not in the cloud.
 On a Linux machine:
 
 ```sh
-git clone https://github.com/BingusDev/alicepet-os
-cd alicepet-os/alicepet
+git clone https://github.com/BingusDev/PET-os
+cd PET-os/alicepet
 sudo apt install g++-aarch64-linux-gnu ninja-build pkg-config dpkg-dev curl   # plus CMake 3.31 or newer
 cmake --workflow --preset cp0-cross-package
 ```
@@ -84,7 +89,8 @@ ssh -t <user>@<pet> 'sudo bash ~/pet-setup.sh ~/AlicePET_*_arm64.deb'
 2. adds your user to the `input`, `video` and `audio` groups (keys, backlight, mic),
 3. installs a narrow sudo rule for the Jack In USB switch and the clock setter,
 4. builds the Jack In USB drive image,
-5. creates `/etc/alicepet.local.conf` and asks for your bridge URL and token,
+5. creates `/etc/alicepet.local.conf` and asks for your Navi's name, your name,
+   a Navi picture, and your bridge URL and token,
 6. with `--usb-otg` only: switches the USB-C2 port to device mode for Jack In
    (this turns off USB-A and Ethernet; it backs up `config.txt` first),
 7. fixes speaker audio and sets up the fn volume keys.
@@ -138,7 +144,7 @@ Open AlicePET, type on Navi Home and press Enter. Your Navi should answer.
 
 ## Configure
 
-AlicePET reads two files on the PET:
+The app reads two files on the PET:
 
 - `/etc/alicepet.conf` ships with the app and has every option, commented. It
   holds no personal hosts or secrets.
@@ -157,11 +163,9 @@ The main sections:
 | `[romm]`, `[retro]` | RomM server and token, RetroArch cores, save sync |
 | `[remote]` | IR transmitter and receiver devices for the REMOTE chip |
 | `[lantech]` | interface and speed test settings for LAN TECH |
-| `[jackin]` | Jack In ports, `operator=` (your name, shown on the PC and in chat) and reports |
+| `[navi]` | your Navi's name and picture, and your name (see [Making it yours](#making-it-yours)) |
+| `[jackin]` | Jack In ports, `operator=` (defaults to your `[navi] owner`) and reports |
 | `[voice]`, `[power]`, `[clock]` | recording and speech, sleep and dimming, clock syncing |
-
-Set `operator=<your name>` under `[jackin]` in your local file; it defaults to
-the original owner's name.
 
 ## Using it
 
@@ -200,25 +204,38 @@ sharing the PC's internet) are always clicked on the PC itself. Setup:
 
 ## Making it yours
 
-What you can change today without touching code:
+Your Navi's name and picture and your own name are settings. `pet-setup.sh`
+asks for them, or put them in `/etc/alicepet.local.conf`:
 
-- **Your Navi's AI:** any OpenClaw agent, through `PET_SESSION_KEY` and
-  `PET_NAVI_NAME` on the bridge.
-- **Your name on Jack In:** `[jackin] operator=`.
-- **Hosts, servers, keys:** all in `/etc/alicepet.local.conf`.
+```ini
+[navi]
+name=Norm
+owner=[USER]
+picture=/home/pi/norm.png
+```
 
-Still built in (planned as settings in a coming release):
+- `name`: up to 12 characters. It shows as NORM.EXE, "Ask Norm" and "Norm: ...".
+- `owner`: your name, up to 16 characters. It's used for "Hi [USER]!", as the Jack In
+  operator, and to tell your Navi who it is helping. Leave it empty to use no name.
+- `picture`: any PNG, scaled to 110×110 and 44×44. Leave it empty for the packaged art.
 
-- **The Navi's name on screen.** Labels such as `ALICE.EXE`, "Ask Alice" and
-  "Alice:" are compiled into the app.
-- **The owner's name.** The Home greeting and the messages the Jack In,
-  LAN TECH and Terminal chips send to your Navi use the original owner's name.
-- **The Navi picture.** It is two PNGs installed with the app,
-  `/usr/share/alicepet/images/chips/alice-home.png` (110×110) and `alice-mini.png`
-  (44×44), plus `alice.png` in the Windows Jack In app. You can replace them with
-  your own art at the same sizes (transparent background), but an update puts
-  the originals back. To keep your own art, replace the files in
-  `alicepet/assets/images/chips/` before you build.
+Restart AlicePET (leave and reopen it from the launcher) to see the change.
+On your Navi's computer, start the bridge with the same name
+(`PET_NAVI_NAME=Norm`), so your Navi answers as Norm.
+
+<p align="center">
+  <img src="alicepet/screenshots/navi-norm-home@3x.png" width="48%" alt="Navi Home with a Navi named Norm">
+  <img src="alicepet/screenshots/navi-norm-voice@3x.png" width="48%" alt="VOICE chip with Norm">
+</p>
+
+A transparent background looks best for the picture. Make sure the PET's user
+can read the file.
+
+Still built in:
+
+- The Jack In apps on the PC (Windows, macOS, Linux) still say "Alice" and
+  show their own copy of Alice's picture.
+- The app is named AlicePET in the launcher.
 
 ## Development
 

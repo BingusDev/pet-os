@@ -3,6 +3,7 @@
  */
 
 #include "view/chips/voice_view.h"
+#include "model/navi.h"
 
 #include <cstdio>
 #include <string>
@@ -26,7 +27,7 @@ using viewmodel::chips::VoiceChip;
 VoiceView::VoiceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesystem::path& art_dir)
     : fonts_(fonts) {
     frame_ = make_chip_frame(root, kVoiceTheme, fonts_);
-    load_png(art_dir / "alice-home.png", alice_);
+    load_navi_picture(art_dir / "alice-home.png", 110, 110, alice_);
     load_png(art_dir / "icon-mic-11.png", mic_);
     lv_label_set_text(frame_.title, "VOICE");
     lv_obj_t* bar = lv_obj_get_parent(frame_.tag);
@@ -117,8 +118,8 @@ void VoiceView::render(const viewmodel::ChipModule& chip) {
     }
     case VoiceChip::State::Sending: {
         static const char* kDots[] = {"", ".", "..", "..."};
-        lv_label_set_text_fmt(status_, "Alice is listening%s", kDots[voice.thinking_dots() & 3]);
-        lv_label_set_text(hint_, "transcribing on the Mac mini, then asking Alice");
+        lv_label_set_text(status_, (model::navi_name() + " is listening" + kDots[voice.thinking_dots() & 3]).c_str());
+        lv_label_set_text(hint_, ("transcribing on your computer, then asking " + model::navi_name()).c_str());
         lv_label_set_text(frame_.footer, "mic is off · please wait");
         break;
     }

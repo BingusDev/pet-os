@@ -18,7 +18,7 @@
     ],
     "icon": "assets/images/alicepet.png (48x48; TODO 256x256 store icon)",
     "license": "MIT",
-    "source_repo": "https://github.com/BingusDev/alicepet-os",
+    "source_repo": "https://github.com/BingusDev/PET-os",
     "author": {
       "github": "BingusDev",
       "display_name": "Holden"

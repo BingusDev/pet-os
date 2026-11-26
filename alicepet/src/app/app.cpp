@@ -18,6 +18,7 @@
 #include "alice_view.h"
 #include "alice_viewmodel.h"
 #include "model/chip_registry.h"
+#include "model/navi.h"
 #include "model/pet_config.h"
 #include "pet_services.h"
 #include "view/chips/jack_in_view.h"
@@ -985,6 +986,7 @@ int Application::run() {
     ChatClient chat(pet_config);
     NetScanner scanner(pet_config);
 
+    model::set_navi({pet_config.navi_name, pet_config.navi_owner, pet_config.navi_picture});
     viewmodel::AliceViewModel view_model;
     view_model.set_sleep_after_ms(static_cast<uint32_t>(std::max(0, pet_config.sleep_after_s)) * 1000u);
     view_model.set_dim_after_ms(static_cast<uint32_t>(std::max(0, pet_config.dim_after_s)) * 1000u);

@@ -91,7 +91,8 @@ Useful CMake options: `APP_KEY_INPUT_DEVICE` (evdev path; empty scans
 
 ## Config
 
-`/etc/alicepet.conf` (override with `ALICEPET_CONFIG=`). Sections: `[bridge]`
+`/etc/alicepet.conf` (override with `ALICEPET_CONFIG=`). Sections: `[navi]`
+your Navi's name and picture and your name, `[bridge]`
 url/token, `[netscan]` hosts, `[power]` sleep, dim, backlight and power profiles,
 `[voice]` recorder and TTS commands, `[terminal]` SSH bookmarks, `[jellyfin]`
 server, key and player, `[remote]` IR devices and folder, `[romm]` server,

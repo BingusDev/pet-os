@@ -3,6 +3,7 @@
  */
 
 #include "view/chips/terminal_view.h"
+#include "model/navi.h"
 
 #include <algorithm>
 #include <string>
@@ -55,7 +56,7 @@ void TerminalView::render(const viewmodel::ChipModule& chip) {
 
 void TerminalView::render_hosts(const TerminalChip& term) {
     lv_label_set_text(frame_.title, "TERMINAL · HOSTS");
-    lv_label_set_text(frame_.footer, "[↵]connect [A]ask Alice [D]hang up [R]check");
+    lv_label_set_text(frame_.footer, ("[↵]connect [A]ask " + model::navi_name() + " [D]hang up [R]check").c_str());
     const auto& hosts = term.hosts();
     size_t up = 0;
     for (const auto& h : hosts) up += h.reach == TerminalChip::Reach::Up ? 1 : 0;
@@ -110,7 +111,7 @@ void TerminalView::render_ask(const TerminalChip& term) {
     // a dark green-edged box, then small pills; footer says nothing runs by itself.
     const auto* host = term.current_host();
     const auto state = term.ask_state();
-    lv_label_set_text(frame_.title, ("ASK ALICE · " + clip_cols(host ? host->label : "?", 28)).c_str());
+    lv_label_set_text(frame_.title, ("ASK " + model::navi_exe().substr(0, model::navi_exe().size() - 4) + " · " + clip_cols(host ? host->label : "?", 28)).c_str());
     const char* tag = state == TerminalChip::AskState::Typing    ? "ask"
                       : state == TerminalChip::AskState::Waiting ? "thinking"
                       : state == TerminalChip::AskState::Error   ? "error"
@@ -147,20 +148,20 @@ void TerminalView::render_ask(const TerminalChip& term) {
     switch (state) {
     case TerminalChip::AskState::Typing: {
         int y = wrap_label("? " + term.ask_input() + "_", kWhite, kTop);
-        y = wrap_label("Alice suggests one command; you decide.", kAskPink, y + 3);
+        y = wrap_label(model::navi_name() + " suggests one command; you decide.", kAskPink, y + 3);
         pill("ESC Back", pill("↵ Ask", kLeft, y + 5, true), y + 5, false);
         break;
     }
     case TerminalChip::AskState::Waiting: {
         static const char* kDots[] = {"", ".", "..", "..."};
         const int y = wrap_label(question, kWhite, kTop);
-        wrap_label(std::string("Alice is thinking") + kDots[term.thinking_dots() & 3], kAskPink, y + 3);
+        wrap_label(model::navi_name() + " is thinking" + kDots[term.thinking_dots() & 3], kAskPink, y + 3);
         lv_label_set_text(frame_.footer, "[ESC]cancel");
         break;
     }
     case TerminalChip::AskState::Error: {
         int y = wrap_label(question, kWhite, kTop);
-        y = wrap_label("Alice: " + clip_cols(term.ask_error(), 79), kAskRed, y + 3);
+        y = wrap_label(model::navi_name() + ": " + clip_cols(term.ask_error(), 79), kAskRed, y + 3);
         pill("ESC Back", kLeft, y + 5, false);
         lv_label_set_text(frame_.footer, "[ESC]back");
         break;
@@ -169,7 +170,7 @@ void TerminalView::render_ask(const TerminalChip& term) {
         // Budget (139 px): question 1 line, Alice <= 2 lines, the command in full
         // (<= kCommandLines lines, every character shown), then the pills.
         int y = wrap_label(question, kWhite, kTop);
-        y = wrap_label("Alice: " + clip_cols(term.ask_why(), 79), kAskPink, y + 3);
+        y = wrap_label(model::navi_name() + ": " + clip_cols(term.ask_why(), 79), kAskPink, y + 3);
         const auto lines = term.ask_command_lines();
         const bool fits = term.ask_command_fits();
         std::string shown;

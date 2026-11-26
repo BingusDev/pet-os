@@ -5,6 +5,7 @@
 #include "view/alice_view.h"
 #include "view/widgets.h"
 #include "logger/logger.h"
+#include "model/navi.h"
 
 #include "platform/device_status.h"
 #include "platform/jack_link.h"
@@ -72,8 +73,8 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     load_png(chip_art_dir / "icon-bolt-11.png", icon_bolt_large_);
     load_png(chip_art_dir / "icon-mic-11.png", icon_mic_);
     load_png(chip_art_dir / "icon-signal.png", icon_signal_);
-    load_png(chip_art_dir / "alice-home.png", alice_home_);
-    load_png(chip_art_dir / "alice-mini.png", alice_mini_);
+    load_navi_picture(chip_art_dir / "alice-home.png", 110, 110, alice_home_);
+    load_navi_picture(chip_art_dir / "alice-mini.png", 44, 44, alice_mini_);
 
     // BOOT: glowing P.E.T. title, subtitle, 2s progress bar, Navi connect line.
     // All text is solid and full-opacity at 11/33 px so the pixel font stays crisp.
@@ -85,7 +86,7 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     lv_obj_align(text(boot_, "P.E.T.", fonts_.title, kCyan, 0, 0), LV_ALIGN_TOP_MID, 1, 32);
     lv_obj_t* title = text(boot_, "P.E.T.", fonts_.title, kCyan, 0, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 32);
-    lv_obj_t* subtitle = text(boot_, "PERSONAL TERMINAL · ALICE.EXE", fonts_.tiny, kSubtitle, 0, 0);
+    lv_obj_t* subtitle = text(boot_, "PERSONAL TERMINAL · " + model::navi_exe(), fonts_.tiny, kSubtitle, 0, 0);
     lv_obj_align(subtitle, LV_ALIGN_TOP_MID, 0, 72);
     boot_bar_ = lv_bar_create(boot_);
     lv_obj_set_size(boot_bar_, 180, 8);
@@ -108,11 +109,13 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     lv_obj_t* top = box(home_, 0, 0, 320, 16, kPanelBlue);
     set_border(top, 1, kEdgeBlue);
     lv_obj_set_style_border_side(top, LV_BORDER_SIDE_BOTTOM, 0);
-    text(top, "ALICE.EXE", fonts_.tiny, kPaleCyan, 6, 2);
+    const std::string exe = model::navi_exe();  // at most 16 columns ("ALICE.EXE" is 9)
+    text(top, exe, fonts_.tiny, kPaleCyan, 6, 2);
     // How the PET is online (updated with the battery): Wi-Fi, LAN, PC net (JACK IN sharing) or offline.
-    route_dot_ = box(top, 6 + 9 * 7 + 5, 5, 5, 5, kGreen);
+    const int exe_w = static_cast<int>(exe.size()) * kGlyphW;
+    route_dot_ = box(top, 6 + exe_w + 5, 5, 5, 5, kGreen);
     lv_obj_set_style_radius(route_dot_, LV_RADIUS_CIRCLE, 0);
-    route_label_ = text(top, "...", fonts_.tiny, kGreen, 6 + 9 * 7 + 14, 2);
+    route_label_ = text(top, "...", fonts_.tiny, kGreen, 6 + exe_w + 14, 2);
 
     // Right cluster: signal bars, battery gauge, battery %, clock (right to left via flex).
     lv_obj_t* status_right = lv_obj_create(top);
@@ -141,14 +144,16 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     lv_obj_t* bubble = box(home_, 124, 24, 188, 74, kBubble);
     lv_obj_set_style_radius(bubble, 8, 0);
     set_border(bubble, 2, kEdgeBlue);
-    // Two spaces after "Hi Holden!" reserve room for the inline bolt icon.
-    lv_obj_t* bubble_text = text(bubble, "Hi Holden!   All systems green. Backups ran OK last night. Want me to do anything?",
+    // "Hi <owner>!" then three spaces: the middle one holds the inline bolt icon.
+    const std::string owner = model::navi().owner;
+    const std::string hello = owner.empty() ? "Hi!" : "Hi " + owner + "!";
+    lv_obj_t* bubble_text = text(bubble, hello + "   Ready when you are. Type to me, or hold [SPACE] to talk.",
                                  fonts_.tiny, kPanelBlue, 7, 4);
     lv_label_set_long_mode(bubble_text, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(bubble_text, 188 - 4 - 14);
     lv_obj_set_style_text_line_space(bubble_text, 3, 0);
     bubble_greeting_ = bubble_text;
-    bubble_greeting_icon_ = place_inline_icon(bubble_text, 11, icon_bolt_large_);
+    bubble_greeting_icon_ = place_inline_icon(bubble_text, static_cast<int>(hello.size()) + 1, icon_bolt_large_);
 
     // Chat reply: the view model pre-wraps lines to the monospace grid, so clip instead of re-wrapping.
     bubble_chat_ = text(bubble, "", fonts_.tiny, kPanelBlue, 7, 4);
@@ -210,7 +215,11 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     chip_bar(slotted_, "BATTLE CHIP IN!");
     lv_obj_t* execute = text(slotted_, "EXECUTE", fonts_.small, kGold, 0, 2);
     lv_obj_align(execute, LV_ALIGN_TOP_RIGHT, -6, 2);
-    lv_obj_t* alice_line = chip_footer(slotted_, "Alice: \"Jack in, Alice! Execute!\"");
+    // "Holden: "Jack in, Alice! Execute!"", without the speaker when it won't fit beside the bolt.
+    const std::string shout = "\"Jack in, " + model::navi_name() + "! Execute!\"";
+    std::string jack_in_line = model::owner_or(model::navi_name()) + ": " + shout;
+    if (jack_in_line.size() > 40) jack_in_line = shout;
+    lv_obj_t* alice_line = chip_footer(slotted_, jack_in_line.c_str());
     lv_obj_update_layout(alice_line);
     make_image(lv_obj_get_parent(alice_line), icon_bolt_large_, 6 + lv_obj_get_width(alice_line) + 5, 1);
     slotted_holder_ = lv_obj_create(slotted_);
@@ -246,7 +255,7 @@ AliceView::AliceView(lv_obj_t* root, const AliceFonts& fonts, const std::filesys
     (void)z_big;
     (void)z_small;
     text(sleep_overlay_, "z", fonts_.tiny, 0x10264a, 264, 82);
-    text(sleep_overlay_, "ALICE.EXE napping · any key wakes", fonts_.tiny, 0x16325c, 0, 0);
+    text(sleep_overlay_, model::navi_exe() + " napping · any key wakes", fonts_.tiny, 0x16325c, 0, 0);
     lv_obj_align(lv_obj_get_child(sleep_overlay_, -1), LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_add_flag(sleep_overlay_, LV_OBJ_FLAG_HIDDEN);
 
@@ -397,7 +406,9 @@ void AliceView::rebuild_slotted(size_t selected) {
 
     constexpr int kTextX = 150;
     make_image(slotted_holder_, art.title, kTextX, 35 - 17);
-    lv_obj_t* desc = text(slotted_holder_, copy.description, fonts_.small, kPaleCyan, kTextX, 51 - 17);
+    const std::string description =
+        std::strcmp(copy.description, "Push-to-talk with Alice") == 0 ? "Push-to-talk with " + model::navi_name() : copy.description;
+    lv_obj_t* desc = text(slotted_holder_, description, fonts_.small, kPaleCyan, kTextX, 51 - 17);
     lv_label_set_long_mode(desc, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(desc, 320 - 8 - kTextX);
     lv_obj_set_style_text_line_space(desc, 2, 0);

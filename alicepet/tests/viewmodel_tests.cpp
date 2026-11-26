@@ -9,6 +9,7 @@
 #include "platform/clock_sync.h"
 #include "viewmodel/chips/jack_store.h"
 #include "model/chip_registry.h"
+#include "model/navi.h"
 #include "model/pet_config.h"
 #include "model/power_profile.h"
 #include "platform/json.h"
@@ -780,7 +781,7 @@ void test_jack_session() {
     jack.on_line(R"({"t":"hello","host":"LAPTOP-FRONT","os":"Win 11","user":"front-desk"})");
     CHECK(jack.connected() && jack.view() == JackInChip::View::Session);
     // The PET names its operator (never the Windows user) right after hello.
-    CHECK(!jack.sent.empty() && jack.sent[0] == R"({"t":"pet","operator":"Holden","control":false,"terminal":false,"trusted":false})");
+    CHECK(!jack.sent.empty() && jack.sent[0] == R"({"t":"pet","operator":"Operator","control":false,"terminal":false,"trusted":false})");
     jack.sent.clear();
     CHECK(!jack.full() && !jack.admin());
     CHECK(jack.keep_awake());
@@ -829,7 +830,7 @@ void test_jack_session() {
     CHECK(jack.pc_control() && jack.pc_wants().empty());
     jack.on_line(R"({"t":"chat","text":"why is this PC slow?"})");
     CHECK(jack.chat_waiting());
-    CHECK(jack.log().back().text == "Holden: why is this PC slow?");
+    CHECK(jack.log().back().text == "Operator: why is this PC slow?");
     CHECK(jack.agent_running());
     viewmodel::chips::BridgeReply chat;
     chat.ok = true;
@@ -1083,7 +1084,7 @@ void test_jack_pc_control_is_granted_on_the_pet() {
     // First [K]: chips, but never Terminal along with it.
     jack.handle_char("k");
     CHECK(jack.pc_control() && !jack.pc_terminal() && !jack.take_open(id));
-    CHECK(jack.sent[jack.sent.size() - 2] == R"({"t":"pet","operator":"Holden","control":true,"terminal":false,"trusted":false})");
+    CHECK(jack.sent[jack.sent.size() - 2] == R"({"t":"pet","operator":"Operator","control":true,"terminal":false,"trusted":false})");
     CHECK(jack.sent.back() == R"({"t":"denied","what":"terminal","chip":"terminal"})" && jack.pc_wants() == "terminal");
     jack.on_line(R"({"t":"open","chip":"jellyfin"})");
     CHECK(jack.take_open(id) && id == "jellyfin");
@@ -1118,7 +1119,7 @@ void test_jack_pc_control_is_granted_on_the_pet() {
     open_pet.capture_sent = true;
     open_pet.on_line(R"({"t":"hello","host":"HK-DESKTOP","os":"Windows 11","user":"hk","full":true,"input":true,"mode":"ask"})");
     CHECK(open_pet.pc_control() && open_pet.pc_terminal());
-    CHECK(open_pet.sent[0] == R"({"t":"pet","operator":"Holden","control":true,"terminal":true,"trusted":false})");
+    CHECK(open_pet.sent[0] == R"({"t":"pet","operator":"Operator","control":true,"terminal":true,"trusted":false})");
     open_pet.on_line(R"({"t":"open","chip":"retro"})");
     CHECK(open_pet.take_open(id) && id == "retro");
     open_pet.on_line(R"({"t":"open","chip":"terminal"})");
@@ -1655,7 +1656,7 @@ void test_jack_trust_and_report() {
             if (line.rfind(head, 0) == 0) token = line.substr(head.size(), 64);
         }
         CHECK(token.size() == 64 && token.find_first_not_of("0123456789abcdef") == std::string::npos);
-        CHECK(jack.sent.back() == R"({"t":"pet","operator":"Holden","control":true,"terminal":false,"trusted":true})");
+        CHECK(jack.sent.back() == R"({"t":"pet","operator":"Operator","control":true,"terminal":false,"trusted":true})");
         jack.on_line(R"({"t":"scan","cpu":78,"ram":91,"disk":"C:","disk_free":8,"startup":14,"defender":"off"})");
         jack.on_line(R"({"t":"log","text":"Get-Process","ok":true})");
         const std::string report = jack.report_text("test");
@@ -1799,6 +1800,41 @@ void test_clock_sync_rules() {
     CHECK(parse_http_date("garbage") == 0 && parse_http_date("") == 0);
 }
 
+// [navi]: the Navi's name, the owner and the picture come from the config, not the code.
+void test_navi_identity() {
+    using viewmodel::chips::JackInChip;
+    const model::PetConfig defaults = model::parse_pet_config("");
+    CHECK(defaults.navi_name == "Alice" && defaults.navi_owner.empty() && defaults.navi_picture.empty());
+    CHECK(defaults.jack_operator == "Operator");
+
+    const model::PetConfig mine =
+        model::parse_pet_config("[navi]\nname=Rex\nowner=Sam Lee\npicture=~/rex.png\n[jackin]\nlisten=10.55.0.1\n");
+    CHECK(mine.navi_name == "Rex" && mine.navi_owner == "Sam Lee" && mine.navi_picture == "~/rex.png");
+    CHECK(mine.jack_operator == "Sam Lee");  // the owner runs Jack In unless operator= says otherwise
+    CHECK(model::parse_pet_config("[navi]\nowner=Sam\n[jackin]\noperator=Front desk\n").jack_operator == "Front desk");
+    CHECK(model::parse_pet_config("[navi]\nname=\n").navi_name == "Alice");
+
+    model::set_navi({"  Rex the Great Navi!  ", "Sam\x01 Lee", ""});
+    CHECK(model::navi_name() == "Rex the Grea");  // 12 characters
+    CHECK(model::navi_exe() == "REX_THE_GREA.EXE");
+    CHECK(model::owner_or("x") == "Sam Lee");
+    model::set_navi({"", "", ""});
+    CHECK(model::navi_name() == "Alice" && model::owner_or("the user") == "the user");
+
+    model::set_navi({"Rex", "Sam", ""});
+    JackInChip::Scan scan;
+    const std::string fix = JackInChip::alice_prompt("PC", "Windows 11", scan, "");
+    CHECK(fix.find("Sam plugged the PET") != std::string::npos && fix.find("Holden") == std::string::npos);
+    CHECK(viewmodel::chips::build_ask_prompt("'pi' (pi@127.0.0.1)", "x").find("Ask Rex.") != std::string::npos);
+    CHECK(JackInChip::output_prompt("ask", "Stop-Service x", false, "declined", "").find("Sam declined") != std::string::npos);
+    // The longest owner still leaves the chat header room for a 380-character message.
+    model::set_navi({"Rex", "Abcdefghijklmnop", ""});
+    const std::string asked(380, 'q');
+    const std::string chat = JackInChip::chat_prompt("LAPTOP-FRONT", "full", asked);
+    CHECK(chat.size() <= viewmodel::chips::kBridgeMaxInput && chat.find(asked) != std::string::npos);
+    model::set_navi({});
+}
+
 int main() {
     // Nothing here may write to the real home folder (Jack In reports, trusted PCs).
     const std::filesystem::path home = std::filesystem::temp_directory_path() / "alicepet-tests-home";
@@ -1849,6 +1885,7 @@ int main() {
         {"lan_static_config", test_lan_static_config},
         {"jack_session", test_jack_session},
         {"jack_trust_and_report", test_jack_trust_and_report},
+        {"navi_identity", test_navi_identity},
         {"clock_sync_rules", test_clock_sync_rules},
         {"http_download_streams_to_disk", test_http_download_streams_to_disk},
         {"jack_line_server", test_jack_line_server},

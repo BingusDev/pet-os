@@ -3,6 +3,7 @@
  */
 
 #include "viewmodel/chips/terminal_chip.h"
+#include "model/navi.h"
 
 #include "platform/net.h"
 #include "viewmodel/alice_viewmodel.h"
@@ -67,9 +68,9 @@ std::string sanitize_command(const std::string& command) {
 
 std::string build_ask_prompt(const std::string& host_desc, const std::string& question) {
     const std::string head =
-        "PET TERMINAL, Ask Alice. Reply in exactly two lines, no markdown: 'CMD: <one shell command>' then "
-        "'WHY: <one short sentence>'. Holden sees the command and decides whether to run it. Keep the command "
-        "short (under 120 characters). Host: " +
+        "PET TERMINAL, Ask " + model::navi_name() + ". Reply in exactly two lines, no markdown: 'CMD: <one shell command>' then "
+        "'WHY: <one short sentence>'. " + model::owner_or("The user") + " sees the command and decides whether to run it. "
+        "Keep the command short (under 120 characters). Host: " +
         host_desc + ". Question: ";
     return clip_for_bridge(head + question);
 }
@@ -459,7 +460,7 @@ void TerminalChip::on_ask_reply(const BridgeReply& reply) {
     ask_command_ = sanitize_command(ask_command_);
     ask_why_ = AliceViewModel::screen_text(ask_why_);
     if (ask_command_.empty()) {
-        ask_error_ = ask_why_.empty() ? "Alice didn't suggest a command." : ask_why_;
+        ask_error_ = ask_why_.empty() ? model::navi_name() + " didn't suggest a command." : ask_why_;
         ask_state_ = AskState::Error;
     } else {
         ask_state_ = AskState::Suggestion;

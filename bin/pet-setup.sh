@@ -9,7 +9,8 @@
 #   2. lets the app user read keys and set the backlight (input, video groups)
 #   3. installs the JACK IN sudo rule (only usb-gadget.sh up|down|status and set-clock.sh, as root)
 #   4. builds the JACK IN drive image (/var/lib/alicepet/jackin.img)
-#   5. starts /etc/alicepet.local.conf for your bridge URL and token (you type them)
+#   5. starts /etc/alicepet.local.conf with your Navi's name, your name and picture, and
+#      your bridge URL and token (you type them); adds [navi] to an older file
 #   6. with --usb-otg: adds dtoverlay=dwc2,dr_mode=peripheral so JACK IN can work (reboot after;
 #      USB-A and Ethernet stop working, since they need host mode)
 #   7. speaker at 16-bit 48 kHz (WirePlumber rule) and the fn volume keys (volkeys.service)
@@ -95,18 +96,44 @@ fi
 
 step "5. Your settings"
 LOCAL=/etc/alicepet.local.conf
+# [navi]: your Navi's name and picture and your name (asked once, only on a terminal).
+ask_navi() {
+    navi_name=""
+    navi_owner=""
+    navi_picture=""
+    if [[ -t 0 ]]; then
+        read -r -p "  Your Navi's name (up to 12 characters, Enter for Alice): " navi_name
+        read -r -p "  Your name, for greetings and Jack In (Enter to leave blank): " navi_owner
+        read -r -p "  Navi picture, a PNG path on this PET (Enter for the packaged art): " navi_picture
+    fi
+    echo "[navi]"
+    echo "name=${navi_name:-Alice}"
+    echo "owner=$navi_owner"
+    echo "picture=$navi_picture"
+    echo ""
+}
 if [[ -f "$LOCAL" ]]; then
-    note "$LOCAL already exists; left as is"
+    if grep -q '^\[navi\]' "$LOCAL"; then
+        note "$LOCAL already exists; left as is"
+    else
+        # rev30 added [navi]: put it first, so it is not swallowed by the last section.
+        tmp=$(mktemp)
+        { ask_navi; cat "$LOCAL"; } >"$tmp"
+        cat "$tmp" >"$LOCAL"   # keeps the owner and mode of $LOCAL
+        rm -f "$tmp"
+        done_ "added [navi] to $LOCAL (the rest is unchanged)"
+    fi
 else
     url=""
     token=""
     if [[ -t 0 ]]; then
-        read -r -p "  Alice bridge URL (e.g. http://mac-mini.tailnet.ts.net:8797, Enter to skip): " url
+        read -r -p "  Bridge URL on your Navi's computer (e.g. http://my-mac.tailnet.ts.net:8797, Enter to skip): " url
         if [[ -n "$url" ]]; then read -r -s -p "  Bridge token (hidden, Enter for none): " token; echo; fi
     fi
     umask 077
     {
         echo "# AlicePET settings for this PET only (read after /etc/alicepet.conf). Never commit this file."
+        ask_navi
         echo "[bridge]"
         echo "url=$url"
         echo "token=$token"

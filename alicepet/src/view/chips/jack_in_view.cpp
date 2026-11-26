@@ -3,6 +3,7 @@
  */
 
 #include "view/chips/jack_in_view.h"
+#include "model/navi.h"
 
 #include <algorithm>
 #include <string>
@@ -208,9 +209,9 @@ void JackInView::render_session(const JackInChip& jack) {
     // Alice, then her suggested fix in a box.
     const int bottom = jack.status().empty() ? 139 : 139 - kRowH;
     if (jack.alice_waiting()) {
-        y = wrapped("Alice is reading the scan...", kPink, kLeft, y, 304, 0);
+        y = wrapped(model::navi_name() + " is reading the scan...", kPink, kLeft, y, 304, 0);
     } else if (!jack.alice_text().empty()) {
-        y = wrapped("Alice: " + jack.alice_text(), kPink, kLeft, y, 304, bottom - y - (has_fix ? 20 : 2));
+        y = wrapped(model::navi_name() + ": " + jack.alice_text(), kPink, kLeft, y, 304, bottom - y - (has_fix ? 20 : 2));
     }
     if (has_fix && y + 16 <= bottom) {
         lv_obj_t* fix = box(body_, kLeft - 2, y + 2, 308, 15, 0x120a1c);
